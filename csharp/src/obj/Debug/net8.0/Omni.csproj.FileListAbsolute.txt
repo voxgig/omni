@@ -1,0 +1,11 @@
+/home/user/omni/csharp/src/bin/Debug/net8.0/VoxgigOmni.deps.json
+/home/user/omni/csharp/src/bin/Debug/net8.0/VoxgigOmni.dll
+/home/user/omni/csharp/src/bin/Debug/net8.0/VoxgigOmni.pdb
+/home/user/omni/csharp/src/obj/Debug/net8.0/Omni.GeneratedMSBuildEditorConfig.editorconfig
+/home/user/omni/csharp/src/obj/Debug/net8.0/Omni.AssemblyInfoInputs.cache
+/home/user/omni/csharp/src/obj/Debug/net8.0/Omni.AssemblyInfo.cs
+/home/user/omni/csharp/src/obj/Debug/net8.0/Omni.csproj.CoreCompileInputs.cache
+/home/user/omni/csharp/src/obj/Debug/net8.0/VoxgigOmni.dll
+/home/user/omni/csharp/src/obj/Debug/net8.0/refint/VoxgigOmni.dll
+/home/user/omni/csharp/src/obj/Debug/net8.0/VoxgigOmni.pdb
+/home/user/omni/csharp/src/obj/Debug/net8.0/ref/VoxgigOmni.dll

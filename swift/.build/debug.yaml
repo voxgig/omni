@@ -1,0 +1,102 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "Omni-x86_64-unknown-linux-gnu-debug.module": ["<Omni-x86_64-unknown-linux-gnu-debug.module>"]
+  "OmniTest-x86_64-unknown-linux-gnu-debug.module": ["<OmniTest-x86_64-unknown-linux-gnu-debug.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<Omni-x86_64-unknown-linux-gnu-debug.module>","<OmniTest-x86_64-unknown-linux-gnu-debug.module>","<omnitest-x86_64-unknown-linux-gnu-debug.exe>"]
+  "omnitest-x86_64-unknown-linux-gnu-debug.exe": ["<omnitest-x86_64-unknown-linux-gnu-debug.exe>"]
+  "test": ["<Omni-x86_64-unknown-linux-gnu-debug.module>","<OmniTest-x86_64-unknown-linux-gnu-debug.module>","<omnitest-x86_64-unknown-linux-gnu-debug.exe>"]
+default: "main"
+nodes:
+  "/home/user/omni/swift/Sources/Omni/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/home/user/omni/swift/Sources/OmniTest/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Omni.swiftmodule.o":
+    tool: shell
+    inputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/Omni.swiftmodule"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Omni.swiftmodule.o"]
+    description: "Wrapping AST for Omni for debugging"
+    args: ["/opt/lang/swift/usr/bin/swiftc","-modulewrap","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/Omni.swiftmodule","-o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Omni.swiftmodule.o","-target","x86_64-unknown-linux-gnu"]
+
+  "/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/home/user/omni/swift/Sources/Omni/Json.swift","/home/user/omni/swift/Sources/Omni/Runner.swift","/home/user/omni/swift/Sources/Omni/Util.swift"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/sources"]
+    description: "Write auxiliary file /home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/sources"
+
+  "/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/OmniTest.swiftmodule.o":
+    tool: shell
+    inputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/OmniTest.swiftmodule"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/OmniTest.swiftmodule.o"]
+    description: "Wrapping AST for OmniTest for debugging"
+    args: ["/opt/lang/swift/usr/bin/swiftc","-modulewrap","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/OmniTest.swiftmodule","-o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/OmniTest.swiftmodule.o","-target","x86_64-unknown-linux-gnu"]
+
+  "/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/home/user/omni/swift/Sources/OmniTest/Fib.swift","/home/user/omni/swift/Sources/OmniTest/main.swift"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/sources"]
+    description: "Write auxiliary file /home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/sources"
+
+  "/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Json.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Omni.swiftmodule.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Runner.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Util.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/Fib.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/OmniTest.swiftmodule.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/main.swift.o"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest.product/Objects.LinkFileList"
+
+  "/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/swift-version-3B0E02FBFB7BA7D.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/opt/lang/swift/usr/bin/swiftc"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/swift-version-3B0E02FBFB7BA7D.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/swift-version-3B0E02FBFB7BA7D.txt"
+
+  "<Omni-x86_64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Json.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Runner.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Util.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/Omni.swiftmodule"]
+    outputs: ["<Omni-x86_64-unknown-linux-gnu-debug.module>"]
+
+  "<OmniTest-x86_64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/Fib.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/main.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/OmniTest.swiftmodule"]
+    outputs: ["<OmniTest-x86_64-unknown-linux-gnu-debug.module>"]
+
+  "<omnitest-x86_64-unknown-linux-gnu-debug.exe>":
+    tool: phony
+    inputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest"]
+    outputs: ["<omnitest-x86_64-unknown-linux-gnu-debug.exe>"]
+
+  "C.Omni-x86_64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs: ["/home/user/omni/swift/Sources/Omni/Json.swift","/home/user/omni/swift/Sources/Omni/Runner.swift","/home/user/omni/swift/Sources/Omni/Util.swift","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/swift-version-3B0E02FBFB7BA7D.txt","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/sources"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Json.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Runner.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Util.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/Omni.swiftmodule"]
+    description: "Compiling Swift Module 'Omni' (3 sources)"
+    args: ["/opt/lang/swift/usr/bin/swiftc","-module-name","Omni","-emit-dependencies","-emit-module","-emit-module-path","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/Omni.swiftmodule","-output-file-map","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/output-file-map.json","-parse-as-library","-incremental","-c","@/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/sources","-I","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules","-target","x86_64-unknown-linux-gnu","-enable-batch-mode","-index-store-path","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/index/store","-Onone","-enable-testing","-j4","-DSWIFT_PACKAGE","-DDEBUG","-module-cache-path","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/ModuleCache","-parseable-output","-parse-as-library","-swift-version","5","-g","-Xcc","-fPIC","-Xcc","-g","-package-name","swift","-Xcc","-fno-omit-frame-pointer"]
+
+  "C.OmniTest-x86_64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs: ["/home/user/omni/swift/Sources/OmniTest/Fib.swift","/home/user/omni/swift/Sources/OmniTest/main.swift","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/swift-version-3B0E02FBFB7BA7D.txt","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/Omni.swiftmodule","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/sources"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/Fib.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/main.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/OmniTest.swiftmodule"]
+    description: "Compiling Swift Module 'OmniTest' (2 sources)"
+    args: ["/opt/lang/swift/usr/bin/swiftc","-module-name","OmniTest","-emit-dependencies","-emit-module","-emit-module-path","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules/OmniTest.swiftmodule","-output-file-map","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/output-file-map.json","-incremental","-c","@/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/sources","-I","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Modules","-target","x86_64-unknown-linux-gnu","-enable-batch-mode","-index-store-path","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/index/store","-Onone","-enable-testing","-j4","-DSWIFT_PACKAGE","-DDEBUG","-module-cache-path","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","OmniTest_main","-swift-version","5","-g","-Xcc","-fPIC","-Xcc","-g","-package-name","swift","-Xcc","-fno-omit-frame-pointer"]
+
+  "C.omnitest-x86_64-unknown-linux-gnu-debug.exe":
+    tool: shell
+    inputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Json.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Omni.swiftmodule.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Runner.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/Omni.build/Util.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/Fib.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/OmniTest.swiftmodule.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/OmniTest.build/main.swift.o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest.product/Objects.LinkFileList"]
+    outputs: ["/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest"]
+    description: "Linking ./.build/x86_64-unknown-linux-gnu/debug/omnitest"
+    args: ["/opt/lang/swift/usr/bin/swiftc","-L","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug","-o","/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest","-module-name","omnitest","-emit-executable","-Xlinker","--defsym","-Xlinker","main=OmniTest_main","-Xlinker","-rpath=$ORIGIN","@/home/user/omni/swift/.build/x86_64-unknown-linux-gnu/debug/omnitest.product/Objects.LinkFileList","-target","x86_64-unknown-linux-gnu","-g"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/home/user/omni/swift/Sources/Omni/","/home/user/omni/swift/Sources/OmniTest/","/home/user/omni/swift/Package.swift","/home/user/omni/swift/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

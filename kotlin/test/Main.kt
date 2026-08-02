@@ -1,0 +1,188 @@
+// RUN: make test
+// RUN-SOME: java -jar build/omnitest.jar basic
+//
+// The Fibonacci conformance suite: every omni port runs this same set of
+// groups, from the same spec/fib.json, against the same fib library.
+//
+// No third-party test framework: a failing omni check throws OmniError, so
+// JUnit or kotlin.test reports it as a failure. This harness keeps
+// `make test` dependency-free.
+
+package voxgig.omni.test
+
+import java.io.File
+import kotlin.system.exitProcess
+import voxgig.omni.Flags
+import voxgig.omni.Json
+import voxgig.omni.OmniError
+import voxgig.omni.Provider
+import voxgig.omni.RunPack
+import voxgig.omni.Subject
+import voxgig.omni.errmessage
+import voxgig.omni.makeRunner
+
+private var only: String? = null
+private var passcount = 0
+private var failcount = 0
+
+/** Find the shared spec directory by walking up from the working dir. */
+fun specfile(name: String): String {
+    var dir: File? = File(System.getProperty("user.dir"))
+
+    for (step in 0 until 8) {
+        if (null == dir) {
+            break
+        }
+        val cand = File(File(dir, "spec"), name)
+        if (cand.exists()) {
+            return cand.absolutePath
+        }
+        dir = dir.parentFile
+    }
+
+    throw OmniError("omni: spec not found: $name")
+}
+
+val FIB: Subject = { args -> Fib.fib(args[0]) }
+val FIBSEQ: Subject = { args -> Fib.fibseq(args[0]) }
+val FIBRANGE: Subject = { args -> Fib.fibrange(args[0], args[1]) }
+val FIBINFO: Subject = { args -> Fib.fibinfo(args[0]) }
+
+/**
+ * The provider hosts the system under test. `shift` offsets the Fibonacci
+ * index, so that a client-specific subject is observably different.
+ */
+fun fibprovider(shift: Double): Provider =
+    Provider(
+        subject = { name ->
+            when (name) {
+                "fib" -> { args ->
+                    val num = args[0].asnum
+                    if (null != num) Fib.fib(Json.num(num + shift)) else Fib.fib(args[0])
+                }
+                "fibseq" -> FIBSEQ
+                "fibrange" -> FIBRANGE
+                "fibinfo" -> FIBINFO
+                else -> null
+            }
+        },
+        client = { options -> fibprovider(options.get("shift").asnum ?: 0.0) },
+    )
+
+fun testcase(name: String, body: () -> Unit) {
+    val filter = only
+    if (null != filter && name != filter) {
+        return
+    }
+
+    try {
+        body()
+        passcount++
+        println("ok   - $name")
+    } catch (err: Throwable) {
+        failcount++
+        println("FAIL - $name")
+        println(errmessage(err))
+    }
+}
+
+// The runner must fail when the subject is wrong - otherwise a green suite
+// means nothing.
+fun badspec(): Json =
+    Json.map(
+        "fib" to Json.map(
+            "wrongout" to Json.map(
+                "set" to Json.list(
+                    Json.map("in" to Json.num(5), "out" to Json.num(5)),
+                    Json.map("in" to Json.num(6), "out" to Json.num(999)),
+                ),
+            ),
+            "wrongerr" to Json.map(
+                "set" to Json.list(
+                    Json.map("in" to Json.num(1), "err" to Json.str("never happens")),
+                ),
+            ),
+            "wrongmatch" to Json.map(
+                "set" to Json.list(
+                    Json.map("in" to Json.num(6), "match" to Json.map("out" to Json.num(999))),
+                ),
+            ),
+            "missing" to Json.map(
+                "set" to Json.list(
+                    Json.map(
+                        "in" to Json.num(6),
+                        "match" to Json.map("out" to Json.map("nope" to Json.str("__EXISTS__"))),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+fun expectfail(setname: String, subject: Subject) {
+    val bad = makeRunner(badspec()).runner("fib")
+
+    try {
+        bad.runset(bad.set(setname), subject)
+    } catch (err: OmniError) {
+        return
+    }
+
+    throw IllegalStateException("omni: expected OmniError for set: $setname")
+}
+
+fun checkmessage() {
+    val spec = Json.map(
+        "fib" to Json.map(
+            "g" to Json.map(
+                "set" to Json.list(
+                    Json.map("in" to Json.num(1), "out" to Json.num(1)),
+                    Json.map("id" to Json.str("x#2"), "in" to Json.num(2), "out" to Json.num(42)),
+                ),
+            ),
+        ),
+    )
+
+    val bad = makeRunner(spec).runner("fib")
+
+    try {
+        bad.runset(bad.set("g"), FIB)
+    } catch (err: OmniError) {
+        val msg = err.message ?: ""
+        for (want in listOf("fib[1] (x#2)", "expected: 42", "actual:   1")) {
+            if (!msg.contains(want)) {
+                throw IllegalStateException("omni: message missing [$want]: $msg")
+            }
+        }
+        return
+    }
+
+    throw IllegalStateException("omni: expected OmniError")
+}
+
+fun main(args: Array<String>) {
+    if (args.isNotEmpty()) {
+        only = args[0]
+    }
+
+    val R: RunPack = makeRunner(specfile("fib.json"), fibprovider(0.0)).runner("fib")
+
+    testcase("basic") { R.runset(R.set("basic"), FIB) }
+    testcase("seq") { R.runset(R.set("seq"), FIBSEQ) }
+    testcase("range") { R.runset(R.set("range"), FIBRANGE) }
+    testcase("info") { R.runset(R.set("info"), FIBINFO) }
+    testcase("nulls") { R.runsetflags(R.set("nulls"), Flags.nonull(), FIBINFO) }
+    testcase("error") { R.runset(R.set("error"), FIB) }
+    testcase("match") { R.runset(R.set("match"), FIB) }
+    testcase("matchinfo") { R.runset(R.set("matchinfo"), FIBINFO) }
+    testcase("client") { R.runset(R.set("client"), FIB) }
+
+    testcase("detects wrong result") { expectfail("wrongout", FIB) }
+    testcase("detects missing error") { expectfail("wrongerr", FIB) }
+    testcase("detects failed match") { expectfail("wrongmatch", FIB) }
+    testcase("detects absent key") { expectfail("missing", FIBINFO) }
+    testcase("reports entry index and id") { checkmessage() }
+
+    println("\n$passcount passed, $failcount failed")
+
+    exitProcess(if (0 == failcount) 0 else 1)
+}
