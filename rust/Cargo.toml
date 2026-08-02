@@ -1,0 +1,12 @@
+[package]
+name = "voxgig_omni"
+version = "0.1.0"
+edition = "2021"
+description = "Omni: shared multi-language test runner (Rust)"
+license = "MIT"
+
+[dependencies]
+
+[lib]
+name = "voxgig_omni"
+path = "src/lib.rs"

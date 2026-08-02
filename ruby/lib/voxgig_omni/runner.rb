@@ -1,0 +1,346 @@
+# Omni: the shared multi-language test runner.
+#
+# Port of the canonical TypeScript implementation
+# (typescript/src/Runner.ts). Behaviour must match, case for case.
+
+require 'json'
+
+require_relative 'util'
+
+module VoxgigOmni
+  # A test failure (or a malformed spec). Distinct from errors raised by
+  # the subject under test, which are candidates for an `err` expectation.
+  class OmniError < StandardError
+    attr_reader :entry
+
+    def initialize(message, entry = nil)
+      super(message)
+      @entry = entry
+    end
+  end
+
+  module Runner
+    module_function
+
+    U = VoxgigOmni::Util
+
+    # Load a spec: a path to a JSON file, or an already-parsed object.
+    def loadspec(specref)
+      return JSON.parse(File.read(specref)) if specref.is_a?(String)
+
+      specref
+    end
+
+    # Find `primary.<name>`, then `<name>`, then the whole spec.
+    def resolvespec(name, alltests)
+      return alltests if name.nil?
+
+      primary = U.ismap(alltests) ? alltests['primary'] : nil
+      return primary[name] if U.ismap(primary) && !primary[name].nil?
+
+      return alltests[name] if U.ismap(alltests) && !alltests[name].nil?
+
+      alltests
+    end
+
+    # Build the named clients declared by the spec's DEF.client block.
+    def resolveclients(provider, spec, store)
+      clients = {}
+
+      defclient = U.ismap(spec) && U.ismap(spec['DEF']) ? spec['DEF']['client'] : nil
+      return clients unless U.ismap(defclient)
+
+      # A spec may define clients that a given test run never references.
+      clientmaker = provider[:client]
+      return clients if clientmaker.nil?
+
+      defclient.each do |clientname, cdef|
+        copts = U.clone((U.ismap(cdef) && U.ismap(cdef['test']) ? cdef['test']['options'] : nil) || {})
+
+        injector = provider[:inject]
+        injector.call(copts, store) if U.ismap(store) && !injector.nil?
+
+        clients[clientname] = clientmaker.call(copts)
+      end
+
+      clients
+    end
+
+    def resolvesubject(name, provider)
+      return nil if name.nil? || provider[:subject].nil?
+
+      provider[:subject].call(name)
+    end
+
+    def resolveflags(flags)
+      out = flags.nil? ? {} : flags.dup
+      out[:null] = out[:null].nil? ? true : !!out[:null]
+      out
+    end
+
+    # An entry with no `out` expects a null (or absent) result.
+    def resolveentry(entry, flags)
+      entry['out'] = NULLMARK if entry['out'].nil? && flags[:null]
+      entry
+    end
+
+    def resolvetestpack(name, entry, subject, provider, clients)
+      testpack = { client: provider, subject: subject }
+
+      unless entry['client'].nil?
+        client = clients[entry['client']]
+        raise OmniError.new('omni: unknown client: ' + entry['client'].to_s, entry) if client.nil?
+
+        testpack[:client] = client
+        testpack[:subject] = resolvesubject(name, client) || subject
+      end
+
+      testpack
+    end
+
+    # Build the argument list: `ctx`, `args`, or `in`.
+    def resolveargs(entry, testpack, provider)
+      args = if entry.key?('ctx')
+               [entry['ctx']]
+             elsif entry.key?('args')
+               entry['args']
+             else
+               [U.clone(entry['in'])]
+             end
+
+      if (entry.key?('ctx') || entry.key?('args')) && !args.empty?
+        first = args[0]
+        if U.ismap(first)
+          first = U.clone(first)
+          contextify = provider[:contextify]
+          first = contextify.call(first) unless contextify.nil?
+          args[0] = first
+          entry['ctx'] = first
+          first['client'] = testpack[:client] if U.ismap(first)
+        end
+      end
+
+      args
+    end
+
+    # Nulls become NULLMARK, errors become {name,message}. Always a copy.
+    def fixjson(val, flags = nil)
+      donull = flags.nil? || flags[:null].nil? ? true : !!flags[:null]
+      fixjsonval(val, donull)
+    end
+
+    def fixjsonval(val, donull)
+      return donull ? NULLMARK : nil if val.nil? || val.equal?(ABSENT)
+
+      return errify(val) if val.is_a?(Exception)
+
+      return val.map { |entry| fixjsonval(entry, donull) } if U.islist(val)
+
+      if U.ismap(val)
+        out = {}
+        val.each { |key, subval| out[key] = fixjsonval(subval, donull) }
+        return out
+      end
+
+      val
+    end
+
+    # The JSON form of an error: always at least {name,message}.
+    def errify(err)
+      return { 'name' => 'Error', 'message' => err.to_s } unless err.is_a?(Exception)
+
+      { 'name' => err.class.name, 'message' => err.message }
+    end
+
+    def errmessage(err)
+      err.is_a?(Exception) ? err.message : err.to_s
+    end
+
+    # The label of one entry, for failure messages.
+    def entryref(flags, index, entry)
+      label = flags[:name] || 'set'
+      entryid = U.ismap(entry) && !entry['id'].nil? ? ' (' + entry['id'].to_s + ')' : ''
+      "#{label}[#{index}]#{entryid}"
+    end
+
+    def fail(flags, index, entry, reason, expected = nil, actual = nil)
+      msg = 'omni: ' + entryref(flags, index, entry) + ': ' + reason
+      msg += "\n  expected: " + expected unless expected.nil?
+      msg += "\n  actual:   " + actual unless actual.nil?
+      msg += "\n  entry:    " + U.stringify(entrysummary(entry))
+      OmniError.new(msg, entry)
+    end
+
+    # The spec-defined part of an entry (drop runner bookkeeping).
+    def entrysummary(entry)
+      return entry unless U.ismap(entry)
+
+      out = {}
+      entry.each { |key, val| out[key] = val unless %w[res thrown ctx].include?(key) }
+      out
+    end
+
+    def checkresult(flags, index, entry, args, res)
+      matched = false
+
+      unless entry['err'].nil?
+        raise fail(flags, index, entry, 'expected error did not occur',
+                   U.stringify(entry['err']), U.stringify(res))
+      end
+
+      unless entry['match'].nil?
+        match(flags, index, entry, entry['match'],
+              { 'in' => entry['in'], 'args' => args, 'out' => entry['res'], 'ctx' => entry['ctx'] })
+        matched = true
+      end
+
+      out = entry['out']
+
+      return if U.deepequal(res, out)
+
+      # NOTE: a match with no explicit out is a complete check on its own.
+      return if matched && (out == NULLMARK || out.nil?)
+
+      raise fail(flags, index, entry, 'result mismatch', U.stringify(out), U.stringify(res))
+    end
+
+    def handleerror(flags, index, entry, err)
+      entry['thrown'] = err
+
+      entryerr = entry['err']
+
+      unless entryerr.nil?
+        if entryerr == true || matchval(entryerr, errmessage(err))
+          unless entry['match'].nil?
+            match(flags, index, entry, entry['match'],
+                  { 'in' => entry['in'], 'out' => entry['res'], 'ctx' => entry['ctx'],
+                    'err' => errify(err) })
+          end
+          return
+        end
+
+        raise fail(flags, index, entry, 'error mismatch', U.stringify(entryerr), errmessage(err))
+      end
+
+      raise fail(flags, index, entry, 'unexpected error', nil, errmessage(err))
+    end
+
+    # Check that every leaf of `check` is present, and matches, in `base`.
+    def match(flags, index, entry, check, base)
+      cbase = U.clone(base)
+
+      apply = lambda do |_key, val, _parent, path|
+        unless U.isnode(val)
+          baseval = U.getpath(cbase, path)
+
+          next val if baseval.equal?(val)
+
+          # Explicitly absent.
+          next val if val == UNDEFMARK && baseval.equal?(ABSENT)
+
+          # Explicitly present.
+          next val if val == EXISTSMARK && !baseval.equal?(ABSENT) && !baseval.nil?
+
+          unless matchval(val, baseval)
+            raise fail(flags, index, entry,
+                       'match failed at ' + (path.empty? ? '<root>' : U.pathify(path)),
+                       U.stringify(val), U.stringify(baseval))
+          end
+        end
+
+        val
+      end
+
+      U.walk(U.clone(check), apply)
+    end
+
+    # Match one leaf: /regex/ or case-insensitive substring for strings.
+    def matchval(check, base)
+      return true if U.deepequal(check, base)
+
+      want = check
+      want = nil if want == UNDEFMARK || want == NULLMARK
+
+      return base.nil? || base.equal?(ABSENT) || base == NULLMARK if want.nil?
+
+      if want.is_a?(String)
+        basestr = U.stringify(base)
+
+        rem = want.match(%r{^/(.+)/$}m)
+        return !Regexp.new(rem[1]).match(basestr).nil? if rem
+
+        return basestr.downcase.include?(want.downcase)
+      end
+
+      return true if want.is_a?(Proc) || want.is_a?(Method)
+
+      U.deepequal(want, base)
+    end
+
+    # Convert NULLMARK sentinels back into real nulls.
+    def nullmodifier(val, key, parent, *_rest)
+      if val == NULLMARK
+        parent[key] = nil
+      elsif val.is_a?(String)
+        parent[key] = val.gsub(NULLMARK, 'null')
+      end
+    end
+
+    # Make a runner for a spec file (or spec object) and a provider.
+    def make_runner(specref, provider = nil)
+      alltests = loadspec(specref)
+      useprovider = provider || {}
+
+      lambda do |name = nil, store = nil|
+        spec = resolvespec(name, alltests)
+        clients = resolveclients(useprovider, spec, store.nil? ? {} : store)
+        defsubject = resolvesubject(name, useprovider)
+
+        runsetflags = lambda do |testspec, flags, testsubject = nil|
+          useflags = resolveflags(flags)
+          useflags[:name] = useflags[:name] || name || 'set'
+
+          subject = testsubject || defsubject
+          raise OmniError, 'omni: no test subject for: ' + useflags[:name].to_s if subject.nil?
+
+          testspecmap = fixjson(testspec, useflags)
+
+          unless U.ismap(testspecmap) && U.islist(testspecmap['set'])
+            raise OmniError, 'omni: test spec has no set: ' + useflags[:name].to_s
+          end
+
+          testset = testspecmap['set']
+
+          testset.each_with_index do |entry, index|
+            begin
+              entry = resolveentry(entry, useflags)
+
+              testpack = resolvetestpack(name, entry, subject, useprovider, clients)
+              args = resolveargs(entry, testpack, useprovider)
+
+              res = testpack[:subject].call(*args)
+              res = fixjson(res, useflags)
+              entry['res'] = res
+
+              checkresult(useflags, index, entry, args, res)
+            rescue OmniError
+              raise
+            rescue StandardError => e
+              handleerror(useflags, index, entry, e)
+            end
+          end
+        end
+
+        runset = ->(testspec, testsubject = nil) { runsetflags.call(testspec, {}, testsubject) }
+
+        {
+          spec: spec,
+          runset: runset,
+          runsetflags: runsetflags,
+          subject: defsubject,
+          client: useprovider
+        }
+      end
+    end
+  end
+end
