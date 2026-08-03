@@ -163,11 +163,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
-        with:
-          # Pinned, like every other toolchain here: the port targets 0.16,
-          # and `master` would move under it.
-          version: 0.16.0
+      # Downloaded straight from ziglang.org rather than via setup-zig.
+      # 0.16.0 is a real tagged release, but that action tries community
+      # mirrors first and then falls back to ziglang.org/builds, which only
+      # serves dev builds - so a tagged version 404s there once the mirrors
+      # are flaky, as they were. A pinned tarball with a checked hash has
+      # neither failure mode.
+      - name: Install Zig
+        env:
+          ZIG_VERSION: '0.16.0'
+          ZIG_SHA256: '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
+        run: |
+          url="https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          curl -sSfL --retry 3 --retry-delay 5 -o /tmp/zig.tar.xz "$url"
+          echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$HOME/zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
       - run: make test-zig
 
   swift:
