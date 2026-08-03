@@ -91,9 +91,14 @@ jobs:
         if: matrix.lang == 'kotlin'
         env:
           KOTLIN_VERSION: '2.1.20'
+          KOTLIN_SHA256: 'a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a'
         run: |
-          curl -sSfL -o /tmp/kotlin.zip \
+          # --retry, because GitHub's release CDN returns the occasional 500
+          # and curl retries 5xx as transient. Without it a healthy toolchain
+          # reads as a broken port.
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/kotlin.zip \
             "https://github.com/JetBrains/kotlin/releases/download/v$KOTLIN_VERSION/kotlin-compiler-$KOTLIN_VERSION.zip"
+          echo "$KOTLIN_SHA256  /tmp/kotlin.zip" | sha256sum -c -
           unzip -q /tmp/kotlin.zip -d "$HOME"
           echo "$HOME/kotlinc/bin" >> "$GITHUB_PATH"
       - run: make test-${{ matrix.lang }}
@@ -175,7 +180,7 @@ jobs:
           ZIG_SHA256: '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
         run: |
           url="https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
-          curl -sSfL --retry 3 --retry-delay 5 -o /tmp/zig.tar.xz "$url"
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/zig.tar.xz "$url"
           echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
           mkdir -p "$HOME/zig"
           tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
@@ -229,8 +234,9 @@ jobs:
       # lean/lean-toolchain, so CI and a developer machine agree.
       - name: Install Lean
         run: |
-          curl -sSfL https://elan.lean-lang.org/elan-init.sh \
-            | sh -s -- -y --default-toolchain "$(cat lean/lean-toolchain)"
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors \
+            -o /tmp/elan-init.sh https://elan.lean-lang.org/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain "$(cat lean/lean-toolchain)"
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - run: make test-lean
 
