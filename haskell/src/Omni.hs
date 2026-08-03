@@ -258,7 +258,11 @@ parseValue text@(ch : rest)
 
 parseMap :: String -> [(String, Json)] -> Either String (Json, String)
 parseMap ('}' : rest) entries = Right (JMap (reverse entries), rest)
-parseMap text entries = do
+parseMap text entries = parseMapPair text entries
+
+-- A comma must be followed by another pair: no trailing commas.
+parseMapPair :: String -> [(String, Json)] -> Either String (Json, String)
+parseMapPair text entries = do
   (key, afterkey) <- case skipws text of
     '"' : more -> parseString more ""
     _ -> Left "omni: expected string key"
@@ -269,18 +273,29 @@ parseMap text entries = do
 
   (value, aftervalue) <- parseValue (skipws aftercolon)
 
+  -- A duplicate key overrides the earlier value (last wins), as in the
+  -- canonical implementation.
+  let entries' =
+        if isJust (lookup key entries)
+          then map (\(k, e) -> if k == key then (k, value) else (k, e)) entries
+          else (key, value) : entries
+
   case skipws aftervalue of
-    ',' : more -> parseMap (skipws more) ((key, value) : entries)
-    '}' : more -> Right (JMap (reverse ((key, value) : entries)), more)
+    ',' : more -> parseMapPair (skipws more) entries'
+    '}' : more -> Right (JMap (reverse entries'), more)
     _ -> Left "omni: expected ',' or '}'"
 
 parseList :: String -> [Json] -> Either String (Json, String)
 parseList (']' : rest) entries = Right (JList (reverse entries), rest)
-parseList text entries = do
+parseList text entries = parseListItem text entries
+
+-- A comma must be followed by another element: no trailing commas.
+parseListItem :: String -> [Json] -> Either String (Json, String)
+parseListItem text entries = do
   (value, aftervalue) <- parseValue (skipws text)
 
   case skipws aftervalue of
-    ',' : more -> parseList (skipws more) (value : entries)
+    ',' : more -> parseListItem (skipws more) (value : entries)
     ']' : more -> Right (JList (reverse (value : entries)), more)
     _ -> Left "omni: expected ',' or ']'"
 
@@ -297,12 +312,15 @@ parseString ('\\' : escape : rest) out = case escape of
   'r' -> parseString rest ('\r' : out)
   't' -> parseString rest ('\t' : out)
   'u' ->
+    -- Exactly four hex digits: anything else is a parse error, not
+    -- garbage arithmetic on arbitrary characters.
     let (hex, more) = splitAt 4 rest
-     in if 4 == length hex
+     in if 4 == length hex && all ishex hex
           then parseString more (toEnum (readhex hex) : out)
           else Left "omni: bad JSON unicode escape"
   _ -> Left "omni: bad JSON escape"
   where
+    ishex ch = isDigit ch || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
     readhex = foldl (\acc ch -> acc * 16 + digit ch) 0
     digit ch
       | isDigit ch = fromEnum ch - fromEnum '0'
@@ -644,6 +662,9 @@ matchval check base
   | deepequal check base = True
   | isnone want = isnone base || asstr base == Just nullmark
   | otherwise = case asstr want of
+      -- An empty want is not a wildcard: the empty string is a substring of
+      -- everything, so `match:{out:""}` (or `err:""`) would accept any value.
+      Just "" -> asstr base == Just ""
       Just text ->
         let basestr = stringify base
          in if length text > 2 && "/" `isPrefixOf` text && "/" == [last text]
@@ -696,6 +717,12 @@ failure label index entry reason expected actual =
 -- Check that every leaf of `check` is present, and matches, in `base`.
 matchcheck :: String -> Int -> Json -> Json -> Json -> [String] -> IO ()
 matchcheck label index entry check base path = case check of
+  -- An empty container asserts structure that recursion would otherwise
+  -- skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
+  -- to pass any result. Require the base at this path to be an equal
+  -- empty container. (The synthetic root wrapper is never empty.)
+  JList [] | not (null path) -> emptycheck
+  JMap [] | not (null path) -> emptycheck
   JList entries ->
     mapM_
       (\(at, subcheck) -> matchcheck label index entry subcheck base (path ++ [show at]))
@@ -704,26 +731,43 @@ matchcheck label index entry check base path = case check of
     mapM_
       (\(key, subcheck) -> matchcheck label index entry subcheck base (path ++ [key]))
       entries
-  leaf ->
-    let baseval = getpath base path
-        ok =
-          deepequal leaf baseval
-            || (asstr leaf == Just undefmark && isabsent baseval)
-            || (asstr leaf == Just existsmark && not (isnone baseval))
-            || matchval leaf baseval
-        place = if null path then "<root>" else pathify path
-     in if ok
-          then pure ()
-          else
-            throwIO
-              ( failure
-                  label
-                  index
-                  entry
-                  ("match failed at " ++ place)
-                  (Just (stringify leaf))
-                  (Just (stringify baseval))
-              )
+  leaf -> checkleaf leaf
+  where
+    place = if null path then "<root>" else pathify path
+    baseval = getpath base path
+
+    bad reason expected actual =
+      throwIO (failure label index entry (reason ++ place) (Just expected) (Just actual))
+
+    emptycheck =
+      if deepequal check baseval
+        then pure ()
+        else bad "match failed at " (stringify check) (stringify baseval)
+
+    checkleaf leaf
+      | deepequal leaf baseval = pure ()
+      -- Explicitly absent: satisfied only by a genuinely missing key,
+      -- never by a present null (the distinction the sentinels keep).
+      | asstr leaf == Just undefmark =
+          if isabsent baseval
+            then pure ()
+            else bad "expected absent at " "absent" (stringify baseval)
+      -- Explicitly null: satisfied only by a present null.
+      | asstr leaf == Just nullmark =
+          if isnull baseval || asstr baseval == Just nullmark
+            then pure ()
+            else bad "expected null at " "null" (stringify baseval)
+      -- Explicitly present: any present value, including null.
+      | asstr leaf == Just existsmark =
+          if not (isabsent baseval)
+            then pure ()
+            else bad "expected present at " "present" "absent"
+      -- A concrete expectation never matches a missing key - a match
+      -- leaf against an absent value must fail, not substring-match
+      -- "undefined".
+      | isabsent baseval = bad "match failed at " (stringify leaf) "absent"
+      | matchval leaf baseval = pure ()
+      | otherwise = bad "match failed at " (stringify leaf) (stringify baseval)
 
 checkresult :: String -> Int -> Json -> [Json] -> Json -> IO ()
 checkresult label index entry args res = do

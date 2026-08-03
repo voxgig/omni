@@ -274,34 +274,68 @@ def match(flags: dict, index: int, entry: dict, check: Any, base: Any) -> None:
     """Check that every leaf of `check` is present, and matches, in `base`."""
     cbase = clone(base)
 
+    def at(path):
+        return '<root>' if len(path) == 0 else pathify(path)
+
     def apply(_key, val, _parent, path):
+        # An empty container asserts structure that walk would otherwise skip:
+        # it visits no leaves inside {} or [], so `match:{out:{}}` used to pass
+        # any result. Require the base at this path to be an equal empty
+        # container. (The synthetic root wrapper is never empty, so skip it.)
+        if isnode(val) and len(path) > 0 and isempty(val):
+            baseval = getpath(cbase, path)
+            if not deepequal(val, baseval):
+                raise fail(flags, index, entry, 'match failed at ' + at(path),
+                           stringify(val), stringify(baseval))
+            return val
+
         if not isnode(val):
             baseval = getpath(cbase, path)
 
             if baseval is val:
                 return val
 
-            # Explicitly absent.
-            if val == UNDEFMARK and baseval is ABSENT:
-                return val
+            # Explicitly absent: satisfied only by a genuinely missing key,
+            # never by a present null (the distinction the sentinels exist
+            # to keep).
+            if val == UNDEFMARK:
+                if baseval is ABSENT:
+                    return val
+                raise fail(flags, index, entry, 'expected absent at ' + at(path),
+                           'absent', stringify(baseval))
 
-            # Explicitly present.
-            if val == EXISTSMARK and baseval is not ABSENT and baseval is not None:
-                return val
+            # Explicitly null: satisfied only by a present null.
+            if val == NULLMARK:
+                if baseval is None or baseval == NULLMARK:
+                    return val
+                raise fail(flags, index, entry, 'expected null at ' + at(path),
+                           'null', stringify(baseval))
+
+            # Explicitly present: any present value, including null.
+            if val == EXISTSMARK:
+                if baseval is not ABSENT:
+                    return val
+                raise fail(flags, index, entry, 'expected present at ' + at(path),
+                           'present', 'absent')
+
+            # A concrete expectation never matches a missing key - a match leaf
+            # against an absent value must fail, not substring-match "None".
+            if baseval is ABSENT:
+                raise fail(flags, index, entry, 'match failed at ' + at(path),
+                           stringify(val), 'absent')
 
             if not matchval(val, baseval):
-                raise fail(
-                    flags,
-                    index,
-                    entry,
-                    'match failed at ' + ('<root>' if len(path) == 0 else pathify(path)),
-                    stringify(val),
-                    stringify(baseval),
-                )
+                raise fail(flags, index, entry, 'match failed at ' + at(path),
+                           stringify(val), stringify(baseval))
 
         return val
 
     walk(clone(check), apply)
+
+
+def isempty(val: Any) -> bool:
+    """Is this container empty?"""
+    return len(val) == 0
 
 
 def matchval(check: Any, base: Any) -> bool:
@@ -320,6 +354,11 @@ def matchval(check: Any, base: Any) -> bool:
         return base is None or base is ABSENT or base == NULLMARK
 
     if isinstance(want, str):
+        # An empty want is not a wildcard: the empty string is a substring of
+        # everything, so `match:{out:""}` (or `err:""`) would accept any value.
+        if want == '':
+            return base == ''
+
         basestr = stringify(base)
 
         rem = re.match(r'^/(.+)/$', want, re.DOTALL)

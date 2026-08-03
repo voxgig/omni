@@ -367,7 +367,21 @@ function handleerror(flags: Flags, index: number, entry: Json, err: any) {
 function match(flags: Flags, index: number, entry: Json, check: Json, base: Json) {
   const cbase = clone(base)
 
+  const at = (path: Json[]) => (0 === path.length ? '<root>' : pathify(path))
+
   walk(clone(check), (_key, val, _parent, path) => {
+    // An empty container asserts structure that walk would otherwise skip:
+    // it visits no leaves inside {} or [], so `match:{out:{}}` used to pass
+    // any result. Require the base at this path to be an equal empty
+    // container. (The synthetic root wrapper is never empty, so skip it.)
+    if (isnode(val) && 0 < path.length && isempty(val)) {
+      const baseval = getpath(cbase, path)
+      if (!deepequal(val, baseval)) {
+        throw fail(flags, index, entry, 'match failed at ' + at(path), stringify(val), stringify(baseval))
+      }
+      return val
+    }
+
     if (!isnode(val)) {
       const baseval = getpath(cbase, path)
 
@@ -375,30 +389,49 @@ function match(flags: Flags, index: number, entry: Json, check: Json, base: Json
         return val
       }
 
-      // Explicitly absent.
-      if (UNDEFMARK === val && undefined === baseval) {
-        return val
+      // Explicitly absent: satisfied only by a genuinely missing key, never
+      // by a present null (the distinction the sentinels exist to keep).
+      if (UNDEFMARK === val) {
+        if (undefined === baseval) {
+          return val
+        }
+        throw fail(flags, index, entry, 'expected absent at ' + at(path), 'absent', stringify(baseval))
       }
 
-      // Explicitly present.
-      if (EXISTSMARK === val && null != baseval) {
-        return val
+      // Explicitly null: satisfied only by a present null.
+      if (NULLMARK === val) {
+        if (null === baseval || NULLMARK === baseval) {
+          return val
+        }
+        throw fail(flags, index, entry, 'expected null at ' + at(path), 'null', stringify(baseval))
+      }
+
+      // Explicitly present: any present value, including null.
+      if (EXISTSMARK === val) {
+        if (undefined !== baseval) {
+          return val
+        }
+        throw fail(flags, index, entry, 'expected present at ' + at(path), 'present', 'absent')
+      }
+
+      // A concrete expectation never matches a missing key - a match leaf
+      // against an absent value must fail, not substring-match "undefined".
+      if (undefined === baseval) {
+        throw fail(flags, index, entry, 'match failed at ' + at(path), stringify(val), 'absent')
       }
 
       if (!matchval(val, baseval)) {
-        throw fail(
-          flags,
-          index,
-          entry,
-          'match failed at ' + (0 === path.length ? '<root>' : pathify(path)),
-          stringify(val),
-          stringify(baseval),
-        )
+        throw fail(flags, index, entry, 'match failed at ' + at(path), stringify(val), stringify(baseval))
       }
     }
 
     return val
   })
+}
+
+// Is this container empty?
+function isempty(val: Json): boolean {
+  return Array.isArray(val) ? 0 === val.length : 0 === Object.keys(val as object).length
 }
 
 // Match one leaf. Strings are matched as /regex/ or as a case-insensitive
@@ -418,6 +451,12 @@ function matchval(check: Json, base: Json): boolean {
   }
 
   if ('string' === typeof want) {
+    // An empty want is not a wildcard: the empty string is a substring of
+    // everything, so `match:{out:""}` (or `err:""`) would accept any value.
+    if ('' === want) {
+      return '' === base
+    }
+
     const basestr = stringify(base)
 
     const rem = want.match(/^\/(.+)\/$/)

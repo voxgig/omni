@@ -196,6 +196,70 @@ fn badspec(alloc: std.mem.Allocator) !Json {
                     }),
                 }) },
             }) },
+            // A concrete match leaf against a missing key must fail, not
+            // substring-match the text "undefined".
+            .{ "matchabsent", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{
+                    try omni.jmap(alloc, &.{
+                        .{ "in", omni.jnum(6) },
+                        .{ "match", try omni.jmap(alloc, &.{
+                            .{ "out", try omni.jmap(alloc, &.{
+                                .{ "nope", omni.jstr("fine") },
+                            }) },
+                        }) },
+                    }),
+                }) },
+            }) },
+            // __UNDEF__ (absent) must not be satisfied by a present null.
+            .{ "undefonnull", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{
+                    try omni.jmap(alloc, &.{
+                        .{ "in", omni.jnum(0) },
+                        .{ "match", try omni.jmap(alloc, &.{
+                            .{ "out", try omni.jmap(alloc, &.{
+                                .{ "prev", omni.jstr("__UNDEF__") },
+                            }) },
+                        }) },
+                    }),
+                }) },
+            }) },
+            // __NULL__ (present null) must not be satisfied by an absent key.
+            .{ "nullonabsent", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{
+                    try omni.jmap(alloc, &.{
+                        .{ "in", omni.jnum(6) },
+                        .{ "match", try omni.jmap(alloc, &.{
+                            .{ "out", try omni.jmap(alloc, &.{
+                                .{ "nope", omni.jstr("__NULL__") },
+                            }) },
+                        }) },
+                    }),
+                }) },
+            }) },
+            // An empty container asserts an empty container, not "anything".
+            .{ "emptymatch", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{
+                    try omni.jmap(alloc, &.{
+                        .{ "in", omni.jnum(6) },
+                        .{ "match", try omni.jmap(alloc, &.{
+                            .{ "out", try omni.jmap(alloc, &.{}) },
+                        }) },
+                    }),
+                }) },
+            }) },
+            // An empty-string leaf matches only an empty string, not "anything".
+            .{ "emptystr", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{
+                    try omni.jmap(alloc, &.{
+                        .{ "in", omni.jnum(6) },
+                        .{ "match", try omni.jmap(alloc, &.{
+                            .{ "out", try omni.jmap(alloc, &.{
+                                .{ "label", omni.jstr("") },
+                            }) },
+                        }) },
+                    }),
+                }) },
+            }) },
         }) },
     });
 }
@@ -292,6 +356,11 @@ pub fn main(init: std.process.Init) !void {
     try expectfail("detects missing error", "wrongerr", &FIB);
     try expectfail("detects failed match", "wrongmatch", &FIB);
     try expectfail("detects absent key", "missing", &FIBINFO);
+    try expectfail("a concrete match leaf does not match a missing key", "matchabsent", &FIBINFO);
+    try expectfail("__UNDEF__ does not match a present null", "undefonnull", &FIBINFO);
+    try expectfail("__NULL__ does not match an absent key", "nullonabsent", &FIBINFO);
+    try expectfail("an empty match container is not vacuous", "emptymatch", &FIBINFO);
+    try expectfail("an empty-string match leaf is not a wildcard", "emptystr", &FIBINFO);
     try checkmessage();
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ PASSCOUNT, FAILCOUNT });

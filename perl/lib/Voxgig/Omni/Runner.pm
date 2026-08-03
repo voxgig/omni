@@ -315,35 +315,79 @@ sub match {
     my $apply = sub {
         my ( $_key, $val, $_parent, $path ) = @_;
 
-        if ( !isnode($val) ) {
-            my $baseval = getpath( $cbase, $path );
+        my $where = 0 == scalar(@$path) ? '<root>' : pathify($path);
 
-            return $val if deepequal( $val, $baseval );
+        if ( isnode($val) ) {
 
-            # Explicitly absent.
-            return $val if !ref($val) && defined($val) && $val eq UNDEFMARK && isabsent($baseval);
-
-            # Explicitly present.
-            return $val
-              if !ref($val)
-              && defined($val)
-              && $val eq EXISTSMARK
-              && !isabsent($baseval)
-              && defined($baseval);
-
-            if ( !matchval( $val, $baseval ) ) {
-                die fail(
-                    $flags, $index, $entry,
-                    'match failed at ' . ( 0 == scalar(@$path) ? '<root>' : pathify($path) ),
-                    stringify($val), stringify($baseval)
-                );
+            # An empty container asserts structure that walk would otherwise
+            # skip: it visits no leaves inside {} or [], so `match:{out:{}}`
+            # used to pass any result. Require the base at this path to be an
+            # equal empty container. (The synthetic root wrapper is never
+            # empty, so skip it.)
+            if ( 0 < scalar(@$path) && isempty($val) ) {
+                my $baseval = getpath( $cbase, $path );
+                if ( !deepequal( $val, $baseval ) ) {
+                    die fail( $flags, $index, $entry, 'match failed at ' . $where,
+                        stringify($val), stringify($baseval) );
+                }
             }
+
+            return $val;
+        }
+
+        my $baseval = getpath( $cbase, $path );
+
+        return $val if deepequal( $val, $baseval );
+
+        my $isleafstr = !ref($val) && defined($val);
+
+        # Explicitly absent: satisfied only by a genuinely missing key, never
+        # by a present null (the distinction the sentinels exist to keep).
+        if ( $isleafstr && $val eq UNDEFMARK ) {
+            return $val if isabsent($baseval);
+            die fail( $flags, $index, $entry, 'expected absent at ' . $where,
+                'absent', stringify($baseval) );
+        }
+
+        # Explicitly null: satisfied only by a present null.
+        if ( $isleafstr && $val eq NULLMARK ) {
+            return $val
+              if !defined($baseval)
+              || ( !ref($baseval) && $baseval eq NULLMARK );
+            die fail( $flags, $index, $entry, 'expected null at ' . $where,
+                'null', stringify($baseval) );
+        }
+
+        # Explicitly present: any present value, including null.
+        if ( $isleafstr && $val eq EXISTSMARK ) {
+            return $val if !isabsent($baseval);
+            die fail( $flags, $index, $entry, 'expected present at ' . $where,
+                'present', 'absent' );
+        }
+
+        # A concrete expectation never matches a missing key - a match leaf
+        # against an absent value must fail, not substring-match "undefined".
+        if ( isabsent($baseval) ) {
+            die fail( $flags, $index, $entry, 'match failed at ' . $where,
+                stringify($val), 'absent' );
+        }
+
+        if ( !matchval( $val, $baseval ) ) {
+            die fail( $flags, $index, $entry, 'match failed at ' . $where,
+                stringify($val), stringify($baseval) );
         }
 
         return $val;
     };
 
     walk( clone($check), $apply );
+}
+
+# Is this container empty?
+sub isempty {
+    my ($val) = @_;
+    return 0 == scalar(@$val) ? 1 : 0 if islist($val);
+    return 0 == scalar( keys %$val ) ? 1 : 0;
 }
 
 # Match one leaf: /regex/ or case-insensitive substring for strings.
@@ -353,8 +397,6 @@ sub matchval {
     return 1 if deepequal( $check, $base );
 
     my $want = $check;
-    $want = undef
-      if defined($want) && !ref($want) && ( $want eq UNDEFMARK || $want eq NULLMARK );
 
     if ( !defined $want ) {
         return 1 if !defined $base || isabsent($base);
@@ -364,6 +406,10 @@ sub matchval {
     return 1 if ref($want) eq 'CODE';
 
     if ( !ref($want) && !Voxgig::Omni::Util::isnum($want) ) {
+
+        # An empty want would substring-match anything: reject it.
+        return 0 if '' eq $want;
+
         my $basestr = stringify($base);
 
         if ( $want =~ m{^/(.+)/$}s ) {

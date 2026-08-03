@@ -77,15 +77,11 @@ object Runner:
   def matchval(check: Json, base: Json): Boolean =
     if deepequal(check, base) then return true
 
-    val want = check.asstr match
-      case Some(text) if UNDEFMARK == text || NULLMARK == text => Json.Null
-      case _                                                   => check
-
-    if want.isnone then
-      return base.isnone || base.asstr.contains(NULLMARK)
-
-    want.asstr match
+    check.asstr match
       case Some(text) =>
+        // An empty want would substring-match anything.
+        if text.isEmpty then return false
+
         val basestr = stringify(base)
 
         if 2 < text.length && text.startsWith("/") && text.endsWith("/") then
@@ -93,7 +89,7 @@ object Runner:
           catch case NonFatal(_) => false
         else basestr.toLowerCase.contains(text.toLowerCase)
 
-      case None => deepequal(want, base)
+      case None => deepequal(check, base)
 
   /** Convert NULLMARK sentinels back into real nulls. */
   def nullmodifier(value: Json): Json = value.asstr match
@@ -289,26 +285,79 @@ class RunPack(
       base: Json,
       path: List[String] = List(),
   ): Unit =
+    val where = if path.isEmpty then "<root>" else pathify(path)
+
     check match
       case Json.JList(entries) =>
+        // An empty container asserts structure that the walk would otherwise
+        // skip: it visits no leaves inside {} or [], so `match:{out:{}}`
+        // used to pass any result. Require the base at this path to be an
+        // equal empty container. (The synthetic root wrapper is never empty,
+        // so skip it.)
+        if entries.isEmpty && path.nonEmpty then
+          val emptybase = getpath(base, path)
+          if !deepequal(check, emptybase) then
+            throw fail(
+              label, index, entry, s"match failed at $where",
+              Some(stringify(check)), Some(stringify(emptybase)),
+            )
+
         for (subcheck, at) <- entries.zipWithIndex do
           matchcheck(label, index, entry, subcheck, base, path :+ at.toString)
 
       case Json.JMap(entries) =>
+        if entries.isEmpty && path.nonEmpty then
+          val emptybase = getpath(base, path)
+          if !deepequal(check, emptybase) then
+            throw fail(
+              label, index, entry, s"match failed at $where",
+              Some(stringify(check)), Some(stringify(emptybase)),
+            )
+
         for (key, subcheck) <- entries do
           matchcheck(label, index, entry, subcheck, base, path :+ key)
 
       case leaf =>
         val baseval = getpath(base, path)
 
-        val ok =
-          deepequal(leaf, baseval)
-            || (leaf.asstr.contains(UNDEFMARK) && baseval.isabsent)
-            || (leaf.asstr.contains(EXISTSMARK) && !baseval.isnone)
-            || Runner.matchval(leaf, baseval)
+        if deepequal(leaf, baseval) then ()
 
-        if !ok then
-          val where = if path.isEmpty then "<root>" else pathify(path)
+        // Explicitly absent: satisfied only by a genuinely missing key,
+        // never by a present null (the distinction the sentinels exist to
+        // keep).
+        else if leaf.asstr.contains(UNDEFMARK) then
+          if !baseval.isabsent then
+            throw fail(
+              label, index, entry, s"expected absent at $where",
+              Some("absent"), Some(stringify(baseval)),
+            )
+
+        // Explicitly null: satisfied only by a present null.
+        else if leaf.asstr.contains(NULLMARK) then
+          if !(baseval.isnull || baseval.asstr.contains(NULLMARK)) then
+            throw fail(
+              label, index, entry, s"expected null at $where",
+              Some("null"), Some(stringify(baseval)),
+            )
+
+        // Explicitly present: any present value, including null.
+        else if leaf.asstr.contains(EXISTSMARK) then
+          if baseval.isabsent then
+            throw fail(
+              label, index, entry, s"expected present at $where",
+              Some("present"), Some("absent"),
+            )
+
+        // A concrete expectation never matches a missing key - a match leaf
+        // against an absent value must fail, not substring-match
+        // "undefined".
+        else if baseval.isabsent then
+          throw fail(
+            label, index, entry, s"match failed at $where",
+            Some(stringify(leaf)), Some("absent"),
+          )
+
+        else if !Runner.matchval(leaf, baseval) then
           throw fail(
             label, index, entry, s"match failed at $where",
             Some(stringify(leaf)), Some(stringify(baseval)),

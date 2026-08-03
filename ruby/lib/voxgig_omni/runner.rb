@@ -229,21 +229,63 @@ module VoxgigOmni
     def match(flags, index, entry, check, base)
       cbase = U.clone(base)
 
+      at = ->(path) { path.empty? ? '<root>' : U.pathify(path) }
+
       apply = lambda do |_key, val, _parent, path|
+        # An empty container asserts structure that walk would otherwise skip:
+        # it visits no leaves inside {} or [], so `match:{out:{}}` used to pass
+        # any result. Require the base at this path to be an equal empty
+        # container. (The synthetic root wrapper is never empty, so skip it.)
+        if U.isnode(val) && !path.empty? && isempty(val)
+          baseval = U.getpath(cbase, path)
+          unless U.deepequal(val, baseval)
+            raise fail(flags, index, entry, 'match failed at ' + at.call(path),
+                       U.stringify(val), U.stringify(baseval))
+          end
+          next val
+        end
+
         unless U.isnode(val)
           baseval = U.getpath(cbase, path)
 
           next val if baseval.equal?(val)
 
-          # Explicitly absent.
-          next val if val == UNDEFMARK && baseval.equal?(ABSENT)
+          # Explicitly absent: satisfied only by a genuinely missing key,
+          # never by a present null (the distinction the sentinels exist
+          # to keep).
+          if val == UNDEFMARK
+            next val if baseval.equal?(ABSENT)
 
-          # Explicitly present.
-          next val if val == EXISTSMARK && !baseval.equal?(ABSENT) && !baseval.nil?
+            raise fail(flags, index, entry, 'expected absent at ' + at.call(path),
+                       'absent', U.stringify(baseval))
+          end
+
+          # Explicitly null: satisfied only by a present null.
+          if val == NULLMARK
+            next val if baseval.nil? || baseval == NULLMARK
+
+            raise fail(flags, index, entry, 'expected null at ' + at.call(path),
+                       'null', U.stringify(baseval))
+          end
+
+          # Explicitly present: any present value, including null.
+          if val == EXISTSMARK
+            next val unless baseval.equal?(ABSENT)
+
+            raise fail(flags, index, entry, 'expected present at ' + at.call(path),
+                       'present', 'absent')
+          end
+
+          # A concrete expectation never matches a missing key - a match leaf
+          # against an absent value must fail, not substring-match the
+          # stringified absent value.
+          if baseval.equal?(ABSENT)
+            raise fail(flags, index, entry, 'match failed at ' + at.call(path),
+                       U.stringify(val), 'absent')
+          end
 
           unless matchval(val, baseval)
-            raise fail(flags, index, entry,
-                       'match failed at ' + (path.empty? ? '<root>' : U.pathify(path)),
+            raise fail(flags, index, entry, 'match failed at ' + at.call(path),
                        U.stringify(val), U.stringify(baseval))
           end
         end
@@ -252,6 +294,11 @@ module VoxgigOmni
       end
 
       U.walk(U.clone(check), apply)
+    end
+
+    # Is this container empty?
+    def isempty(val)
+      val.empty?
     end
 
     # Match one leaf: /regex/ or case-insensitive substring for strings.
@@ -264,6 +311,10 @@ module VoxgigOmni
       return base.nil? || base.equal?(ABSENT) || base == NULLMARK if want.nil?
 
       if want.is_a?(String)
+        # An empty want is not a wildcard: the empty string is a substring of
+        # everything, so `match:{out:""}` (or `err:""`) would accept any value.
+        return base == '' if want == ''
+
         basestr = U.stringify(base)
 
         rem = want.match(%r{^/(.+)/$}m)

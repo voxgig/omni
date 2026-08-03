@@ -162,13 +162,21 @@ impl From<String> for Json {
     }
 }
 
+/// Maximum nesting depth the parser will follow. Omni specs are trusted
+/// input, so this is crash-safety, not a security boundary: past this
+/// depth the recursive parser would overflow the stack and abort the
+/// process, so it returns an error instead. 1024 is far beyond any real
+/// spec, and low enough that reaching the limit itself fits comfortably
+/// in a default (2MiB) test-thread stack even in debug builds.
+const MAX_DEPTH: usize = 1024;
+
 /// Parse JSON text into a [`Json`] value.
 pub fn parse(text: &str) -> Result<Json, String> {
     let chars: Vec<char> = text.chars().collect();
     let mut pos = 0usize;
 
     skipws(&chars, &mut pos);
-    let val = parseval(&chars, &mut pos)?;
+    let val = parseval(&chars, &mut pos, 0)?;
     skipws(&chars, &mut pos);
 
     if pos < chars.len() {
@@ -189,14 +197,18 @@ fn skipws(chars: &[char], pos: &mut usize) {
     }
 }
 
-fn parseval(chars: &[char], pos: &mut usize) -> Result<Json, String> {
+fn parseval(chars: &[char], pos: &mut usize, depth: usize) -> Result<Json, String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("omni: JSON nested too deeply at {}", pos));
+    }
+
     if *pos >= chars.len() {
         return Err("omni: unexpected end of JSON".to_string());
     }
 
     match chars[*pos] {
-        '{' => parsemap(chars, pos),
-        '[' => parselist(chars, pos),
+        '{' => parsemap(chars, pos, depth),
+        '[' => parselist(chars, pos, depth),
         '"' => Ok(Json::Str(parsestr(chars, pos)?)),
         't' => parseword(chars, pos, "true", Json::Bool(true)),
         'f' => parseword(chars, pos, "false", Json::Bool(false)),
@@ -215,7 +227,7 @@ fn parseword(chars: &[char], pos: &mut usize, word: &str, val: Json) -> Result<J
     Ok(val)
 }
 
-fn parsemap(chars: &[char], pos: &mut usize) -> Result<Json, String> {
+fn parsemap(chars: &[char], pos: &mut usize, depth: usize) -> Result<Json, String> {
     let mut out = BTreeMap::new();
     *pos += 1; // {
 
@@ -236,7 +248,7 @@ fn parsemap(chars: &[char], pos: &mut usize) -> Result<Json, String> {
         *pos += 1;
 
         skipws(chars, pos);
-        let val = parseval(chars, pos)?;
+        let val = parseval(chars, pos, depth + 1)?;
         out.insert(key, val);
 
         skipws(chars, pos);
@@ -255,7 +267,7 @@ fn parsemap(chars: &[char], pos: &mut usize) -> Result<Json, String> {
     }
 }
 
-fn parselist(chars: &[char], pos: &mut usize) -> Result<Json, String> {
+fn parselist(chars: &[char], pos: &mut usize, depth: usize) -> Result<Json, String> {
     let mut out = Vec::new();
     *pos += 1; // [
 
@@ -267,7 +279,7 @@ fn parselist(chars: &[char], pos: &mut usize) -> Result<Json, String> {
 
     loop {
         skipws(chars, pos);
-        out.push(parseval(chars, pos)?);
+        out.push(parseval(chars, pos, depth + 1)?);
 
         skipws(chars, pos);
         if *pos >= chars.len() {
@@ -369,4 +381,29 @@ fn parsenum(chars: &[char], pos: &mut usize) -> Result<Json, String> {
     text.parse::<f64>()
         .map(Json::Num)
         .map_err(|_| format!("omni: bad JSON number [{}] at {}", text, start))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Deeply nested input must produce a parse error, not overflow the
+    // stack and abort the process.
+    #[test]
+    fn parse_rejects_deep_nesting() {
+        let deep = "[".repeat(MAX_DEPTH * 4);
+        let err = parse(&deep).expect_err("deep nesting must be rejected");
+        assert!(err.contains("nested too deeply"), "unexpected error: {}", err);
+
+        let deepmap = "{\"a\":".repeat(MAX_DEPTH * 4);
+        let err = parse(&deepmap).expect_err("deep nesting must be rejected");
+        assert!(err.contains("nested too deeply"), "unexpected error: {}", err);
+    }
+
+    // Reasonable nesting still parses.
+    #[test]
+    fn parse_allows_reasonable_nesting() {
+        let text = format!("{}1{}", "[".repeat(64), "]".repeat(64));
+        assert!(parse(&text).is_ok());
+    }
 }

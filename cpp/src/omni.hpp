@@ -152,6 +152,12 @@ inline bool matchval(const Json& check, const Json& base) {
     std::string basestr = stringify(base);
     const std::string& text = want.strval;
 
+    // An empty want is a substring of everything, so it would match any
+    // value. Require the base to be the empty string too.
+    if (text.empty()) {
+      return base.isstr() && base.strval.empty();
+    }
+
     if (2 < text.size() && '/' == text.front() && '/' == text.back()) {
       try {
         std::regex pattern(text.substr(1, text.size() - 2), std::regex::ECMAScript);
@@ -175,6 +181,21 @@ inline bool matchval(const Json& check, const Json& base) {
 // Check that every leaf of `check` is present, and matches, in `base`.
 inline void matchcheck(const Flags& flags, size_t index, const Json& entry, const Json& check,
                        const Json& base, std::vector<std::string> path = {}) {
+  // An empty container asserts structure that the traversal would
+  // otherwise skip: it has no leaves, so `match:{out:{}}` used to pass
+  // any result. Require the base at this path to be an equal empty
+  // container. (The synthetic root wrapper is never empty, so skip it.)
+  if (!path.empty() && ((check.islist() && check.listval.empty()) ||
+                        (check.ismap() && check.mapval.empty()))) {
+    Json emptybase = getpath(base, path);
+    if (!deepequal(check, emptybase)) {
+      std::string expected = stringify(check);
+      std::string actual = stringify(emptybase);
+      throw fail(flags, index, entry, "match failed at " + pathify(path), &expected, &actual);
+    }
+    return;
+  }
+
   if (check.islist()) {
     for (size_t at = 0; at < check.listval.size(); at++) {
       std::vector<std::string> childpath = path;
@@ -194,26 +215,55 @@ inline void matchcheck(const Flags& flags, size_t index, const Json& entry, cons
   }
 
   Json baseval = getpath(base, path);
+  std::string where = path.empty() ? "<root>" : pathify(path);
 
   if (deepequal(check, baseval)) {
     return;
   }
 
-  // Explicitly absent.
-  if (check.isstr() && UNDEFMARK == check.strval && baseval.isabsent()) {
-    return;
+  // Explicitly absent: satisfied only by a genuinely missing key, never
+  // by a present null (the distinction the sentinels exist to keep).
+  if (check.isstr() && UNDEFMARK == check.strval) {
+    if (baseval.isabsent()) {
+      return;
+    }
+    std::string expected = "absent";
+    std::string actual = stringify(baseval);
+    throw fail(flags, index, entry, "expected absent at " + where, &expected, &actual);
   }
 
-  // Explicitly present.
-  if (check.isstr() && EXISTSMARK == check.strval && !baseval.isnone()) {
-    return;
+  // Explicitly null: satisfied only by a present null.
+  if (check.isstr() && NULLMARK == check.strval) {
+    if (baseval.isnull() || (baseval.isstr() && NULLMARK == baseval.strval)) {
+      return;
+    }
+    std::string expected = "null";
+    std::string actual = stringify(baseval);
+    throw fail(flags, index, entry, "expected null at " + where, &expected, &actual);
+  }
+
+  // Explicitly present: any present value, including null.
+  if (check.isstr() && EXISTSMARK == check.strval) {
+    if (!baseval.isabsent()) {
+      return;
+    }
+    std::string expected = "present";
+    std::string actual = "absent";
+    throw fail(flags, index, entry, "expected present at " + where, &expected, &actual);
+  }
+
+  // A concrete expectation never matches a missing key - a match leaf
+  // against an absent value must fail, not substring-match "undefined".
+  if (baseval.isabsent()) {
+    std::string expected = stringify(check);
+    std::string actual = "absent";
+    throw fail(flags, index, entry, "match failed at " + where, &expected, &actual);
   }
 
   if (matchval(check, baseval)) {
     return;
   }
 
-  std::string where = path.empty() ? "<root>" : pathify(path);
   std::string expected = stringify(check);
   std::string actual = stringify(baseval);
 

@@ -90,7 +90,18 @@ BADSPEC = {
     'wrongout' => { 'set' => [{ 'in' => 5, 'out' => 5 }, { 'in' => 6, 'out' => 999 }] },
     'wrongerr' => { 'set' => [{ 'in' => 1, 'err' => 'never happens' }] },
     'wrongmatch' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => 999 } }] },
-    'missing' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'nope' => '__EXISTS__' } } }] }
+    'missing' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'nope' => '__EXISTS__' } } }] },
+    # A concrete match leaf against a missing key must fail, not
+    # substring-match the stringified absent value.
+    'matchabsent' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'nope' => 'fine' } } }] },
+    # __UNDEF__ (absent) must not be satisfied by a present null.
+    'undefonnull' => { 'set' => [{ 'in' => 0, 'match' => { 'out' => { 'prev' => '__UNDEF__' } } }] },
+    # __NULL__ (present null) must not be satisfied by an absent key.
+    'nullonabsent' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'nope' => '__NULL__' } } }] },
+    # An empty container asserts an empty container, not "anything".
+    'emptymatch' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => {} } }] },
+    # An empty-string match leaf is not a wildcard.
+    'emptystr' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'label' => '' } } }] }
   }
 }.freeze
 
@@ -117,6 +128,26 @@ class TestRunner < Minitest::Test
 
   def test_detects_absent_key
     expectfail('missing', FIBINFO)
+  end
+
+  def test_concrete_match_leaf_does_not_match_missing_key
+    expectfail('matchabsent', FIBINFO)
+  end
+
+  def test_undef_does_not_match_present_null
+    expectfail('undefonnull', FIBINFO)
+  end
+
+  def test_null_does_not_match_absent_key
+    expectfail('nullonabsent', FIBINFO)
+  end
+
+  def test_empty_match_container_is_not_vacuous
+    expectfail('emptymatch', FIBINFO)
+  end
+
+  def test_empty_string_match_leaf_is_not_a_wildcard
+    expectfail('emptystr', FIBINFO)
   end
 
   def test_reports_entry_index_and_id

@@ -510,8 +510,25 @@ namespace Voxgig.Omni
         private static void MatchWalk(Flags flags, int index, IDictionary<string, object> entry,
                                       object check, object base_, List<string> path)
         {
+            string where = 0 == path.Count ? "<root>" : Util.PathIfy(path);
+
             if (check is IList<object> list)
             {
+                // An empty container asserts structure that the walk would
+                // otherwise skip: it visits no leaves inside {} or [], so
+                // `match:{out:{}}` used to pass any result. Require the base
+                // at this path to be an equal empty container. (The synthetic
+                // root wrapper is never empty, so skip it.)
+                if (0 == list.Count && 0 < path.Count)
+                {
+                    object emptybase = Util.GetPath(base_, path);
+                    if (!Util.DeepEqual(check, emptybase))
+                    {
+                        throw Fail(flags, index, entry, "match failed at " + where,
+                                   Util.Stringify(check), Util.Stringify(emptybase));
+                    }
+                }
+
                 for (int at = 0; at < list.Count; at++)
                 {
                     var childpath = new List<string>(path) { at.ToString(CultureInfo.InvariantCulture) };
@@ -522,6 +539,16 @@ namespace Voxgig.Omni
 
             if (check is IDictionary<string, object> map)
             {
+                if (0 == map.Count && 0 < path.Count)
+                {
+                    object emptybase = Util.GetPath(base_, path);
+                    if (!Util.DeepEqual(check, emptybase))
+                    {
+                        throw Fail(flags, index, entry, "match failed at " + where,
+                                   Util.Stringify(check), Util.Stringify(emptybase));
+                    }
+                }
+
                 foreach (var field in map)
                 {
                     var childpath = new List<string>(path) { field.Key };
@@ -537,24 +564,54 @@ namespace Voxgig.Omni
                 return;
             }
 
-            // Explicitly absent.
-            if (Util.UNDEFMARK.Equals(check) && Util.IsAbsent(baseval))
+            // Explicitly absent: satisfied only by a genuinely missing key,
+            // never by a present null (the distinction the sentinels exist
+            // to keep).
+            if (Util.UNDEFMARK.Equals(check))
             {
-                return;
+                if (Util.IsAbsent(baseval))
+                {
+                    return;
+                }
+                throw Fail(flags, index, entry, "expected absent at " + where,
+                           "absent", Util.Stringify(baseval));
             }
 
-            // Explicitly present.
-            if (Util.EXISTSMARK.Equals(check) && !Util.IsAbsent(baseval) && null != baseval)
+            // Explicitly null: satisfied only by a present null.
+            if (Util.NULLMARK.Equals(check))
             {
-                return;
+                if (null == baseval || Util.NULLMARK.Equals(baseval))
+                {
+                    return;
+                }
+                throw Fail(flags, index, entry, "expected null at " + where,
+                           "null", Util.Stringify(baseval));
+            }
+
+            // Explicitly present: any present value, including null.
+            if (Util.EXISTSMARK.Equals(check))
+            {
+                if (!Util.IsAbsent(baseval))
+                {
+                    return;
+                }
+                throw Fail(flags, index, entry, "expected present at " + where,
+                           "present", "absent");
+            }
+
+            // A concrete expectation never matches a missing key - a match
+            // leaf against an absent value must fail, not substring-match
+            // "undefined".
+            if (Util.IsAbsent(baseval))
+            {
+                throw Fail(flags, index, entry, "match failed at " + where,
+                           Util.Stringify(check), "absent");
             }
 
             if (MatchVal(check, baseval))
             {
                 return;
             }
-
-            string where = 0 == path.Count ? "<root>" : Util.PathIfy(path);
 
             throw Fail(flags, index, entry, "match failed at " + where,
                        Util.Stringify(check), Util.Stringify(baseval));
@@ -568,19 +625,14 @@ namespace Voxgig.Omni
                 return true;
             }
 
-            object want = check;
-            if (Util.UNDEFMARK.Equals(want) || Util.NULLMARK.Equals(want))
+            if (check is string text)
             {
-                want = null;
-            }
+                // An empty want would substring-match anything.
+                if (0 == text.Length)
+                {
+                    return false;
+                }
 
-            if (null == want)
-            {
-                return null == base_ || Util.IsAbsent(base_) || Util.NULLMARK.Equals(base_);
-            }
-
-            if (want is string text)
-            {
                 string basestr = Util.Stringify(base_);
 
                 if (2 < text.Length && text.StartsWith("/", StringComparison.Ordinal) &&
@@ -599,7 +651,7 @@ namespace Voxgig.Omni
                 return basestr.ToLowerInvariant().Contains(text.ToLowerInvariant());
             }
 
-            return Util.DeepEqual(want, base_);
+            return Util.DeepEqual(check, base_);
         }
 
         /// <summary>Convert NULLMARK sentinels back into real nulls.</summary>

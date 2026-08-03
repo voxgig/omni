@@ -158,6 +158,86 @@ fn badspec() -> Json {
                     ])]),
                 )]),
             ),
+            // A concrete match leaf against a missing key must fail, not
+            // substring-match the text "undefined".
+            (
+                "matchabsent",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(6.0)),
+                        (
+                            "match",
+                            Json::map(vec![(
+                                "out",
+                                Json::map(vec![("nope", Json::str("fine"))]),
+                            )]),
+                        ),
+                    ])]),
+                )]),
+            ),
+            // __UNDEF__ (absent) must not be satisfied by a present null.
+            (
+                "undefonnull",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(0.0)),
+                        (
+                            "match",
+                            Json::map(vec![(
+                                "out",
+                                Json::map(vec![("prev", Json::str("__UNDEF__"))]),
+                            )]),
+                        ),
+                    ])]),
+                )]),
+            ),
+            // __NULL__ (present null) must not be satisfied by an absent key.
+            (
+                "nullonabsent",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(6.0)),
+                        (
+                            "match",
+                            Json::map(vec![(
+                                "out",
+                                Json::map(vec![("nope", Json::str("__NULL__"))]),
+                            )]),
+                        ),
+                    ])]),
+                )]),
+            ),
+            // An empty container asserts an empty container, not "anything".
+            (
+                "emptymatch",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(6.0)),
+                        ("match", Json::map(vec![("out", Json::map(vec![]))])),
+                    ])]),
+                )]),
+            ),
+            // An empty-string want is not a wildcard substring match.
+            (
+                "emptystr",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(6.0)),
+                        (
+                            "match",
+                            Json::map(vec![(
+                                "out",
+                                Json::map(vec![("label", Json::str(""))]),
+                            )]),
+                        ),
+                    ])]),
+                )]),
+            ),
         ]),
     )])
 }
@@ -180,6 +260,17 @@ fn runner_detects_failures() {
     expectfail("wrongerr", &fibsub);
     expectfail("wrongmatch", &fibsub);
     expectfail("missing", &infosub);
+
+    // A concrete match leaf does not match a missing key.
+    expectfail("matchabsent", &infosub);
+    // __UNDEF__ does not match a present null.
+    expectfail("undefonnull", &infosub);
+    // __NULL__ does not match an absent key.
+    expectfail("nullonabsent", &infosub);
+    // An empty match container is not vacuous.
+    expectfail("emptymatch", &infosub);
+    // An empty-string match leaf is not a wildcard.
+    expectfail("emptystr", &infosub);
 }
 
 #[test]

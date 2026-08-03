@@ -108,6 +108,70 @@ let badspec =
                           ];
                       ] );
                 ] );
+            (* A concrete match leaf against a missing key must fail, not
+               substring-match the text "undefined". *)
+            ( "matchabsent",
+              JMap
+                [
+                  ( "set",
+                    JList
+                      [
+                        JMap
+                          [
+                            ("in", Num 6.0);
+                            ("match", JMap [ ("out", JMap [ ("nope", Str "fine") ]) ]);
+                          ];
+                      ] );
+                ] );
+            (* __UNDEF__ (absent) must not be satisfied by a present null. *)
+            ( "undefonnull",
+              JMap
+                [
+                  ( "set",
+                    JList
+                      [
+                        JMap
+                          [
+                            ("in", Num 0.0);
+                            ("match", JMap [ ("out", JMap [ ("prev", Str "__UNDEF__") ]) ]);
+                          ];
+                      ] );
+                ] );
+            (* __NULL__ (present null) must not be satisfied by an absent key. *)
+            ( "nullonabsent",
+              JMap
+                [
+                  ( "set",
+                    JList
+                      [
+                        JMap
+                          [
+                            ("in", Num 6.0);
+                            ("match", JMap [ ("out", JMap [ ("nope", Str "__NULL__") ]) ]);
+                          ];
+                      ] );
+                ] );
+            (* An empty container asserts an empty container, not "anything". *)
+            ( "emptymatch",
+              JMap
+                [
+                  ( "set",
+                    JList [ JMap [ ("in", Num 6.0); ("match", JMap [ ("out", JMap []) ]) ] ] );
+                ] );
+            (* An empty-string match leaf is not a wildcard. *)
+            ( "emptystr",
+              JMap
+                [
+                  ( "set",
+                    JList
+                      [
+                        JMap
+                          [
+                            ("in", Num 6.0);
+                            ("match", JMap [ ("out", JMap [ ("label", Str "") ]) ]);
+                          ];
+                      ] );
+                ] );
           ] );
     ]
 
@@ -175,6 +239,13 @@ let () =
   testcase "detects missing error" (fun () -> expectfail "wrongerr" fibsub);
   testcase "detects failed match" (fun () -> expectfail "wrongmatch" fibsub);
   testcase "detects absent key" (fun () -> expectfail "missing" fibinfosub);
+  testcase "a concrete match leaf does not match a missing key" (fun () ->
+      expectfail "matchabsent" fibinfosub);
+  testcase "__UNDEF__ does not match a present null" (fun () -> expectfail "undefonnull" fibinfosub);
+  testcase "__NULL__ does not match an absent key" (fun () -> expectfail "nullonabsent" fibinfosub);
+  testcase "an empty match container is not vacuous" (fun () -> expectfail "emptymatch" fibinfosub);
+  testcase "an empty-string match leaf is not a wildcard" (fun () ->
+      expectfail "emptystr" fibinfosub);
   testcase "reports entry index and id" checkmessage;
 
   Printf.printf "\n%d passed, %d failed\n" !passcount !failcount;

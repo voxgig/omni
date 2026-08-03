@@ -144,6 +144,37 @@ func TestRunner(t *testing.T) {
 					"out": map[string]any{"nope": "__EXISTS__"},
 				}},
 			}},
+			// A concrete match leaf against a missing key must fail, not
+			// substring-match the text "undefined".
+			"matchabsent": map[string]any{"set": []any{
+				map[string]any{"in": 6.0, "match": map[string]any{
+					"out": map[string]any{"nope": "fine"},
+				}},
+			}},
+			// __UNDEF__ (absent) must not be satisfied by a present null.
+			"undefonnull": map[string]any{"set": []any{
+				map[string]any{"in": 0.0, "match": map[string]any{
+					"out": map[string]any{"prev": "__UNDEF__"},
+				}},
+			}},
+			// __NULL__ (present null) must not be satisfied by an absent key.
+			"nullonabsent": map[string]any{"set": []any{
+				map[string]any{"in": 6.0, "match": map[string]any{
+					"out": map[string]any{"nope": "__NULL__"},
+				}},
+			}},
+			// An empty container asserts an empty container, not "anything".
+			"emptymatch": map[string]any{"set": []any{
+				map[string]any{"in": 6.0, "match": map[string]any{
+					"out": map[string]any{},
+				}},
+			}},
+			// An empty-string want is not a wildcard substring match.
+			"emptystr": map[string]any{"set": []any{
+				map[string]any{"in": 6.0, "match": map[string]any{
+					"out": map[string]any{"label": ""},
+				}},
+			}},
 		},
 	}
 
@@ -172,6 +203,17 @@ func TestRunner(t *testing.T) {
 	t.Run("detects missing error", func(t *testing.T) { expectfail(t, "wrongerr", FIB) })
 	t.Run("detects failed match", func(t *testing.T) { expectfail(t, "wrongmatch", FIB) })
 	t.Run("detects absent key", func(t *testing.T) { expectfail(t, "missing", FIBINFO) })
+
+	t.Run("a concrete match leaf does not match a missing key",
+		func(t *testing.T) { expectfail(t, "matchabsent", FIBINFO) })
+	t.Run("__UNDEF__ does not match a present null",
+		func(t *testing.T) { expectfail(t, "undefonnull", FIBINFO) })
+	t.Run("__NULL__ does not match an absent key",
+		func(t *testing.T) { expectfail(t, "nullonabsent", FIBINFO) })
+	t.Run("an empty match container is not vacuous",
+		func(t *testing.T) { expectfail(t, "emptymatch", FIBINFO) })
+	t.Run("an empty-string match leaf is not a wildcard",
+		func(t *testing.T) { expectfail(t, "emptystr", FIBINFO) })
 
 	t.Run("reports entry index and id", func(t *testing.T) {
 		runner, err := omni.MakeRunner(map[string]any{

@@ -480,7 +480,28 @@ func Match(flags Flags, index int, entry map[string]any, check any, base any) er
 	var failure error
 
 	Walk(Clone(check), func(_key any, val any, _parent any, path []any) any {
-		if nil != failure || IsNode(val) {
+		if nil != failure {
+			return val
+		}
+
+		where := "<root>"
+		if 0 < len(path) {
+			where = PathIfy(path)
+		}
+
+		if IsNode(val) {
+			// An empty container asserts structure that Walk would otherwise
+			// skip: it visits no leaves inside {} or [], so `match:{out:{}}`
+			// used to pass any result. Require the base at this path to be an
+			// equal empty container. (The synthetic root wrapper is never
+			// empty, so skip it.)
+			if 0 < len(path) && isempty(val) {
+				baseval := GetPath(cbase, path)
+				if !DeepEqual(val, baseval) {
+					failure = fail(flags, index, entry, "match failed at "+where,
+						strptr(Stringify(val)), strptr(Stringify(baseval)))
+				}
+			}
 			return val
 		}
 
@@ -490,21 +511,46 @@ func Match(flags Flags, index int, entry map[string]any, check any, base any) er
 			return val
 		}
 
-		// Explicitly absent.
-		if UNDEFMARK == val && IsAbsent(baseval) {
+		// Explicitly absent: satisfied only by a genuinely missing key, never
+		// by a present null (the distinction the sentinels exist to keep).
+		if UNDEFMARK == val {
+			if IsAbsent(baseval) {
+				return val
+			}
+			failure = fail(flags, index, entry, "expected absent at "+where,
+				strptr("absent"), strptr(Stringify(baseval)))
 			return val
 		}
 
-		// Explicitly present.
-		if EXISTSMARK == val && !IsAbsent(baseval) && nil != baseval {
+		// Explicitly null: satisfied only by a present null.
+		if NULLMARK == val {
+			if nil == baseval || NULLMARK == baseval {
+				return val
+			}
+			failure = fail(flags, index, entry, "expected null at "+where,
+				strptr("null"), strptr(Stringify(baseval)))
+			return val
+		}
+
+		// Explicitly present: any present value, including null.
+		if EXISTSMARK == val {
+			if !IsAbsent(baseval) {
+				return val
+			}
+			failure = fail(flags, index, entry, "expected present at "+where,
+				strptr("present"), strptr("absent"))
+			return val
+		}
+
+		// A concrete expectation never matches a missing key - a match leaf
+		// against an absent value must fail, not substring-match "undefined".
+		if IsAbsent(baseval) {
+			failure = fail(flags, index, entry, "match failed at "+where,
+				strptr(Stringify(val)), strptr("absent"))
 			return val
 		}
 
 		if !MatchVal(val, baseval) {
-			where := "<root>"
-			if 0 < len(path) {
-				where = PathIfy(path)
-			}
 			failure = fail(flags, index, entry, "match failed at "+where,
 				strptr(Stringify(val)), strptr(Stringify(baseval)))
 		}
@@ -515,6 +561,17 @@ func Match(flags Flags, index int, entry map[string]any, check any, base any) er
 	return failure
 }
 
+// Is this container empty?
+func isempty(val any) bool {
+	if list, is := val.([]any); is {
+		return 0 == len(list)
+	}
+	if amap, is := val.(map[string]any); is {
+		return 0 == len(amap)
+	}
+	return false
+}
+
 // MatchVal matches one leaf: /regex/ or case-insensitive substring for
 // strings.
 func MatchVal(check any, base any) bool {
@@ -523,15 +580,17 @@ func MatchVal(check any, base any) bool {
 	}
 
 	want := check
-	if UNDEFMARK == want || NULLMARK == want {
-		want = nil
-	}
 
 	if nil == want {
 		return nil == base || IsAbsent(base) || NULLMARK == base
 	}
 
 	if text, is := want.(string); is {
+		// An empty want would substring-match anything: reject it.
+		if "" == text {
+			return false
+		}
+
 		basestr := Stringify(base)
 
 		if strings.HasPrefix(text, "/") && strings.HasSuffix(text, "/") && 2 < len(text) {

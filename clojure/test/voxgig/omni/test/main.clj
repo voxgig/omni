@@ -70,7 +70,18 @@
    {"wrongout" {"set" [{"in" 5.0 "out" 5.0} {"in" 6.0 "out" 999.0}]}
     "wrongerr" {"set" [{"in" 1.0 "err" "never happens"}]}
     "wrongmatch" {"set" [{"in" 6.0 "match" {"out" 999.0}}]}
-    "missing" {"set" [{"in" 6.0 "match" {"out" {"nope" "__EXISTS__"}}}]}}})
+    "missing" {"set" [{"in" 6.0 "match" {"out" {"nope" "__EXISTS__"}}}]}
+    ;; A concrete match leaf against a missing key must fail, not
+    ;; substring-match the text "undefined".
+    "matchabsent" {"set" [{"in" 6.0 "match" {"out" {"nope" "fine"}}}]}
+    ;; __UNDEF__ (absent) must not be satisfied by a present null.
+    "undefonnull" {"set" [{"in" 0.0 "match" {"out" {"prev" "__UNDEF__"}}}]}
+    ;; __NULL__ (present null) must not be satisfied by an absent key.
+    "nullonabsent" {"set" [{"in" 6.0 "match" {"out" {"nope" "__NULL__"}}}]}
+    ;; An empty container asserts an empty container, not "anything".
+    "emptymatch" {"set" [{"in" 6.0 "match" {"out" {}}}]}
+    ;; An empty-string want is a substring of everything, not a wildcard.
+    "emptystr" {"set" [{"in" 6.0 "match" {"out" {"label" ""}}}]}}})
 
 (defn expectfail [setname subject]
   (let [bad ((runner/make-runner BADSPEC) "fib")]
@@ -117,6 +128,16 @@
     (testcase "detects missing error" #(expectfail "wrongerr" FIB))
     (testcase "detects failed match" #(expectfail "wrongmatch" FIB))
     (testcase "detects absent key" #(expectfail "missing" FIBINFO))
+    (testcase "a concrete match leaf does not match a missing key"
+              #(expectfail "matchabsent" FIBINFO))
+    (testcase "__UNDEF__ does not match a present null"
+              #(expectfail "undefonnull" FIBINFO))
+    (testcase "__NULL__ does not match an absent key"
+              #(expectfail "nullonabsent" FIBINFO))
+    (testcase "an empty match container is not vacuous"
+              #(expectfail "emptymatch" FIBINFO))
+    (testcase "an empty-string match leaf is not a wildcard"
+              #(expectfail "emptystr" FIBINFO))
     (testcase "reports entry index and id" checkmessage)
 
     (println (str "\n" @PASSCOUNT " passed, " @FAILCOUNT " failed"))

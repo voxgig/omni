@@ -167,7 +167,20 @@ let parse text =
         | 't' -> Buffer.add_char buf '\t'
         | 'u' ->
           if !pos + 4 > len then fail "bad JSON unicode escape";
-          let code = int_of_string ("0x" ^ String.sub text !pos 4) in
+          (* Exactly four hex digits: int_of_string would accept '_'
+             separators and raise Failure on other junk. *)
+          let hexdigit ch =
+            match ch with
+            | '0' .. '9' -> Char.code ch - Char.code '0'
+            | 'a' .. 'f' -> Char.code ch - Char.code 'a' + 10
+            | 'A' .. 'F' -> Char.code ch - Char.code 'A' + 10
+            | _ -> fail "bad JSON unicode escape"
+          in
+          let code = ref 0 in
+          for step = 0 to 3 do
+            code := (!code * 16) + hexdigit text.[!pos + step]
+          done;
+          let code = !code in
           pos := !pos + 4;
           (* UTF-8 encode. *)
           if code < 0x80 then Buffer.add_char buf (Char.chr code)
@@ -231,7 +244,11 @@ let parse text =
         incr pos;
         skipws ();
         let value = parsevalue () in
-        entries := !entries @ [ (key, value) ];
+        (* A duplicate key overrides the earlier value (last wins), as in
+           the canonical implementation. *)
+        if List.mem_assoc key !entries then
+          entries := List.map (fun (k, e) -> if k = key then (k, value) else (k, e)) !entries
+        else entries := !entries @ [ (key, value) ];
         skipws ();
         if !pos >= len then fail "unterminated JSON object";
         if text.[!pos] = ',' then incr pos
@@ -422,32 +439,43 @@ let regex_parse pattern =
       None
     end
     else begin
-      let min = int_of_string (Buffer.contents digits) in
-      if !pos < len && pattern.[!pos] = '}' then begin
-        incr pos;
-        Some (min, Some min)
-      end
-      else if !pos < len && pattern.[!pos] = ',' then begin
-        incr pos;
-        let maxdigits = Buffer.create 4 in
-        while !pos < len && pattern.[!pos] >= '0' && pattern.[!pos] <= '9' do
-          Buffer.add_char maxdigits pattern.[!pos];
-          incr pos
-        done;
+      (* A count too large for an int degrades to a literal `{`, rather
+         than leaking a Failure out of the parser. *)
+      match int_of_string_opt (Buffer.contents digits) with
+      | None ->
+        pos := start;
+        None
+      | Some min ->
         if !pos < len && pattern.[!pos] = '}' then begin
           incr pos;
-          if Buffer.length maxdigits = 0 then Some (min, None)
-          else Some (min, Some (int_of_string (Buffer.contents maxdigits)))
+          Some (min, Some min)
+        end
+        else if !pos < len && pattern.[!pos] = ',' then begin
+          incr pos;
+          let maxdigits = Buffer.create 4 in
+          while !pos < len && pattern.[!pos] >= '0' && pattern.[!pos] <= '9' do
+            Buffer.add_char maxdigits pattern.[!pos];
+            incr pos
+          done;
+          if !pos < len && pattern.[!pos] = '}' then begin
+            incr pos;
+            if Buffer.length maxdigits = 0 then Some (min, None)
+            else
+              match int_of_string_opt (Buffer.contents maxdigits) with
+              | Some maxval -> Some (min, Some maxval)
+              | None ->
+                pos := start;
+                None
+          end
+          else begin
+            pos := start;
+            None
+          end
         end
         else begin
           pos := start;
           None
         end
-      end
-      else begin
-        pos := start;
-        None
-      end
     end
   in
 
@@ -661,6 +689,9 @@ let matchval check base =
     if isnone want then isnone base || asstr base = Some nullmark
     else
       match asstr want with
+      (* An empty want is not a wildcard: the empty string is a substring of
+         everything, so `match:{out:""}` (or `err:""`) would accept any value. *)
+      | Some "" -> asstr base = Some ""
       | Some text ->
         let basestr = stringify base in
         let tlen = String.length text in
@@ -725,7 +756,18 @@ let fail label index entry reason expected actual =
 
 (* Check that every leaf of `check` is present, and matches, in `base`. *)
 let rec matchcheck label index entry check base path =
+  let where = if path = [] then "<root>" else pathify path in
   match check with
+  (* An empty container asserts structure that recursion would otherwise
+     skip: it visits no leaves inside {} or [], so `match:{out:{}}` used to
+     pass any result. Require the base at this path to be an equal empty
+     container. (The synthetic root wrapper is never empty.) *)
+  | (JList [] | JMap []) when path <> [] ->
+    let baseval = getpath base path in
+    if not (deepequal check baseval) then
+      raise
+        (fail label index entry ("match failed at " ^ where) (Some (stringify check))
+           (Some (stringify baseval)))
   | JList entries ->
     List.iteri
       (fun at subcheck -> matchcheck label index entry subcheck base (path @ [ string_of_int at ]))
@@ -734,14 +776,34 @@ let rec matchcheck label index entry check base path =
     List.iter (fun (key, subcheck) -> matchcheck label index entry subcheck base (path @ [ key ])) entries
   | leaf ->
     let baseval = getpath base path in
-    let ok =
-      deepequal leaf baseval
-      || (asstr leaf = Some undefmark && isabsent baseval)
-      || (asstr leaf = Some existsmark && not (isnone baseval))
-      || matchval leaf baseval
-    in
-    if not ok then
-      let where = if path = [] then "<root>" else pathify path in
+    if deepequal leaf baseval then ()
+      (* Explicitly absent: satisfied only by a genuinely missing key, never
+         by a present null (the distinction the sentinels exist to keep). *)
+    else if asstr leaf = Some undefmark then begin
+      if not (isabsent baseval) then
+        raise
+          (fail label index entry ("expected absent at " ^ where) (Some "absent")
+             (Some (stringify baseval)))
+    end
+      (* Explicitly null: satisfied only by a present null. *)
+    else if asstr leaf = Some nullmark then begin
+      if not (isnull baseval || asstr baseval = Some nullmark) then
+        raise
+          (fail label index entry ("expected null at " ^ where) (Some "null")
+             (Some (stringify baseval)))
+    end
+      (* Explicitly present: any present value, including null. *)
+    else if asstr leaf = Some existsmark then begin
+      if isabsent baseval then
+        raise
+          (fail label index entry ("expected present at " ^ where) (Some "present") (Some "absent"))
+    end
+      (* A concrete expectation never matches a missing key - a match leaf
+         against an absent value must fail, not substring-match "undefined". *)
+    else if isabsent baseval then
+      raise
+        (fail label index entry ("match failed at " ^ where) (Some (stringify leaf)) (Some "absent"))
+    else if not (matchval leaf baseval) then
       raise
         (fail label index entry ("match failed at " ^ where) (Some (stringify leaf))
            (Some (stringify baseval)))

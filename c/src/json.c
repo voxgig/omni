@@ -426,11 +426,16 @@ char *omni_stringify(omni_pool *pool, const omni_json *val) {
 
 /* ---- parser -------------------------------------------------------- */
 
+/* Nesting bound: a value nested deeper than this fails the parse rather
+ * than overflowing the C stack. */
+#define OMNI_PARSE_MAXDEPTH 4096
+
 typedef struct {
   omni_pool *pool;
   const char *text;
   size_t pos;
   size_t len;
+  int depth;
   char *err;
 } omni_parser;
 
@@ -659,6 +664,7 @@ static int parse_word(omni_parser *parser, const char *word) {
 static omni_json *parse_num(omni_parser *parser) {
   size_t start = parser->pos;
   char text[64];
+  char *end;
   size_t len;
   double val;
 
@@ -686,7 +692,16 @@ static omni_json *parse_num(omni_parser *parser) {
   memcpy(text, parser->text + start, len);
   text[len] = '\0';
 
-  val = strtod(text, NULL);
+  /* The number must consume exactly the scanned run: `1-2` scans as one
+   * token, strtod stops at the `-`, and the remainder is garbage, not a
+   * number. Silently keeping the prefix would accept malformed JSON. */
+  end = NULL;
+  val = strtod(text, &end);
+  if (end != text + len) {
+    parse_error(parser, "bad number");
+    return NULL;
+  }
+
   return omni_num(parser->pool, val);
 }
 
@@ -700,11 +715,18 @@ static omni_json *parse_val(omni_parser *parser) {
 
   ch = parser->text[parser->pos];
 
-  if ('{' == ch) {
-    return parse_map(parser);
-  }
-  if ('[' == ch) {
-    return parse_list(parser);
+  if ('{' == ch || '[' == ch) {
+    omni_json *out;
+
+    if (OMNI_PARSE_MAXDEPTH <= parser->depth) {
+      parse_error(parser, "too deeply nested");
+      return NULL;
+    }
+
+    parser->depth++;
+    out = '{' == ch ? parse_map(parser) : parse_list(parser);
+    parser->depth--;
+    return out;
   }
   if ('"' == ch) {
     char *text = parse_rawstr(parser);
@@ -731,6 +753,7 @@ omni_json *omni_parse(omni_pool *pool, const char *text, char **errout) {
   parser.text = text;
   parser.pos = 0;
   parser.len = strlen(text);
+  parser.depth = 0;
   parser.err = NULL;
 
   parse_ws(&parser);

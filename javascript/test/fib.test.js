@@ -94,6 +94,17 @@ describe('runner', () => {
       wrongerr: { set: [{ in: 1, err: 'never happens' }] },
       wrongmatch: { set: [{ in: 6, match: { out: 999 } }] },
       missing: { set: [{ in: 6, match: { out: { nope: '__EXISTS__' } } }] },
+      // A concrete match leaf against a missing key must fail, not
+      // substring-match the text "undefined".
+      matchabsent: { set: [{ in: 6, match: { out: { nope: 'fine' } } }] },
+      // __UNDEF__ (absent) must not be satisfied by a present null.
+      undefonnull: { set: [{ in: 0, match: { out: { prev: '__UNDEF__' } } }] },
+      // __NULL__ (present null) must not be satisfied by an absent key.
+      nullonabsent: { set: [{ in: 6, match: { out: { nope: '__NULL__' } } }] },
+      // An empty container asserts an empty container, not "anything".
+      emptymatch: { set: [{ in: 6, match: { out: {} } }] },
+      // An empty-string match leaf is not a wildcard.
+      emptystr: { set: [{ in: 6, match: { out: { label: '' } } }] },
     },
   }
 
@@ -120,6 +131,26 @@ describe('runner', () => {
 
   test('detects absent key', async () => {
     await expectfail('missing', fibinfo)
+  })
+
+  test('a concrete match leaf does not match a missing key', async () => {
+    await expectfail('matchabsent', fibinfo)
+  })
+
+  test('__UNDEF__ does not match a present null', async () => {
+    await expectfail('undefonnull', fibinfo)
+  })
+
+  test('__NULL__ does not match an absent key', async () => {
+    await expectfail('nullonabsent', fibinfo)
+  })
+
+  test('an empty match container is not vacuous', async () => {
+    await expectfail('emptymatch', fibinfo)
+  })
+
+  test('an empty-string match leaf is not a wildcard', async () => {
+    await expectfail('emptystr', fibinfo)
   })
 
   test('reports entry index and id', async () => {

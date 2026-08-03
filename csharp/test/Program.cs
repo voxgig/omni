@@ -109,7 +109,23 @@ internal static class Program
                 "wrongmatch", Map("set", List(
                     Map("in", 6.0, "match", Map("out", 999.0)))),
                 "missing", Map("set", List(
-                    Map("in", 6.0, "match", Map("out", Map("nope", "__EXISTS__")))))));
+                    Map("in", 6.0, "match", Map("out", Map("nope", "__EXISTS__"))))),
+                // A concrete match leaf against a missing key must fail, not
+                // substring-match the text "undefined".
+                "matchabsent", Map("set", List(
+                    Map("in", 6.0, "match", Map("out", Map("nope", "fine"))))),
+                // __UNDEF__ (absent) must not be satisfied by a present null.
+                "undefonnull", Map("set", List(
+                    Map("in", 0.0, "match", Map("out", Map("prev", "__UNDEF__"))))),
+                // __NULL__ (present null) must not be satisfied by an absent key.
+                "nullonabsent", Map("set", List(
+                    Map("in", 6.0, "match", Map("out", Map("nope", "__NULL__"))))),
+                // An empty container asserts an empty container, not "anything".
+                "emptymatch", Map("set", List(
+                    Map("in", 6.0, "match", Map("out", Map())))),
+                // An empty-string match leaf must not substring-match anything.
+                "emptystr", Map("set", List(
+                    Map("in", 6.0, "match", Map("out", Map("label", "")))))));
     }
 
     private static IDictionary<string, object> Map(params object[] pairs)
@@ -190,6 +206,11 @@ internal static class Program
         TestCase("detects missing error", () => ExpectFail("wrongerr", FIB));
         TestCase("detects failed match", () => ExpectFail("wrongmatch", FIB));
         TestCase("detects absent key", () => ExpectFail("missing", FIBINFO));
+        TestCase("concrete leaf does not match missing key", () => ExpectFail("matchabsent", FIBINFO));
+        TestCase("__UNDEF__ does not match present null", () => ExpectFail("undefonnull", FIBINFO));
+        TestCase("__NULL__ does not match absent key", () => ExpectFail("nullonabsent", FIBINFO));
+        TestCase("empty match container is not vacuous", () => ExpectFail("emptymatch", FIBINFO));
+        TestCase("an empty-string match leaf is not a wildcard", () => ExpectFail("emptystr", FIBINFO));
         TestCase("reports entry index and id", CheckMessage);
 
         Console.WriteLine("\n" + passcount + " passed, " + failcount + " failed");

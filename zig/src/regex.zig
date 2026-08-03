@@ -134,7 +134,13 @@ const Parser = struct {
         var digits: usize = 0;
 
         while (scan < self.pattern.len and std.ascii.isDigit(self.pattern[scan])) {
-            min = min * 10 + (self.pattern[scan] - '0');
+            // A count too large to represent is not a count: treat the
+            // whole `{...}` as literal text (as the Rust port's
+            // `.parse().ok()?` does) rather than overflowing.
+            min = adddigit(min, self.pattern[scan]) orelse {
+                self.pos = start;
+                return null;
+            };
             digits += 1;
             scan += 1;
         }
@@ -158,7 +164,10 @@ const Parser = struct {
         var max: usize = 0;
         var maxdigits: usize = 0;
         while (scan < self.pattern.len and std.ascii.isDigit(self.pattern[scan])) {
-            max = max * 10 + (self.pattern[scan] - '0');
+            max = adddigit(max, self.pattern[scan]) orelse {
+                self.pos = start;
+                return null;
+            };
             maxdigits += 1;
             scan += 1;
         }
@@ -170,6 +179,12 @@ const Parser = struct {
 
         self.pos = scan + 1;
         return .{ .min = min, .max = if (0 == maxdigits) null else max };
+    }
+
+    // Append one decimal digit to a repeat count, or null on overflow.
+    fn adddigit(count: usize, ch: u8) ?usize {
+        const scaled = std.math.mul(usize, count, 10) catch return null;
+        return std.math.add(usize, scaled, @as(usize, ch - '0')) catch return null;
     }
 
     fn escapeNode(self: *Parser, escape: u8) ParseError!*Node {

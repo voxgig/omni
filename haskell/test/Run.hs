@@ -117,6 +117,67 @@ badspec =
                       ]
                   )
                 ]
+            ),
+            -- A concrete match leaf against a missing key must fail, not
+            -- substring-match the text "undefined".
+            ( "matchabsent",
+              JMap
+                [ ( "set",
+                    JList
+                      [ JMap
+                          [ ("in", Num 6),
+                            ("match", JMap [("out", JMap [("nope", Str "fine")])])
+                          ]
+                      ]
+                  )
+                ]
+            ),
+            -- __UNDEF__ (absent) must not be satisfied by a present null.
+            ( "undefonnull",
+              JMap
+                [ ( "set",
+                    JList
+                      [ JMap
+                          [ ("in", Num 0),
+                            ("match", JMap [("out", JMap [("prev", Str "__UNDEF__")])])
+                          ]
+                      ]
+                  )
+                ]
+            ),
+            -- __NULL__ (present null) must not be satisfied by an absent key.
+            ( "nullonabsent",
+              JMap
+                [ ( "set",
+                    JList
+                      [ JMap
+                          [ ("in", Num 6),
+                            ("match", JMap [("out", JMap [("nope", Str "__NULL__")])])
+                          ]
+                      ]
+                  )
+                ]
+            ),
+            -- An empty container asserts an empty container, not "anything".
+            ( "emptymatch",
+              JMap
+                [ ( "set",
+                    JList [JMap [("in", Num 6), ("match", JMap [("out", JMap [])])]]
+                  )
+                ]
+            ),
+            -- An empty-string match leaf is not a wildcard.
+            ( "emptystr",
+              JMap
+                [ ( "set",
+                    JList
+                      [ JMap
+                          [ ("in", Num 6),
+                            ("match", JMap [("out", JMap [("label", Str "")])])
+                          ]
+                      ]
+                  )
+                ]
             )
           ]
       )
@@ -196,6 +257,11 @@ main = do
   run "detects missing error" (expectfail "wrongerr" fibsub)
   run "detects failed match" (expectfail "wrongmatch" fibsub)
   run "detects absent key" (expectfail "missing" fibinfosub)
+  run "a concrete match leaf does not match a missing key" (expectfail "matchabsent" fibinfosub)
+  run "__UNDEF__ does not match a present null" (expectfail "undefonnull" fibinfosub)
+  run "__NULL__ does not match an absent key" (expectfail "nullonabsent" fibinfosub)
+  run "an empty match container is not vacuous" (expectfail "emptymatch" fibinfosub)
+  run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" fibinfosub)
   run "reports entry index and id" checkmessage
 
   passed <- readIORef passcount

@@ -75,6 +75,11 @@ defmodule Voxgig.Omni.Runner do
       is_nil(want) ->
         U.isnone(base) or U.nullmark() == base
 
+      # An empty want is not a wildcard: the empty string is a substring of
+      # everything, so `match:{out:""}` (or `err:""`) would accept any value.
+      U.isstr(want) and "" == want ->
+        "" == base
+
       U.isstr(want) ->
         basestr = U.stringify(base)
 
@@ -339,7 +344,21 @@ defmodule Voxgig.Omni.Runner do
 
   @doc "Check that every leaf of `check` is present, and matches, in `base`."
   def match(label, index, entry, check, base, path \\ []) do
+    where = if [] == path, do: "<root>", else: U.pathify(path)
+
     cond do
+      # An empty container asserts structure that recursion would otherwise
+      # skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
+      # to pass any result. Require the base at this path to be an equal
+      # empty container. (The synthetic root wrapper is never empty.)
+      U.isnode(check) and [] != path and isempty(check) ->
+        baseval = U.getpath(base, path)
+
+        if not U.deepequal(check, baseval) do
+          raise fail(label, index, entry, "match failed at #{where}",
+                  U.stringify(check), U.stringify(baseval))
+        end
+
       U.islist(check) ->
         check
         |> Enum.with_index()
@@ -355,19 +374,57 @@ defmodule Voxgig.Omni.Runner do
       true ->
         baseval = U.getpath(base, path)
 
-        ok =
-          U.deepequal(check, baseval) or
-            (U.undefmark() == check and U.isabsent(baseval)) or
-            (U.existsmark() == check and not U.isnone(baseval)) or
-            matchval(check, baseval)
+        cond do
+          U.deepequal(check, baseval) ->
+            :ok
 
-        if not ok do
-          where = if [] == path, do: "<root>", else: U.pathify(path)
+          # Explicitly absent: satisfied only by a genuinely missing key,
+          # never by a present null (the distinction the sentinels keep).
+          U.undefmark() == check ->
+            if U.isabsent(baseval) do
+              :ok
+            else
+              raise fail(label, index, entry, "expected absent at #{where}",
+                      "absent", U.stringify(baseval))
+            end
 
-          raise fail(label, index, entry, "match failed at #{where}",
-                  U.stringify(check), U.stringify(baseval))
+          # Explicitly null: satisfied only by a present null.
+          U.nullmark() == check ->
+            if is_nil(baseval) or U.nullmark() == baseval do
+              :ok
+            else
+              raise fail(label, index, entry, "expected null at #{where}",
+                      "null", U.stringify(baseval))
+            end
+
+          # Explicitly present: any present value, including null.
+          U.existsmark() == check ->
+            if not U.isabsent(baseval) do
+              :ok
+            else
+              raise fail(label, index, entry, "expected present at #{where}",
+                      "present", "absent")
+            end
+
+          # A concrete expectation never matches a missing key - a match
+          # leaf against an absent value must fail, not substring-match.
+          U.isabsent(baseval) ->
+            raise fail(label, index, entry, "match failed at #{where}",
+                    U.stringify(check), "absent")
+
+          matchval(check, baseval) ->
+            :ok
+
+          true ->
+            raise fail(label, index, entry, "match failed at #{where}",
+                    U.stringify(check), U.stringify(baseval))
         end
     end
+  end
+
+  # Is this container empty?
+  defp isempty(val) do
+    if U.islist(val), do: [] == val, else: 0 == map_size(val)
   end
 
   # The spec-defined part of an entry (drop runner bookkeeping).
