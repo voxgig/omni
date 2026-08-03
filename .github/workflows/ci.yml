@@ -1,0 +1,268 @@
+# CI for omni.
+#
+# One job per port, so a single failing language is named in the UI rather
+# than buried in a 23-language log. `fail-fast: false` because the whole
+# point of a shared spec is knowing *which* ports disagree with it.
+#
+# Toolchains are pinned to a major version rather than floating: a port
+# breaking because a compiler moved is worth a deliberate bump, not a
+# mystery red build.
+#
+# Two extra jobs guard the properties that make the ports one library:
+# `parity` checks every port exposes the same canonical API, and
+# `struct-compat` checks omni can still stand in for voxgig/struct's own
+# runner.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Ports whose toolchain ships with ubuntu-latest, or installs in one
+  # apt line. Grouped so 23 languages do not mean 23 near-identical blocks.
+  preinstalled:
+    name: ${{ matrix.lang }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { lang: perl, apt: '' }
+          - { lang: c, apt: '' }
+          - { lang: cpp, apt: '' }
+          - { lang: lua, apt: lua5.4 }
+          - { lang: php, apt: php-cli }
+          # No opam file to resolve - the port builds with plain ocamlc,
+          # and Ubuntu's 4.14 is the version it targets.
+          - { lang: ocaml, apt: ocaml-nox }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        if: matrix.apt != ''
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ${{ matrix.apt }}
+      - run: make test-${{ matrix.lang }}
+
+  node:
+    name: ${{ matrix.lang }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [typescript, javascript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: make test-${{ matrix.lang }}
+
+  jvm:
+    name: ${{ matrix.lang }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [java, kotlin, scala]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: coursier/setup-action@v1
+        if: matrix.lang == 'scala'
+        with:
+          apps: scala scalac scala-cli
+      # Not via coursier: it has no `kotlinc` app in either channel, which
+      # is what the second CI run failed on. The official release zip is
+      # version-pinned and needs nothing else.
+      - name: Install Kotlin
+        if: matrix.lang == 'kotlin'
+        env:
+          KOTLIN_VERSION: '2.1.20'
+          KOTLIN_SHA256: 'a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a'
+        run: |
+          # --retry, because GitHub's release CDN returns the occasional 500
+          # and curl retries 5xx as transient. Without it a healthy toolchain
+          # reads as a broken port.
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/kotlin.zip \
+            "https://github.com/JetBrains/kotlin/releases/download/v$KOTLIN_VERSION/kotlin-compiler-$KOTLIN_VERSION.zip"
+          echo "$KOTLIN_SHA256  /tmp/kotlin.zip" | sha256sum -c -
+          unzip -q /tmp/kotlin.zip -d "$HOME"
+          echo "$HOME/kotlinc/bin" >> "$GITHUB_PATH"
+      - run: make test-${{ matrix.lang }}
+
+  # Its own job, not part of the jvm matrix: a matrix resolves every action
+  # it references whether or not `if:` would skip it, so a bad reference
+  # here would take java, kotlin and scala down with it.
+  clojure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # NOTE: this action tags releases without a `v` prefix - `@13`, not
+      # `@v13`, which is what the first run failed on.
+      - uses: DeLaGuardo/setup-clojure@13
+        with:
+          cli: latest
+      - run: make test-clojure
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: make test-python
+
+  ruby:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - run: make test-ruby
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: make test-go
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: make test-rust
+
+  csharp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+      - run: make test-csharp
+
+  zig:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Downloaded straight from ziglang.org rather than via setup-zig.
+      # 0.16.0 is a real tagged release, but that action tries community
+      # mirrors first and then falls back to ziglang.org/builds, which only
+      # serves dev builds - so a tagged version 404s there once the mirrors
+      # are flaky, as they were. A pinned tarball with a checked hash has
+      # neither failure mode.
+      - name: Install Zig
+        env:
+          ZIG_VERSION: '0.16.0'
+          ZIG_SHA256: '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
+        run: |
+          url="https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/zig.tar.xz "$url"
+          echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$HOME/zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+      - run: make test-zig
+
+  swift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '5.10'
+      - run: make test-swift
+
+  dart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: make test-dart
+
+  elixir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          elixir-version: '1.17'
+      - run: make test-elixir
+
+  haskell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: '9.6'
+      - run: make test-haskell
+
+  lean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # elan directly rather than lean-action: with its build and test steps
+      # disabled, lean-action installs elan but never configures a default
+      # toolchain, so lake had no lean to run. The version comes from
+      # lean/lean-toolchain, so CI and a developer machine agree.
+      - name: Install Lean
+        run: |
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors \
+            -o /tmp/elan-init.sh https://elan.lean-lang.org/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain "$(cat lean/lean-toolchain)"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - run: make test-lean
+
+  # The two properties that make 23 ports one library rather than 23
+  # lookalikes.
+  parity:
+    name: api parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: make parity
+
+  struct-compat:
+    name: struct compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out voxgig/struct
+        uses: actions/checkout@v4
+        with:
+          repository: voxgig/struct
+          path: .struct
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: make struct-compat STRUCT=${{ github.workspace }}/.struct
