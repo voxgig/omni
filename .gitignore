@@ -169,3 +169,5 @@ zig-out/
 *.o
 *.olean
 *.ilean
+
+.build/
