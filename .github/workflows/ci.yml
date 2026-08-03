@@ -78,9 +78,21 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: coursier/setup-action@v1
-        if: matrix.lang == 'kotlin' || matrix.lang == 'scala'
+        if: matrix.lang == 'scala'
         with:
-          apps: ${{ matrix.lang == 'kotlin' && 'kotlinc' || 'scala scalac scala-cli' }}
+          apps: scala scalac scala-cli
+      # Not via coursier: it has no `kotlinc` app in either channel, which
+      # is what the second CI run failed on. The official release zip is
+      # version-pinned and needs nothing else.
+      - name: Install Kotlin
+        if: matrix.lang == 'kotlin'
+        env:
+          KOTLIN_VERSION: '2.1.20'
+        run: |
+          curl -sSfL -o /tmp/kotlin.zip \
+            "https://github.com/JetBrains/kotlin/releases/download/v$KOTLIN_VERSION/kotlin-compiler-$KOTLIN_VERSION.zip"
+          unzip -q /tmp/kotlin.zip -d "$HOME"
+          echo "$HOME/kotlinc/bin" >> "$GITHUB_PATH"
       - run: make test-${{ matrix.lang }}
 
   # Its own job, not part of the jvm matrix: a matrix resolves every action
