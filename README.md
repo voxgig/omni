@@ -1,7 +1,7 @@
 # omni
 
 **Shared multi language testing.** One test spec, written once as plain
-JSON, run by the same runner in eleven languages.
+JSON, run by the same runner in twenty-three languages.
 
 Write the behaviour of a library once. Verify it everywhere.
 
@@ -59,11 +59,23 @@ can be replaced by one shared implementation (see
 | Ruby | [`ruby/`](ruby/) | `ruby test/test_fib.rb` | minitest |
 | PHP | [`php/`](php/) | `php test/run.php` | |
 | Perl | [`perl/`](perl/) | `prove -Ilib -It t/` | core modules only |
+| Lua | [`lua/`](lua/) | `lua5.4 test/run.lua` | in-tree JSON parser + regex engine |
 | Go | [`go/`](go/) | `go test ./...` | errors returned, not thrown |
 | Rust | [`rust/`](rust/) | `cargo test` | in-tree JSON parser + regex engine |
 | Java | [`java/`](java/) | `make test` | JDK only, in-tree JSON parser |
+| C# | [`csharp/`](csharp/) | `make test` | BCL only |
+| Kotlin | [`kotlin/`](kotlin/) | `make test` | in-tree JSON parser |
+| Scala | [`scala/`](scala/) | `make test` | Scala 3; immutable values throughout |
+| Clojure | [`clojure/`](clojure/) | `make test` | in-tree JSON parser; native maps/vectors |
 | C | [`c/`](c/) | `make test` | C99 + POSIX regex, pooled allocation |
 | C++ | [`cpp/`](cpp/) | `make test` | header-only, C++17 |
+| Zig | [`zig/`](zig/) | `make test` | failures returned; in-tree regex engine |
+| Swift | [`swift/`](swift/) | `make test` | in-tree JSON parser; NSRegularExpression |
+| Dart | [`dart/`](dart/) | `dart run test/run.dart` | |
+| Elixir | [`elixir/`](elixir/) | `make test` | in-tree JSON parser |
+| OCaml | [`ocaml/`](ocaml/) | `make test` | in-tree JSON parser + regex engine |
+| Haskell | [`haskell/`](haskell/) | `make test` | base only; in-tree JSON parser + regex engine |
+| Lean 4 | [`lean/`](lean/) | `make test` | pure: failures returned as `Except String` |
 
 Run one port with `make test-<lang>`, all of them with `make test`.
 
@@ -95,12 +107,14 @@ Each port additionally asserts that the runner *fails* when it should - a
 green suite that cannot go red proves nothing.
 
 ```
-$ make test-rust
-======== rust ========
-running 5 tests
-test fib_conformance ... ok
-test runner_detects_failures ... ok
+$ make test
+======== typescript ========
+# pass 14
 ...
+======== lean ========
+14 passed, 0 failed
+
+all ports passed
 ```
 
 
@@ -161,7 +175,7 @@ omni: fib[1] (x#2): result mismatch
 
 Each `voxgig/struct` port carries its own copy of a runner
 (`<lang>/test/runner.*`) - the same algorithm, re-implemented 20+ times.
-omni is that algorithm, once.
+omni is that algorithm, once, in every language struct ships in.
 
 The JavaScript port ships a compatibility shim with struct's exact runner
 API, so a struct port switches over by changing one import:

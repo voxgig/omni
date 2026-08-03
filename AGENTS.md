@@ -22,7 +22,7 @@ comprehensive guide).
 
 ## What this repository is
 
-omni is one test runner, defined once and ported faithfully to eleven
+omni is one test runner, defined once and ported faithfully to twenty-three
 languages, so that a single JSON spec file produces identical pass/fail
 results everywhere.
 
@@ -43,7 +43,8 @@ TypeScript, case for case, in idiomatic local style."
    TypeScript still passes first.
 3. **Do not add dependencies.** Every port uses only its standard library.
    Where the standard library has no JSON parser or no regex engine (Rust,
-   C, C++, Java), the port carries a small in-tree one.
+   C, C++, Java, Kotlin, Scala, Clojure, Lua, Swift, Elixir, OCaml,
+   Haskell, Zig), the port carries a small in-tree one.
 4. **The runner may not use the library under test.** omni carries its own
    `clone`, `deepequal`, `getpath`, `walk`, `stringify` and JSON parsing.
    A runner that borrowed them could not test a library that provides them
@@ -87,11 +88,23 @@ directory and use its `Makefile`.
 | Ruby | `ruby/` | `ruby test/test_fib.rb` | minitest (stdlib) |
 | PHP | `php/` | `php test/run.php` | assoc-array JSON model |
 | Perl | `perl/` | `prove -Ilib -It t/` | `JSON::PP` + `Test::More` (core) |
+| Lua | `lua/` | `lua5.4 test/run.lua` | in-tree JSON + regex; explicit NULL/ABSENT |
 | Go | `go/` | `go test ./...` | errors returned, not panicked |
 | Rust | `rust/` | `cargo test` | in-tree JSON + regex |
 | Java | `java/` | `make test` | plain `javac`; in-tree JSON |
+| C# | `csharp/` | `make test` | BCL only; runs the built binary, not `dotnet run` |
+| Kotlin | `kotlin/` | `make test` | `kotlinc` to a jar; in-tree JSON |
+| Scala | `scala/` | `make test` | Scala 3; immutable values |
+| Clojure | `clojure/` | `make test` | in-tree JSON; `==` for numbers |
 | C | `c/` | `make test` | C99, `-Werror`; pool allocator; POSIX regex |
 | C++ | `cpp/` | `make test` | header-only C++17, `-Werror` |
+| Zig | `zig/` | `make test` | 0.16 module flags; failures returned |
+| Swift | `swift/` | `make test` | SwiftPM; in-tree JSON |
+| Dart | `dart/` | `dart run test/run.dart` | |
+| Elixir | `elixir/` | `make test` | `elixirc` to `build/`; test depends on build |
+| OCaml | `ocaml/` | `make test` | `ocamlc`; in-tree JSON + regex |
+| Haskell | `haskell/` | `make test` | `ghc`, base only; in-tree JSON + regex |
+| Lean 4 | `lean/` | `make test` | `lake`; pure `Except String` failures |
 
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
 `make inspect`, `make clean`.
@@ -128,9 +141,11 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 
 ## Conventions
 
-- **Casing.** `makeRunner` (TS/JS/Python/PHP/Perl/Java/C++), `make_runner`
-  (Ruby/Rust), `MakeRunner` (Go), `omni_make_runner` (C). Parity is checked
-  case- and underscore-insensitively, and ignores the C `omni_` prefix.
+- **Casing.** `makeRunner` (TS/JS/Python/PHP/Perl/Java/C++/Kotlin/Swift/
+  Dart/Lua/Scala/Lean), `make_runner` (Ruby/Rust/Elixir/OCaml),
+  `make-runner` (Clojure), `MakeRunner` (Go/C#), `omni_make_runner` (C).
+  Parity is checked case-, hyphen- and underscore-insensitively, and
+  ignores the C `omni_` prefix.
 - **Naming inside the runner.** The internal helpers carry the same names
   in every port (`resolveentry`, `resolveargs`, `checkresult`,
   `handleerror`, `fixjson`, `entryref`, `fail`), so the ports can be read
@@ -138,7 +153,7 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 - **Failure text is API.** The message format in
   [`DOCS.md`](DOCS.md#6-failure-messages) is identical in every port and is
   asserted by each port's "reports entry index and id" test. Changing it
-  means changing all eleven.
+  means changing all twenty-three.
 - **Comments explain why, not what.** Match the density of the surrounding
   code.
 - **Commit messages.** Conventional and scoped: `fix(go): ...`,
@@ -151,8 +166,10 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 - **`null` is not "absent".** Group A of the sentinel rules exists because
   most JSON parsers conflate them. `getpath` returns an *absent* marker, not
   null, when a step is missing - `Json::Absent` in Rust, `ABSENT` in
-  Python/Ruby/Perl/Go/Java, `OMNI_ABSENT` in C, `Json::Type::Absent` in
-  C++. Never collapse the two.
+  Python/Ruby/Perl/Go/Java/Lua/Dart/C#, `OMNI_ABSENT` in C,
+  `Json::Type::Absent` in C++, `Absent` in Swift/Kotlin/Scala/OCaml/Haskell,
+  `none` in Zig/Lean, `:"$omni_absent"` in Elixir, `::absent` in Clojure.
+  Never collapse the two.
 - **`fixjson` runs over the whole group, not just the result.** With
   `null: true`, nulls inside `in` and `args` also become `"__NULL__"`.
   A group whose inputs need real nulls must run with `{null: false}`.
@@ -167,6 +184,13 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 - **Map key order is not significant** for equality, and `jsonstr` sorts
   keys so that messages are identical in ports with and without ordered
   maps.
+- **A subject must never raise the runner's own failure type.** Each fib
+  library defines its own error (`FibError`, `Fib_error`, ...). A subject
+  that threw `OmniError` could fake a passing `err` expectation.
+- **The regex engine is ported, not reimplemented.** Lua, Rust, OCaml,
+  Haskell, Zig and Lean carry the same backtracking engine
+  (`rust/src/regex.rs` is the reference); C uses POSIX ERE with escape
+  translation; the rest use their standard library. Keep them in step.
 - **Toolchains may be missing.** If a port cannot be built in your
   environment, say so - do not guess that a change works.
 

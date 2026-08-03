@@ -1,6 +1,7 @@
 # omni - the comprehensive guide
 
-omni runs one JSON test spec against a library in any of eleven languages.
+omni runs one JSON test spec against a library in any of twenty-three
+languages.
 This document defines the spec format, the runner semantics, and the API
 each port exposes. For a quick overview see [`README.md`](README.md); for
 notes on working in this repository see [`AGENTS.md`](AGENTS.md).
@@ -303,7 +304,10 @@ every name, in local casing;
 
 Runner: `makeRunner`, `runset`, `runsetflags`, `loadspec`, `resolvespec`,
 `fixjson`, `errify`, `match`, `matchval`, `nullmodifier`, `OmniError`,
-`NULLMARK`, `UNDEFMARK`, `EXISTSMARK`.
+`NULLMARK`, `UNDEFMARK`, `EXISTSMARK`. Ports that cannot express one of
+these are listed, with a reason, in the tool's `EXEMPT` table - today only
+`OmniError`, in C, Zig and Lean, which all return failures rather than
+throwing them.
 Utilities: `clone`, `deepequal`, `getpath`, `walk`, `jsonstr`,
 `stringify`, `pathify`.
 
@@ -418,6 +422,135 @@ R.runsetflags(R.set("nulls"), omni::Flags::nonull(), FIBINFO);
 Header-only. Failures throw `omni::OmniError`; a subject is
 `std::function<Json(const std::vector<Json>&)>`.
 
+### C#
+
+```csharp
+RunPack R = Runner.MakeRunner(specpath, provider).Run("fib");
+R.RunSet(R.Set("basic"), FIB);
+R.RunSetFlags(R.Set("nulls"), Flags.NoNull(), FIBINFO);
+```
+
+Failures throw `OmniError`; a subject is `object Subject(params object[])`.
+
+### Kotlin
+
+```kotlin
+val R = makeRunner(specpath, provider).runner("fib")
+R.runset(R.set("basic"), FIB)
+R.runsetflags(R.set("nulls"), Flags.nonull(), FIBINFO)
+```
+
+Failures throw `OmniError`; a subject is `(List<Json>) -> Json`.
+
+### Scala
+
+```scala
+val R = Runner.makeRunner(specpath, provider).runner("fib")
+R.runset(R.set("basic"), Some(FIB))
+R.runsetflags(R.set("nulls"), Flags.nonull(), Some(FIBINFO))
+```
+
+Failures throw `OmniError`; a subject is `List[Json] => Json`. Values are
+immutable, so the runner rebuilds each entry rather than mutating it.
+
+### Clojure
+
+```clojure
+(def R ((runner/make-runner specpath provider) "fib"))
+((:runset R) ((:set R) "basic") FIB)
+((:runsetflags R) ((:set R) "nulls") {:null false} FIBINFO)
+```
+
+Failures throw an `ExceptionInfo` carrying `:omni true` - test for it with
+`runner/omni-error?`. A subject is `(fn [args] ...)`.
+
+### Lua
+
+```lua
+local R = runner.makeRunner(specpath, provider)('fib')
+R.runset(R.set('basic'), FIB)
+R.runsetflags(R.set('nulls'), { null = false }, FIBINFO)
+```
+
+Failures raise an OmniError table (`runner.isomnierror`). Lua tables cannot
+hold `nil` and cannot tell an empty list from an empty map, so `u.NULL` and
+`u.ABSENT` are explicit sentinels and containers are built with `u.map{}` /
+`u.list{}`.
+
+### Zig
+
+```zig
+const pack = try runner.runner("fib", null);
+if (try pack.runset(pack.set("basic"), &FIB)) |failure| { ... }
+```
+
+Zig error values carry no payload, so a failure is **returned** as
+`?[]const u8`. Zig has no closures, so a `Subject` is a function pointer
+plus its own `data` pointer, as in C.
+
+### Swift
+
+```swift
+let R = try makeRunner(specpath, provider).runner("fib")
+try R.runset(R.set("basic"), FIB)
+try R.runsetflags(R.set("nulls"), Flags.nonull(), FIBINFO)
+```
+
+Failures throw `OmniError`; a subject is `([Json]) throws -> Json`.
+
+### Dart
+
+```dart
+final R = makeRunner(specpath, provider).runner('fib');
+R.runset(R.set('basic'), FIB);
+R.runsetflags(R.set('nulls'), Flags.nonull, FIBINFO);
+```
+
+Failures throw `OmniError`; a subject is `dynamic Function(List<dynamic>)`.
+
+### Elixir
+
+```elixir
+pack = Runner.make_runner(specpath, provider).("fib", nil)
+pack.runset.(pack.set.("basic"), fib)
+pack.runsetflags.(pack.set.("nulls"), %{null: false}, fibinfo)
+```
+
+Failures raise `Voxgig.Omni.OmniError`; a subject is `fn args -> ... end`.
+
+### OCaml
+
+```ocaml
+let pack = (make_runner specpath provider) "fib" None in
+pack.runset (pack.set "basic") (Some fibsub)
+```
+
+Failures raise `Omni_error`; a subject is `json list -> json`. A custom
+exception should register a printer, which is how the runner reads its
+message.
+
+### Haskell
+
+```haskell
+pack <- makeRunner specpath provider "fib"
+runset pack (packSet pack "basic") (Just fibsub)
+runsetflags pack (packSet pack "nulls") nonullFlags (Just fibinfosub)
+```
+
+Failures throw `OmniError`; a subject is `[Json] -> IO Json`, whose message
+is `displayException`.
+
+### Lean 4
+
+```lean
+let pack ← makeRunner path provider "fib"
+match pack.runset (pack.set "basic") (some FIB) with
+| .ok () => pure () | .error message => IO.println message
+```
+
+Lean's checks are pure, so a failure is **returned** as
+`Except.error message`; a subject is `List Json → Except String Json`.
+
 
 ## 8. Replacing struct's in-situ runners
 
@@ -498,8 +631,13 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | C | Failures are messages, not an error type - there is no `OmniError`. Regex is POSIX ERE; `\d`, `\w` and `\s` are translated, but lookaround and lazy quantifiers are not available. |
 | Go | Map key order is not preserved (`encoding/json`). Order is never significant for equality. |
 | Rust | Maps are `BTreeMap`, so key order is sorted rather than insertion order. The regex engine supports the common subset: literals, classes, groups, alternation, `* + ? {m,n}`, `\d \w \s`, anchors. |
-| Java, C++ | Numbers are all doubles, matching JSON. |
+| Java, C++, C#, Kotlin, Swift | Numbers are all doubles, matching JSON. |
+| Lua | Tables cannot hold `nil`, and an empty list and an empty map are the same table, so the port uses explicit `NULL`/`ABSENT` sentinels and tags every container with a metatable. |
+| Zig | Error values carry no payload, so failures are returned as messages - there is no `OmniError`. |
+| Lean | Checks are pure: failures are returned as `Except String`, so there is no `OmniError`. The regex matcher is a `partial def`. |
+| Clojure, Elixir, Scala, Lean | Map key order is not preserved (or is sorted). Order is never significant for equality. |
+| OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,
-failure text - is identical across all eleven ports, and the Fibonacci
-suite proves it on every run.
+failure text - is identical across all twenty-three ports, and the
+Fibonacci suite proves it on every run.

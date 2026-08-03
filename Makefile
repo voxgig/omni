@@ -12,7 +12,8 @@
 # Every port directory. Target names are the directory names, used verbatim
 # as `make -C <dir>`. Each port ships at least `test`; `build`, `inspect`
 # and `clean` are invoked tolerantly.
-LANGS = typescript javascript python ruby php perl go rust java c cpp
+LANGS = typescript javascript python ruby php perl lua go rust java csharp kotlin \
+        scala clojure c cpp zig swift dart elixir ocaml haskell lean
 
 .PHONY: all test build inspect clean parity struct-compat check
 

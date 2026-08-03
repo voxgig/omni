@@ -56,15 +56,33 @@ PORTS = {
     'java': ['java/src'],
     'c': ['c/src'],
     'cpp': ['cpp/src'],
+    'csharp': ['csharp/src'],
+    'kotlin': ['kotlin/src'],
+    'scala': ['scala/src'],
+    'clojure': ['clojure/src'],
+    'lua': ['lua/src'],
+    'zig': ['zig/src'],
+    'swift': ['swift/Sources/Omni'],
+    'dart': ['dart/lib'],
+    'elixir': ['elixir/lib'],
+    'ocaml': ['ocaml/src'],
+    'haskell': ['haskell/src'],
+    'lean': ['lean/Omni.lean'],
 }
 
-SKIP_DIRS = {'node_modules', 'dist', 'build', 'target', '__pycache__'}
+SKIP_DIRS = {'node_modules', 'dist', 'build', 'target', '__pycache__', 'bin', 'obj', '.lake'}
 
 # Documented per-port variance. A port may only appear here for a name it
 # genuinely cannot express; the reason is printed on every run.
 EXEMPT = {
     'c': {
         'OmniError': 'C has no exception type: failures are returned as messages',
+    },
+    'zig': {
+        'OmniError': 'Zig error values carry no payload: failures are returned as messages',
+    },
+    'lean': {
+        'OmniError': 'Lean checks are pure: failures are returned as Except String',
     },
 }
 
@@ -115,7 +133,7 @@ def defined(paths):
         except (OSError, UnicodeDecodeError):
             continue
 
-        for token in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', text):
+        for token in re.findall(r'[A-Za-z_][A-Za-z0-9_\-]*', text):
             found |= variants(token)
 
     return found
