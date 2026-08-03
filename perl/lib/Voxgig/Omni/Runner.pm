@@ -200,11 +200,18 @@ sub errify {
     return { name => $name, message => errmessage($err) };
 }
 
+# Perl's `die` decorates the message: `die "msg"` becomes "msg at FILE line
+# N.\n", and `die "msg\n"` keeps the newline. Both are removed so that a
+# message reads the same here as in every other port.
+#
+# Only that decoration is removed. A message whose own last character is a
+# space keeps it - stripping trailing whitespace wholesale made Perl the one
+# port where `err` could not pin such a message.
 sub errmessage {
     my ($err) = @_;
     my $msg = "$err";
-    $msg =~ s/\s+at\s+\S+\s+line\s+\d+\.?\s*$//;
-    $msg =~ s/\s+$//;
+    $msg =~ s/ at \S+ line \d+\.?\n?$//;
+    $msg =~ s/\n$//;
     return $msg;
 }
 
