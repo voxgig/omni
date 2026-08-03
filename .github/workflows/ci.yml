@@ -70,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lang: [java, kotlin, scala, clojure]
+        lang: [java, kotlin, scala]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -81,11 +81,25 @@ jobs:
         if: matrix.lang == 'kotlin' || matrix.lang == 'scala'
         with:
           apps: ${{ matrix.lang == 'kotlin' && 'kotlinc' || 'scala scalac scala-cli' }}
-      - uses: DeLaGuardo/setup-clojure@v13
-        if: matrix.lang == 'clojure'
+      - run: make test-${{ matrix.lang }}
+
+  # Its own job, not part of the jvm matrix: a matrix resolves every action
+  # it references whether or not `if:` would skip it, so a bad reference
+  # here would take java, kotlin and scala down with it.
+  clojure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # NOTE: this action tags releases without a `v` prefix - `@13`, not
+      # `@v13`, which is what the first run failed on.
+      - uses: DeLaGuardo/setup-clojure@13
         with:
           cli: latest
-      - run: make test-${{ matrix.lang }}
+      - run: make test-clojure
 
   python:
     runs-on: ubuntu-latest
@@ -189,11 +203,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: leanprover/lean-action@v1
-        with:
-          build: false
-          test: false
-          lake-package-directory: lean
+      # elan directly rather than lean-action: with its build and test steps
+      # disabled, lean-action installs elan but never configures a default
+      # toolchain, so lake had no lean to run. The version comes from
+      # lean/lean-toolchain, so CI and a developer machine agree.
+      - name: Install Lean
+        run: |
+          curl -sSfL https://elan.lean-lang.org/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$(cat lean/lean-toolchain)"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - run: make test-lean
 
   # The two properties that make 23 ports one library rather than 23
