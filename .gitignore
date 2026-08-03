@@ -141,3 +141,33 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# omni build artifacts
+dist/
+build/
+target/
+*.class
+*.o
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+
+# per-port build artifacts
+bin/
+obj/
+.lake/
+zig-cache/
+.zig-cache/
+zig-out/
+.dart_tool/
+*.beam
+*.cmi
+*.cmo
+*.hi
+*.o
+*.olean
+*.ilean
+
+.build/

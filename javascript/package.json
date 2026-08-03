@@ -1,0 +1,14 @@
+{
+  "name": "@voxgig/omni-js",
+  "version": "0.1.0",
+  "description": "Omni: shared multi-language test runner (JavaScript)",
+  "license": "MIT",
+  "main": "src/index.js",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test-some": "node --test --test-name-pattern=$npm_config_pattern \"test/*.test.js\""
+  }
+}

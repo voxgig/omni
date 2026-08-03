@@ -1,0 +1,12 @@
+name = "omni"
+defaultTargets = ["omnitest"]
+
+[[lean_lib]]
+name = "Omni"
+
+[[lean_lib]]
+name = "Fib"
+
+[[lean_exe]]
+name = "omnitest"
+root = "Main"

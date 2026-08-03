@@ -1,0 +1,15 @@
+[project]
+name = "voxgig_omni"
+version = "0.1.0"
+description = "Omni: shared multi-language test runner (Python)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["voxgig_omni*"]

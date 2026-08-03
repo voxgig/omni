@@ -1,0 +1,21 @@
+{
+  "name": "@voxgig/omni",
+  "version": "0.1.0",
+  "description": "Omni: shared multi-language test runner (TypeScript, canonical)",
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "files": [
+    "dist/src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "test-some": "npm run build && node --test --test-name-pattern=$npm_config_pattern \"dist/test/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

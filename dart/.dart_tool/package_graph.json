@@ -1,0 +1,14 @@
+{
+  "roots": [
+    "voxgig_omni"
+  ],
+  "packages": [
+    {
+      "name": "voxgig_omni",
+      "version": "0.1.0",
+      "dependencies": [],
+      "devDependencies": []
+    }
+  ],
+  "configVersion": 1
+}
