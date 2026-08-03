@@ -43,6 +43,9 @@ jobs:
           - { lang: cpp, apt: '' }
           - { lang: lua, apt: lua5.4 }
           - { lang: php, apt: php-cli }
+          # No opam file to resolve - the port builds with plain ocamlc,
+          # and Ubuntu's 4.14 is the version it targets.
+          - { lang: ocaml, apt: ocaml-nox }
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -162,7 +165,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v1
         with:
-          version: master
+          # Pinned, like every other toolchain here: the port targets 0.16,
+          # and `master` would move under it.
+          version: 0.16.0
       - run: make test-zig
 
   swift:
@@ -192,15 +197,6 @@ jobs:
           otp-version: '27'
           elixir-version: '1.17'
       - run: make test-elixir
-
-  ocaml:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ocaml/setup-ocaml@v3
-        with:
-          ocaml-compiler: '5.2'
-      - run: make test-ocaml
 
   haskell:
     runs-on: ubuntu-latest
