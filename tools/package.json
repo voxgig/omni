@@ -1,0 +1,20 @@
+{
+  "name": "@voxgig/omni-tools",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Build tooling for omni: compiles the aontu test-spec sources into the spec JSON every port reads.",
+  "type": "commonjs",
+  "bin": {
+    "omni-build-spec": "build-spec.js"
+  },
+  "scripts": {
+    "build-spec": "node build-spec.js",
+    "build-spec-check": "node build-spec.js --check",
+    "clean": "rm -rf node_modules package-lock.json",
+    "reset": "npm run clean && npm i && npm run build-spec"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@voxgig/model": "^9.3.0"
+  }
+}

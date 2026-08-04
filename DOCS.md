@@ -42,6 +42,16 @@ library, or a regex library without circularity.
 
 ## 2. The spec format
 
+A runner reads plain JSON — that is all a port ever needs, and it is why a
+port in any language can run the corpus with no toolchain beyond its own.
+
+How that JSON is *written* is a separate question. omni's own corpus is
+written in [aontu](https://github.com/voxgig/aontu) — see
+[`spec/fib.aontu`](spec/fib.aontu) — and compiled to
+[`spec/fib.json`](spec/fib.json) by `make spec`, which is what lets it carry
+comments and share definitions. Your specs can be authored however you like;
+the runner only sees the JSON.
+
 ### 2.1 Shape
 
 ```jsonc

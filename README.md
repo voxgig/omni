@@ -91,6 +91,11 @@ Every port ships the same tiny Fibonacci library and tests it with the same
 [`spec/fib.json`](spec/fib.json). It is the cross-language proof that the
 runners agree: nine groups covering every runner feature.
 
+The corpus is written in [aontu](https://github.com/voxgig/aontu) —
+[`spec/fib.aontu`](spec/fib.aontu) is the source of truth, and `fib.json` is
+compiled from it by `make spec` and committed, so that no port needs a Node
+toolchain to run its tests. Edit the aontu, never the JSON.
+
 | Group | Exercises |
 |---|---|
 | `basic` | `in`/`out` with scalar results |
@@ -206,13 +211,16 @@ guide and the provider adapter.
 
 ```
 .
-├── spec/fib.json      # the shared Fibonacci corpus
+├── spec/
+│   ├── fib.aontu      # the Fibonacci corpus - source of truth
+│   └── fib.json       # compiled from fib.aontu; what the ports read
 ├── typescript/        # the canonical implementation
 ├── <lang>/            # one directory per port: src, test, Makefile, README
 ├── tools/
+│   ├── build-spec.js      # compiles spec/*.aontu -> spec/*.json
 │   ├── check_parity.py    # every port defines the canonical API
 │   └── struct_compat.sh   # run struct's own suite on omni
-├── Makefile           # test / build / parity / struct-compat
+├── Makefile           # test / build / parity / spec / struct-compat
 ├── DOCS.md            # the comprehensive guide
 └── AGENTS.md          # notes for agents working in this repo
 ```
