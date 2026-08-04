@@ -252,8 +252,18 @@ jobs:
         with:
           node-version: '24'
       - run: make spec
-      - name: Fail if a committed spec JSON is stale
-        run: git diff --exit-code spec/
+      # Not `git diff --exit-code`: that ignores untracked files, so a commit
+      # adding a new spec/*.aontu without its generated JSON would pass while
+      # the artifact the ports read was never committed at all.
+      - name: Fail if a committed spec JSON is stale or missing
+        run: |
+          if [ -n "$(git status --porcelain -- spec/)" ]; then
+            git status --porcelain -- spec/
+            echo
+            echo "spec/ is out of sync with its .aontu sources."
+            echo "Run 'make spec' and commit the result."
+            exit 1
+          fi
 
   # The two properties that make 23 ports one library rather than 23
   # lookalikes.

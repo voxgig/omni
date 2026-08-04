@@ -93,9 +93,39 @@ function buildOne(entry) {
   return json
 }
 
+// A generated JSON whose .aontu source is gone. Nothing rebuilds it, so it
+// would sit there forever looking authoritative while no longer having a
+// source of truth - and a freshness check that only rebuilds live entries
+// would never notice.
+function findOrphans(specDir, entries) {
+  const sources = new Set(entries.map((e) => Path.basename(e, '.aontu')))
+  return Fs.readdirSync(specDir)
+    .filter((n) => n.endsWith('.json'))
+    .filter((n) => !sources.has(Path.basename(n, '.json')))
+    .sort()
+    .map((n) => Path.join(specDir, n))
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
-  const entries = args.entries.length ? args.entries : findEntries(args.specDir)
+  const scanned = 0 === args.entries.length
+  const entries = scanned ? findEntries(args.specDir) : args.entries
+
+  // Before the empty check: removing the LAST source leaves an orphan too,
+  // and "no entry files" would be a misleading way to report that.
+  // Only when scanning - an explicit entry list says nothing about the files
+  // it does not mention.
+  if (scanned) {
+    const orphans = findOrphans(args.specDir, entries)
+    if (orphans.length) {
+      console.error(
+        'ORPHANED: generated JSON with no .aontu source:\n  ' +
+        orphans.map((o) => Path.relative(process.cwd(), o)).join('\n  ') +
+        '\n\nDelete it, or restore the .aontu it was built from.'
+      )
+      process.exit(1)
+    }
+  }
 
   if (0 === entries.length) {
     console.error('no .aontu entry files found in ' + args.specDir)
@@ -116,7 +146,11 @@ function main() {
       const after = Fs.readFileSync(json, 'utf8')
       if (before !== after) {
         stale.push(Path.relative(process.cwd(), json))
+        // Restore what was there. When nothing was, the entry is missing its
+        // committed JSON entirely - remove what this run generated, so that
+        // --check leaves the worktree exactly as it found it.
         if (null != before) Fs.writeFileSync(json, before)
+        else Fs.unlinkSync(json)
       }
     } else {
       console.log('built ' + Path.relative(process.cwd(), json))
