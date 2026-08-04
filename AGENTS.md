@@ -10,8 +10,9 @@ comprehensive guide).
 >    [`typescript/src/Runner.ts`](typescript/src/Runner.ts) and
 >    [`typescript/src/Util.ts`](typescript/src/Util.ts). Every other port is
 >    a translation of those two files.
-> 2. **`spec/fib.json` is the contract.** It runs against every port. If a
->    port disagrees with it, the port is wrong.
+> 2. **`spec/fib.aontu` is the contract.** It runs against every port (via
+>    the generated `spec/fib.json`). If a port disagrees with it, the port
+>    is wrong.
 > 3. **Change the canonical first, then propagate.** A behaviour change
 >    means: edit the TypeScript, adjust the spec, then update *every* port
 >    and re-run its tests.
@@ -38,18 +39,24 @@ TypeScript, case for case, in idiomatic local style."
    bug (fix the port) or a canonical change (change TypeScript + spec +
    *all* ports). Never let one port drift.
 2. **Do not weaken the spec to make a failing port pass.**
-   `spec/fib.json` encodes canonical behaviour. Change it only when
+   `spec/fib.aontu` encodes canonical behaviour. Change it only when
    deliberately changing that behaviour, and verify the canonical
    TypeScript still passes first.
-3. **Do not add dependencies.** Every port uses only its standard library.
+3. **Never hand-edit `spec/*.json`.** It is generated from `spec/*.aontu`
+   by `make spec` and committed so that no port needs a Node toolchain to
+   run its tests. Edit the aontu, run `make spec`, commit both. CI's
+   `spec-freshness` job rebuilds and fails on any drift.
+4. **Do not add dependencies.** Every port uses only its standard library.
    Where the standard library has no JSON parser or no regex engine (Rust,
    C, C++, Java, Kotlin, Scala, Clojure, Lua, Swift, Elixir, OCaml,
-   Haskell, Zig), the port carries a small in-tree one.
-4. **The runner may not use the library under test.** omni carries its own
+   Haskell, Zig), the port carries a small in-tree one. (`tools/` is build
+   machinery, not a port — it may depend on `@voxgig/model`, and nothing
+   at test time ever reaches it.)
+5. **The runner may not use the library under test.** omni carries its own
    `clone`, `deepequal`, `getpath`, `walk`, `stringify` and JSON parsing.
    A runner that borrowed them could not test a library that provides them
    - and a bug in that library would hide itself.
-5. **Every port must prove it can fail.** Each test file asserts that the
+6. **Every port must prove it can fail.** Each test file asserts that the
    runner raises on a wrong result, a missing error, a failed match, and an
    absent key. A green suite that cannot go red proves nothing.
 
@@ -62,8 +69,12 @@ TypeScript, case for case, in idiomatic local style."
 ├── DOCS.md            # comprehensive guide: spec format, semantics, API
 ├── AGENTS.md          # this file
 ├── Makefile           # aggregate targets
-├── spec/fib.json      # the shared test corpus - the contract
+├── spec/
+│   ├── fib.aontu      # the shared test corpus - the contract, edit this
+│   └── fib.json       # generated from fib.aontu; what the ports read
 ├── tools/
+│   ├── build-spec.js      # compiles spec/*.aontu -> spec/*.json
+│   ├── package.json       # tools/ is a node project (@voxgig/model)
 │   ├── check_parity.py    # every port defines the canonical API
 │   └── struct_compat.sh   # run voxgig/struct's own suite on omni
 ├── typescript/        # the canonical implementation
@@ -117,13 +128,14 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 1. Reproduce: `make test-<lang>` and read the failing entry.
 2. Compare that port's logic to the canonical TypeScript for the same
    function.
-3. Fix the **port**. Do not touch `spec/fib.json`.
+3. Fix the **port**. Do not touch the spec.
 4. `make test-<lang>` green, then `make test` to be sure nothing else moved.
 
 ### Change runner behaviour (affects everyone)
 
 1. Edit `typescript/src/Runner.ts` (and `Util.ts` if needed).
-2. Add or adjust the spec entries that pin the new behaviour.
+2. Add or adjust the entries in `spec/fib.aontu` that pin the new
+   behaviour, then `make spec` to regenerate `spec/fib.json`.
 3. `make test-typescript` - the canonical passes.
 4. Propagate the same logic to **every** port; run each port's tests.
 5. `make parity` and `make test` stay green.
@@ -199,5 +211,6 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 
 - Spec format and semantics: [`DOCS.md`](DOCS.md)
 - Per-port specifics: `<lang>/README.md`
-- The contract: [`spec/fib.json`](spec/fib.json)
+- The contract: [`spec/fib.aontu`](spec/fib.aontu) (compiled to
+  [`spec/fib.json`](spec/fib.json) by `make spec`)
 - The struct replacement path: [`DOCS.md`](DOCS.md#8-replacing-structs-in-situ-runners)

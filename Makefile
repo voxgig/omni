@@ -8,6 +8,8 @@
 #   make clean         - clean build artifacts
 #   make parity        - check that every port has the canonical API
 #   make struct-compat - run voxgig/struct's own suite on omni's runner
+#   make spec          - recompile spec/*.json from spec/*.aontu
+#   make spec-check    - fail if a committed spec/*.json is stale
 
 # Every port directory. Target names are the directory names, used verbatim
 # as `make -C <dir>`. Each port ships at least `test`; `build`, `inspect`
@@ -15,7 +17,7 @@
 LANGS = typescript javascript python ruby php perl lua go rust java csharp kotlin \
         scala clojure c cpp zig swift dart elixir ocaml haskell lean
 
-.PHONY: all test build inspect clean parity struct-compat check
+.PHONY: all test build inspect clean parity struct-compat check spec spec-check
 
 all: test
 
@@ -59,6 +61,17 @@ clean:
 
 parity:
 	@python3 tools/check_parity.py
+
+# spec/*.json are COMMITTED artifacts compiled from spec/*.aontu by
+# @voxgig/model. The .aontu files are the source of truth; every port reads
+# only the JSON, so no port needs a Node toolchain to run its tests. After
+# editing a *.aontu source, run `make spec` and commit the regenerated JSON —
+# CI's spec-freshness check fails on a stale artifact.
+spec:
+	@cd tools && npm install --no-audit --no-fund --silent && npm run --silent build-spec
+
+spec-check:
+	@cd tools && npm install --no-audit --no-fund --silent && npm run --silent build-spec-check
 
 # Run voxgig/struct's own JavaScript suite with omni's runner swapped in.
 # Pass STRUCT=<path> if the struct repo is not a sibling of this one.
