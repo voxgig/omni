@@ -101,9 +101,16 @@ public func fixjson(_ val: Json, _ donull: Bool) -> Json {
   return val
 }
 
-/// The JSON form of an error: always at least {name,message}.
-public func errify(_ message: String) -> Json {
-  return Json.mapOf([("name", .str("Error")), ("message", .str(message))])
+/// The JSON form of an error: always at least {name,message}. The name is
+/// the thrown error's type name (the canonical runner uses `err.name`), so
+/// a `match:{err:{name:...}}` expectation can see the real error type.
+public func errify(_ err: Error) -> Json {
+  return Json.mapOf([("name", .str(errname(err))), ("message", .str(errmessage(err)))])
+}
+
+/// The name of an error: its Swift type name (e.g. "FibError").
+public func errname(_ err: Error) -> String {
+  return String(describing: type(of: err))
 }
 
 /// The message an `err` expectation matches.
@@ -130,6 +137,11 @@ public func matchval(_ check: Json, _ base: Json) -> Bool {
   }
 
   if let text = want.asstr {
+    // An empty want is not a wildcard: it matches only an empty string.
+    if text.isEmpty {
+      return "" == base.asstr
+    }
+
     let basestr = stringify(base)
 
     if 2 < text.count, text.hasPrefix("/"), text.hasSuffix("/") {
@@ -237,7 +249,7 @@ public final class RunPack {
       } catch let omnierr as OmniError {
         throw omnierr
       } catch {
-        try handleerror(useflags, index, entry, errmessage(error))
+        try handleerror(useflags, index, entry, error)
         continue
       }
 
@@ -268,6 +280,12 @@ public final class RunPack {
       if let contextify = provider.contextify {
         first = contextify(first)
       }
+      // KNOWN LIMITATION: the canonical runner attaches the per-entry
+      // client to the context here (`first.client = testpack.client`).
+      // The Swift Json enum can only hold JSON values, not a Provider
+      // object, so the context passed to the subject cannot carry the
+      // client. A Swift subject that needs the per-entry client must be
+      // resolved through that client's own `subject` hook instead.
       args[0] = first
       entry.set("ctx", first)
     }
@@ -312,7 +330,8 @@ public final class RunPack {
     throw fail(flags, index, entry, "result mismatch", stringify(out), stringify(res))
   }
 
-  private func handleerror(_ flags: Flags, _ index: Int, _ entry: Json, _ message: String) throws {
+  private func handleerror(_ flags: Flags, _ index: Int, _ entry: Json, _ err: Error) throws {
+    let message = errmessage(err)
     let entryerr = entry.get("err")
 
     if !entryerr.isnone {
@@ -328,7 +347,7 @@ public final class RunPack {
             ("in", entry.get("in")),
             ("out", entry.get("res")),
             ("ctx", entry.get("ctx")),
-            ("err", errify(message)),
+            ("err", errify(err)),
           ])
           try matchcheck(flags, index, entry, check, base)
         }
@@ -366,24 +385,57 @@ public final class RunPack {
       return
     }
 
-    // Explicitly absent.
-    if UNDEFMARK == check.asstr && baseval.isabsent {
-      return
+    // Explicitly absent: satisfied only by a genuinely missing key, never
+    // by a present null (the distinction the sentinels exist to keep).
+    if UNDEFMARK == check.asstr {
+      if baseval.isabsent {
+        return
+      }
+      throw fail(
+        flags, index, entry, "expected absent at \(matchat(path))",
+        "absent", stringify(baseval))
     }
 
-    // Explicitly present.
-    if EXISTSMARK == check.asstr && !baseval.isnone {
-      return
+    // Explicitly null: satisfied only by a present null.
+    if NULLMARK == check.asstr {
+      if baseval.isnull || NULLMARK == baseval.asstr {
+        return
+      }
+      throw fail(
+        flags, index, entry, "expected null at \(matchat(path))",
+        "null", stringify(baseval))
+    }
+
+    // Explicitly present: any present value, including null.
+    if EXISTSMARK == check.asstr {
+      if !baseval.isabsent {
+        return
+      }
+      throw fail(
+        flags, index, entry, "expected present at \(matchat(path))",
+        "present", "absent")
+    }
+
+    // A concrete expectation never matches a missing key - a match leaf
+    // against an absent value must fail, not substring-match "undefined".
+    if baseval.isabsent {
+      throw fail(
+        flags, index, entry, "match failed at \(matchat(path))",
+        stringify(check), "absent")
     }
 
     if matchval(check, baseval) {
       return
     }
 
-    let where_ = path.isEmpty ? "<root>" : pathify(path)
-
     throw fail(
-      flags, index, entry, "match failed at \(where_)", stringify(check), stringify(baseval))
+      flags, index, entry, "match failed at \(matchat(path))",
+      stringify(check), stringify(baseval))
+  }
+
+  // The location of one match leaf, for failure messages.
+  private func matchat(_ path: [String]) -> String {
+    return path.isEmpty ? "<root>" : pathify(path)
   }
 
   // The label of one entry, for failure messages.

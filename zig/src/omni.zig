@@ -487,6 +487,11 @@ pub fn matchval(alloc: std.mem.Allocator, check: Maybe, base: Maybe) !bool {
     }
 
     if (asstr(want)) |text| {
+        // An empty want is not a wildcard: it matches only an empty string.
+        if (0 == text.len) {
+            return if (asstr(base)) |basetext| 0 == basetext.len else false;
+        }
+
         const basestr = try stringify(alloc, base);
 
         if (2 < text.len and '/' == text[0] and '/' == text[text.len - 1]) {
@@ -799,30 +804,102 @@ pub const RunPack = struct {
         }
 
         if (asstr(check)) |text| {
-            // Explicitly absent.
-            if (std.mem.eql(u8, UNDEFMARK, text) and isabsent(baseval)) {
-                return null;
+            // Explicitly absent: satisfied only by a genuinely missing
+            // key, never by a present null (the distinction the sentinels
+            // exist to keep).
+            if (std.mem.eql(u8, UNDEFMARK, text)) {
+                if (isabsent(baseval)) {
+                    return null;
+                }
+                return try self.fail(
+                    label,
+                    index,
+                    entry,
+                    try std.fmt.allocPrint(alloc, "expected absent at {s}", .{try self.matchat(path)}),
+                    "absent",
+                    try stringify(alloc, baseval),
+                );
             }
-            // Explicitly present.
-            if (std.mem.eql(u8, EXISTSMARK, text) and !isnone(baseval)) {
-                return null;
+            // Explicitly null: satisfied only by a present null.
+            if (std.mem.eql(u8, NULLMARK, text)) {
+                if (isnull(baseval)) {
+                    return null;
+                }
+                if (asstr(baseval)) |basetext| {
+                    if (std.mem.eql(u8, NULLMARK, basetext)) {
+                        return null;
+                    }
+                }
+                return try self.fail(
+                    label,
+                    index,
+                    entry,
+                    try std.fmt.allocPrint(alloc, "expected null at {s}", .{try self.matchat(path)}),
+                    "null",
+                    try stringify(alloc, baseval),
+                );
             }
+            // Explicitly present: any present value, including null.
+            if (std.mem.eql(u8, EXISTSMARK, text)) {
+                if (!isabsent(baseval)) {
+                    return null;
+                }
+                return try self.fail(
+                    label,
+                    index,
+                    entry,
+                    try std.fmt.allocPrint(alloc, "expected present at {s}", .{try self.matchat(path)}),
+                    "present",
+                    "absent",
+                );
+            }
+        }
+
+        // A concrete expectation never matches a missing key - a match
+        // leaf against an absent value must fail, not substring-match
+        // "undefined".
+        if (isabsent(baseval)) {
+            return try self.fail(
+                label,
+                index,
+                entry,
+                try std.fmt.allocPrint(alloc, "match failed at {s}", .{try self.matchat(path)}),
+                try stringify(alloc, check),
+                "absent",
+            );
         }
 
         if (try matchval(alloc, check, baseval)) {
             return null;
         }
 
-        const where = if (0 == path.len) "<root>" else try pathify(alloc, path);
+        return try self.matchfail(label, index, entry, check, baseval, path);
+    }
 
+    // A "match failed" report at one path.
+    fn matchfail(
+        self: *const RunPack,
+        label: []const u8,
+        index: usize,
+        entry: Json,
+        check: Maybe,
+        baseval: Maybe,
+        path: []const []const u8,
+    ) error{OutOfMemory}![]const u8 {
+        const alloc = self.alloc;
         return try self.fail(
             label,
             index,
             entry,
-            try std.fmt.allocPrint(alloc, "match failed at {s}", .{where}),
+            try std.fmt.allocPrint(alloc, "match failed at {s}", .{try self.matchat(path)}),
             try stringify(alloc, check),
             try stringify(alloc, baseval),
         );
+    }
+
+    // The location of one match leaf, for failure messages.
+    fn matchat(self: *const RunPack, path: []const []const u8) error{OutOfMemory}![]const u8 {
+        return if (0 == path.len) "<root>" else try pathify(self.alloc, path);
     }
 
     // The spec-defined part of an entry (drop runner bookkeeping).

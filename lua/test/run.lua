@@ -99,6 +99,23 @@ local function badspec()
       missing = u.map({ set = u.list({
         u.map({ ['in'] = 6, match = u.map({ out = u.map({ nope = '__EXISTS__' }) }) }),
       }) }),
+      -- A concrete match leaf against a missing key must fail, not
+      -- substring-match the text "undefined".
+      matchabsent = u.map({ set = u.list({
+        u.map({ ['in'] = 6, match = u.map({ out = u.map({ nope = 'fine' }) }) }),
+      }) }),
+      -- __UNDEF__ (absent) must not be satisfied by a present null.
+      undefonnull = u.map({ set = u.list({
+        u.map({ ['in'] = 0, match = u.map({ out = u.map({ prev = '__UNDEF__' }) }) }),
+      }) }),
+      -- __NULL__ (present null) must not be satisfied by an absent key.
+      nullonabsent = u.map({ set = u.list({
+        u.map({ ['in'] = 6, match = u.map({ out = u.map({ nope = '__NULL__' }) }) }),
+      }) }),
+      -- An empty-string want is not a wildcard substring match.
+      emptystr = u.map({ set = u.list({
+        u.map({ ['in'] = 6, match = u.map({ out = u.map({ label = '' }) }) }),
+      }) }),
     }),
   })
 end
@@ -157,6 +174,14 @@ testcase('detects wrong result', function() expectfail('wrongout', FIB) end)
 testcase('detects missing error', function() expectfail('wrongerr', FIB) end)
 testcase('detects failed match', function() expectfail('wrongmatch', FIB) end)
 testcase('detects absent key', function() expectfail('missing', FIBINFO) end)
+testcase('a concrete match leaf does not match a missing key',
+  function() expectfail('matchabsent', FIBINFO) end)
+testcase('__UNDEF__ does not match a present null',
+  function() expectfail('undefonnull', FIBINFO) end)
+testcase('__NULL__ does not match an absent key',
+  function() expectfail('nullonabsent', FIBINFO) end)
+testcase('an empty-string match leaf is not a wildcard',
+  function() expectfail('emptystr', FIBINFO) end)
 testcase('reports entry index and id', checkmessage)
 
 print('\n' .. PASSCOUNT .. ' passed, ' .. FAILCOUNT .. ' failed')

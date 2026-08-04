@@ -6,6 +6,15 @@ The canonical API is the export list of the TypeScript port
 local casing - matching is case- and underscore-insensitive, exactly as in
 voxgig/struct.
 
+SCOPE: this is a NAME check, not a behaviour check. It confirms each
+canonical identifier appears as a token in a port's source (it scans raw
+text, so a name in a comment counts). It does NOT verify that a port's
+`deepequal`, `matchval`, etc. behave like the canonical - a port whose
+`deepequal` was `return true` would pass here. Behavioural parity is the
+job of `spec/fib.json` (run per port) plus each port's negative meta-tests
+("prove it can fail"); when those do not exercise an area (ctx, err.name,
+number formatting, ...), ports can drift while this check stays green.
+
 Usage: python3 tools/check_parity.py
 """
 

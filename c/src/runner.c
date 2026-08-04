@@ -253,6 +253,13 @@ int omni_matchval(omni_pool *pool, const omni_json *check, const omni_json *base
     char *basestr = omni_stringify(pool, base);
     size_t wantlen = strlen(want);
 
+    /* An empty want is a substring of everything, so it would match any
+     * value. Require the base to be the empty string too. */
+    if (0 == wantlen) {
+      const char *bstr = omni_strval(base);
+      return NULL != bstr && '\0' == bstr[0];
+    }
+
     if (2 < wantlen && '/' == want[0] && '/' == want[wantlen - 1]) {
       char *pattern = omni_pool_strdup(pool, want + 1);
       pattern[wantlen - 2] = '\0';
@@ -273,6 +280,11 @@ typedef struct {
   const omni_json *base;
   char **errout;
 } omni_matchctx;
+
+static char *omni_matchat(omni_matchctx *ctx, char **path, size_t pathlen) {
+  return 0 == pathlen ? omni_pool_strdup(ctx->pool, "<root>")
+                      : omni_pathify(ctx->pool, path, pathlen);
+}
 
 static int omni_matchwalk(omni_matchctx *ctx, const omni_json *check, char **path,
                           size_t pathlen) {
@@ -303,34 +315,68 @@ static int omni_matchwalk(omni_matchctx *ctx, const omni_json *check, char **pat
   {
     const omni_json *baseval = omni_getpath(ctx->base, path, pathlen);
     const char *checkstr = omni_strval(check);
+    const char *basestr = omni_strval(baseval);
 
     if (omni_deepequal(check, baseval)) {
       return 0;
     }
 
-    /* Explicitly absent. */
-    if (NULL != checkstr && 0 == strcmp(checkstr, OMNI_UNDEFMARK) && omni_isabsent(baseval)) {
-      return 0;
+    /* Explicitly absent: satisfied only by a genuinely missing key, never
+     * by a present null (the distinction the sentinels exist to keep). */
+    if (NULL != checkstr && 0 == strcmp(checkstr, OMNI_UNDEFMARK)) {
+      if (omni_isabsent(baseval)) {
+        return 0;
+      }
+      *ctx->errout = omni_fail(
+          ctx->pool, ctx->flags, ctx->index, ctx->entry,
+          omni_join(ctx->pool, "expected absent at ", omni_matchat(ctx, path, pathlen), NULL, NULL),
+          "absent", omni_stringify(ctx->pool, baseval));
+      return 1;
     }
 
-    /* Explicitly present. */
-    if (NULL != checkstr && 0 == strcmp(checkstr, OMNI_EXISTSMARK) && !omni_isnone(baseval)) {
-      return 0;
+    /* Explicitly null: satisfied only by a present null. */
+    if (NULL != checkstr && 0 == strcmp(checkstr, OMNI_NULLMARK)) {
+      if (omni_isnull(baseval) || (NULL != basestr && 0 == strcmp(basestr, OMNI_NULLMARK))) {
+        return 0;
+      }
+      *ctx->errout = omni_fail(
+          ctx->pool, ctx->flags, ctx->index, ctx->entry,
+          omni_join(ctx->pool, "expected null at ", omni_matchat(ctx, path, pathlen), NULL, NULL),
+          "null", omni_stringify(ctx->pool, baseval));
+      return 1;
+    }
+
+    /* Explicitly present: any present value, including null. */
+    if (NULL != checkstr && 0 == strcmp(checkstr, OMNI_EXISTSMARK)) {
+      if (!omni_isabsent(baseval)) {
+        return 0;
+      }
+      *ctx->errout = omni_fail(
+          ctx->pool, ctx->flags, ctx->index, ctx->entry,
+          omni_join(ctx->pool, "expected present at ", omni_matchat(ctx, path, pathlen), NULL, NULL),
+          "present", "absent");
+      return 1;
+    }
+
+    /* A concrete expectation never matches a missing key - a match leaf
+     * against an absent value must fail, not substring-match "undefined". */
+    if (omni_isabsent(baseval)) {
+      *ctx->errout = omni_fail(
+          ctx->pool, ctx->flags, ctx->index, ctx->entry,
+          omni_join(ctx->pool, "match failed at ", omni_matchat(ctx, path, pathlen), NULL, NULL),
+          omni_stringify(ctx->pool, check), "absent");
+      return 1;
     }
 
     if (omni_matchval(ctx->pool, check, baseval)) {
       return 0;
     }
 
-    {
-      char *where = 0 == pathlen ? omni_pool_strdup(ctx->pool, "<root>")
-                                 : omni_pathify(ctx->pool, path, pathlen);
-      *ctx->errout = omni_fail(ctx->pool, ctx->flags, ctx->index, ctx->entry,
-                               omni_join(ctx->pool, "match failed at ", where, NULL, NULL),
-                               omni_stringify(ctx->pool, check),
-                               omni_stringify(ctx->pool, baseval));
-      return 1;
-    }
+    *ctx->errout = omni_fail(
+        ctx->pool, ctx->flags, ctx->index, ctx->entry,
+        omni_join(ctx->pool, "match failed at ", omni_matchat(ctx, path, pathlen), NULL, NULL),
+        omni_stringify(ctx->pool, check), omni_stringify(ctx->pool, baseval));
+    return 1;
   }
 }
 

@@ -97,18 +97,13 @@ fun matchval(check: Json, base: Json): Boolean {
         return true
     }
 
-    var want = check
-    val wanttext = want.asstr
-    if (UNDEFMARK == wanttext || NULLMARK == wanttext) {
-        want = Json.Null
-    }
-
-    if (want.isnone) {
-        return base.isnone || NULLMARK == base.asstr
-    }
-
-    val text = want.asstr
+    val text = check.asstr
     if (null != text) {
+        // An empty want would substring-match anything.
+        if (text.isEmpty()) {
+            return false
+        }
+
         val basestr = stringify(base)
 
         if (2 < text.length && text.startsWith("/") && text.endsWith("/")) {
@@ -122,7 +117,7 @@ fun matchval(check: Json, base: Json): Boolean {
         return basestr.lowercase().contains(text.lowercase())
     }
 
-    return deepequal(want, base)
+    return deepequal(check, base)
 }
 
 /** Convert NULLMARK sentinels back into real nulls. */
@@ -297,6 +292,8 @@ class RunPack(
         base: Json,
         path: List<String> = listOf(),
     ) {
+        val where = if (path.isEmpty()) "<root>" else pathify(path)
+
         if (check is Json.JList) {
             for ((at, subcheck) in check.value.withIndex()) {
                 matchcheck(label, index, entry, subcheck, base, path + "$at")
@@ -317,21 +314,52 @@ class RunPack(
             return
         }
 
-        // Explicitly absent.
-        if (UNDEFMARK == check.asstr && baseval.isabsent) {
-            return
+        // Explicitly absent: satisfied only by a genuinely missing key, never
+        // by a present null (the distinction the sentinels exist to keep).
+        if (UNDEFMARK == check.asstr) {
+            if (baseval.isabsent) {
+                return
+            }
+            throw fail(
+                label, index, entry, "expected absent at $where",
+                "absent", stringify(baseval),
+            )
         }
 
-        // Explicitly present.
-        if (EXISTSMARK == check.asstr && !baseval.isnone) {
-            return
+        // Explicitly null: satisfied only by a present null.
+        if (NULLMARK == check.asstr) {
+            if (baseval.isnull || NULLMARK == baseval.asstr) {
+                return
+            }
+            throw fail(
+                label, index, entry, "expected null at $where",
+                "null", stringify(baseval),
+            )
+        }
+
+        // Explicitly present: any present value, including null.
+        if (EXISTSMARK == check.asstr) {
+            if (!baseval.isabsent) {
+                return
+            }
+            throw fail(
+                label, index, entry, "expected present at $where",
+                "present", "absent",
+            )
+        }
+
+        // A concrete expectation never matches a missing key - a match leaf
+        // against an absent value must fail, not substring-match "undefined".
+        if (baseval.isabsent) {
+            throw fail(
+                label, index, entry, "match failed at $where",
+                stringify(check), "absent",
+            )
         }
 
         if (matchval(check, baseval)) {
             return
         }
-
-        val where = if (path.isEmpty()) "<root>" else pathify(path)
 
         throw fail(
             label, index, entry, "match failed at $where",

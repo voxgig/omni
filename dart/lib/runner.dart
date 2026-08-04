@@ -140,6 +140,11 @@ bool matchval(dynamic check, dynamic base) {
   }
 
   if (want is String) {
+    // An empty want is not a wildcard: it matches only an empty string.
+    if (want.isEmpty) {
+      return '' == base;
+    }
+
     final basestr = stringify(base);
 
     if (2 < want.length && want.startsWith('/') && want.endsWith('/')) {
@@ -350,25 +355,50 @@ class RunPack {
       return;
     }
 
-    // Explicitly absent.
-    if (UNDEFMARK == check && isabsent(baseval)) {
-      return;
+    // Explicitly absent: satisfied only by a genuinely missing key, never
+    // by a present null (the distinction the sentinels exist to keep).
+    if (UNDEFMARK == check) {
+      if (isabsent(baseval)) {
+        return;
+      }
+      throw _fail(label, index, entry, 'expected absent at ${_at(path)}',
+          'absent', stringify(baseval));
     }
 
-    // Explicitly present.
-    if (EXISTSMARK == check && !isabsent(baseval) && null != baseval) {
-      return;
+    // Explicitly null: satisfied only by a present null.
+    if (NULLMARK == check) {
+      if (null == baseval || NULLMARK == baseval) {
+        return;
+      }
+      throw _fail(label, index, entry, 'expected null at ${_at(path)}',
+          'null', stringify(baseval));
+    }
+
+    // Explicitly present: any present value, including null.
+    if (EXISTSMARK == check) {
+      if (!isabsent(baseval)) {
+        return;
+      }
+      throw _fail(label, index, entry, 'expected present at ${_at(path)}',
+          'present', 'absent');
+    }
+
+    // A concrete expectation never matches a missing key - a match leaf
+    // against an absent value must fail, not substring-match "undefined".
+    if (isabsent(baseval)) {
+      throw _fail(label, index, entry, 'match failed at ${_at(path)}',
+          stringify(check), 'absent');
     }
 
     if (matchval(check, baseval)) {
       return;
     }
 
-    final where = path.isEmpty ? '<root>' : pathify(path);
-
-    throw _fail(label, index, entry, 'match failed at $where',
+    throw _fail(label, index, entry, 'match failed at ${_at(path)}',
         stringify(check), stringify(baseval));
   }
+
+  String _at(List<String> path) => path.isEmpty ? '<root>' : pathify(path);
 
   // The label of one entry, for failure messages.
   String _entryref(String label, int index, Map entry) {

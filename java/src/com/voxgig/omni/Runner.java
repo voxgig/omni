@@ -528,6 +528,8 @@ public final class Runner {
     Util.walk(
         Util.clone(check),
         (key, val, parent, path) -> {
+          String atpath = path.isEmpty() ? "<root>" : Util.pathify(path);
+
           if (Util.isnode(val)) {
             return val;
           }
@@ -538,14 +540,45 @@ public final class Runner {
             return val;
           }
 
-          // Explicitly absent.
-          if (UNDEFMARK.equals(val) && Util.isabsent(baseval)) {
-            return val;
+          // Explicitly absent: satisfied only by a genuinely missing key,
+          // never by a present null (the distinction the sentinels exist to
+          // keep).
+          if (UNDEFMARK.equals(val)) {
+            if (Util.isabsent(baseval)) {
+              return val;
+            }
+            throw fail(
+                flags, index, entry, "expected absent at " + atpath,
+                "absent", Util.stringify(baseval));
           }
 
-          // Explicitly present.
-          if (EXISTSMARK.equals(val) && !Util.isabsent(baseval) && null != baseval) {
-            return val;
+          // Explicitly null: satisfied only by a present null.
+          if (NULLMARK.equals(val)) {
+            if (null == baseval || NULLMARK.equals(baseval)) {
+              return val;
+            }
+            throw fail(
+                flags, index, entry, "expected null at " + atpath,
+                "null", Util.stringify(baseval));
+          }
+
+          // Explicitly present: any present value, including null.
+          if (EXISTSMARK.equals(val)) {
+            if (!Util.isabsent(baseval)) {
+              return val;
+            }
+            throw fail(
+                flags, index, entry, "expected present at " + atpath,
+                "present", "absent");
+          }
+
+          // A concrete expectation never matches a missing key - a match leaf
+          // against an absent value must fail, not substring-match
+          // "undefined".
+          if (Util.isabsent(baseval)) {
+            throw fail(
+                flags, index, entry, "match failed at " + atpath,
+                Util.stringify(val), "absent");
           }
 
           if (!matchval(val, baseval)) {
@@ -553,7 +586,7 @@ public final class Runner {
                 flags,
                 index,
                 entry,
-                "match failed at " + (path.isEmpty() ? "<root>" : Util.pathify(path)),
+                "match failed at " + atpath,
                 Util.stringify(val),
                 Util.stringify(baseval));
           }
@@ -568,17 +601,14 @@ public final class Runner {
       return true;
     }
 
-    Object want = check;
-    if (UNDEFMARK.equals(want) || NULLMARK.equals(want)) {
-      want = null;
-    }
+    if (check instanceof String) {
+      String text = (String) check;
 
-    if (null == want) {
-      return null == base || Util.isabsent(base) || NULLMARK.equals(base);
-    }
+      // An empty want would substring-match anything.
+      if (text.isEmpty()) {
+        return false;
+      }
 
-    if (want instanceof String) {
-      String text = (String) want;
       String basestr = Util.stringify(base);
 
       if (2 < text.length() && text.startsWith("/") && text.endsWith("/")) {
@@ -593,7 +623,7 @@ public final class Runner {
       return basestr.toLowerCase().contains(text.toLowerCase());
     }
 
-    return Util.deepequal(want, base);
+    return Util.deepequal(check, base);
   }
 
   /** Convert NULLMARK sentinels back into real nulls. */

@@ -61,6 +61,10 @@
       (cond
         (nil? want) (or (u/isnone base) (= u/NULLMARK base))
 
+        ;; An empty want is a substring of everything, so it would match any
+        ;; value. Require the base to be the empty string too.
+        (= "" want) (= "" base)
+
         (string? want)
         (let [basestr (u/stringify base)]
           (if (and (< 2 (count want)) (string/starts-with? want "/") (string/ends-with? want "/"))
@@ -103,26 +107,51 @@
 (defn match
   ([label index entry check base] (match label index entry check base []))
   ([label index entry check base path]
-   (cond
-     (u/islist check)
-     (doseq [[at subcheck] (map-indexed vector check)]
-       (match label index entry subcheck base (conj path (str at))))
+   (let [at (if (empty? path) "<root>" (u/pathify path))]
+     (cond
+       (u/islist check)
+       (doseq [[index2 subcheck] (map-indexed vector check)]
+         (match label index entry subcheck base (conj path (str index2))))
 
-     (u/ismap check)
-     (doseq [[key subcheck] check]
-       (match label index entry subcheck base (conj path key)))
+       (u/ismap check)
+       (doseq [[key subcheck] check]
+         (match label index entry subcheck base (conj path key)))
 
-     :else
-     (let [baseval (u/getpath base path)
-           ok (or (u/deepequal check baseval)
-                  (and (= u/UNDEFMARK check) (u/isabsent baseval))
-                  (and (= u/EXISTSMARK check) (not (u/isnone baseval)))
-                  (matchval check baseval))]
-       (when-not ok
-         (throw (fail label index entry
-                      (str "match failed at " (if (empty? path) "<root>" (u/pathify path)))
-                      (u/stringify check)
-                      (u/stringify baseval))))))))
+       :else
+       (let [baseval (u/getpath base path)]
+         (cond
+           (u/deepequal check baseval) nil
+
+           ;; Explicitly absent: satisfied only by a genuinely missing key,
+           ;; never by a present null (the distinction the sentinels exist
+           ;; to keep).
+           (= u/UNDEFMARK check)
+           (when-not (u/isabsent baseval)
+             (throw (fail label index entry (str "expected absent at " at)
+                          "absent" (u/stringify baseval))))
+
+           ;; Explicitly null: satisfied only by a present null.
+           (= u/NULLMARK check)
+           (when-not (or (nil? baseval) (= u/NULLMARK baseval))
+             (throw (fail label index entry (str "expected null at " at)
+                          "null" (u/stringify baseval))))
+
+           ;; Explicitly present: any present value, including null.
+           (= u/EXISTSMARK check)
+           (when (u/isabsent baseval)
+             (throw (fail label index entry (str "expected present at " at)
+                          "present" "absent")))
+
+           ;; A concrete expectation never matches a missing key - a match
+           ;; leaf against an absent value must fail, not substring-match
+           ;; the text "undefined".
+           (u/isabsent baseval)
+           (throw (fail label index entry (str "match failed at " at)
+                        (u/stringify check) "absent"))
+
+           (not (matchval check baseval))
+           (throw (fail label index entry (str "match failed at " at)
+                        (u/stringify check) (u/stringify baseval)))))))))
 
 (defn- checkresult [label index entry args res]
   (let [entryerr (get entry "err")

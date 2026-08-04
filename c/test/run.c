@@ -226,6 +226,74 @@ static omni_json *badspec(void) {
   omni_map_set(group, "set", set);
   omni_map_set(fibgroup, "missing", group);
 
+  /* matchabsent: a concrete match leaf against a missing key must fail,
+   * not substring-match the text "undefined". */
+  group = omni_map(POOL);
+  set = omni_list(POOL);
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 6));
+  {
+    omni_json *inner = omni_map(POOL);
+    omni_json *check = omni_map(POOL);
+    omni_map_set(inner, "nope", omni_str(POOL, "fine"));
+    omni_map_set(check, "out", inner);
+    omni_map_set(entry, "match", check);
+  }
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "matchabsent", group);
+
+  /* undefonnull: __UNDEF__ (absent) must not be satisfied by a present
+   * null. */
+  group = omni_map(POOL);
+  set = omni_list(POOL);
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 0));
+  {
+    omni_json *inner = omni_map(POOL);
+    omni_json *check = omni_map(POOL);
+    omni_map_set(inner, "prev", omni_str(POOL, OMNI_UNDEFMARK));
+    omni_map_set(check, "out", inner);
+    omni_map_set(entry, "match", check);
+  }
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "undefonnull", group);
+
+  /* nullonabsent: __NULL__ (present null) must not be satisfied by an
+   * absent key. */
+  group = omni_map(POOL);
+  set = omni_list(POOL);
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 6));
+  {
+    omni_json *inner = omni_map(POOL);
+    omni_json *check = omni_map(POOL);
+    omni_map_set(inner, "nope", omni_str(POOL, OMNI_NULLMARK));
+    omni_map_set(check, "out", inner);
+    omni_map_set(entry, "match", check);
+  }
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "nullonabsent", group);
+
+  /* emptystr: an empty-string want is a substring of everything, not a
+   * wildcard. */
+  group = omni_map(POOL);
+  set = omni_list(POOL);
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 6));
+  {
+    omni_json *inner = omni_map(POOL);
+    omni_json *check = omni_map(POOL);
+    omni_map_set(inner, "label", omni_str(POOL, ""));
+    omni_map_set(check, "out", inner);
+    omni_map_set(entry, "match", check);
+  }
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "emptystr", group);
+
   omni_map_set(spec, "fib", fibgroup);
 
   return spec;
@@ -348,6 +416,14 @@ int main(int argc, char **argv) {
   expectfail("detects missing error", "wrongerr", makesubject(subject_fib, NULL));
   expectfail("detects failed match", "wrongmatch", makesubject(subject_fib, NULL));
   expectfail("detects absent key", "missing", makesubject(subject_fibinfo, NULL));
+  expectfail("a concrete match leaf does not match a missing key", "matchabsent",
+             makesubject(subject_fibinfo, NULL));
+  expectfail("__UNDEF__ does not match a present null", "undefonnull",
+             makesubject(subject_fibinfo, NULL));
+  expectfail("__NULL__ does not match an absent key", "nullonabsent",
+             makesubject(subject_fibinfo, NULL));
+  expectfail("an empty-string match leaf is not a wildcard", "emptystr",
+             makesubject(subject_fibinfo, NULL));
   checkmessage();
 
   printf("\n%d passed, %d failed\n", PASSCOUNT, FAILCOUNT);

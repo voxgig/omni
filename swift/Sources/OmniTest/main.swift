@@ -138,6 +138,79 @@ func badspec() -> Json {
             )
           ])
         ),
+        // A concrete match leaf against a missing key must fail, not
+        // substring-match the text "undefined".
+        (
+          "matchabsent",
+          Json.mapOf([
+            (
+              "set",
+              .list([
+                Json.mapOf([
+                  ("in", .num(6)),
+                  (
+                    "match",
+                    Json.mapOf([("out", Json.mapOf([("nope", .str("fine"))]))])
+                  ),
+                ])
+              ])
+            )
+          ])
+        ),
+        // __UNDEF__ (absent) must not be satisfied by a present null.
+        (
+          "undefonnull",
+          Json.mapOf([
+            (
+              "set",
+              .list([
+                Json.mapOf([
+                  ("in", .num(0)),
+                  (
+                    "match",
+                    Json.mapOf([("out", Json.mapOf([("prev", .str("__UNDEF__"))]))])
+                  ),
+                ])
+              ])
+            )
+          ])
+        ),
+        // __NULL__ (present null) must not be satisfied by an absent key.
+        (
+          "nullonabsent",
+          Json.mapOf([
+            (
+              "set",
+              .list([
+                Json.mapOf([
+                  ("in", .num(6)),
+                  (
+                    "match",
+                    Json.mapOf([("out", Json.mapOf([("nope", .str("__NULL__"))]))])
+                  ),
+                ])
+              ])
+            )
+          ])
+        ),
+        // An empty-string leaf matches only an empty string, not "anything".
+        (
+          "emptystr",
+          Json.mapOf([
+            (
+              "set",
+              .list([
+                Json.mapOf([
+                  ("in", .num(6)),
+                  (
+                    "match",
+                    Json.mapOf([("out", Json.mapOf([("label", .str(""))]))])
+                  ),
+                ])
+              ])
+            )
+          ])
+        ),
       ])
     )
   ])
@@ -213,6 +286,12 @@ testcase("detects wrong result") { try expectfail("wrongout", FIB) }
 testcase("detects missing error") { try expectfail("wrongerr", FIB) }
 testcase("detects failed match") { try expectfail("wrongmatch", FIB) }
 testcase("detects absent key") { try expectfail("missing", FIBINFO) }
+testcase("a concrete match leaf does not match a missing key") {
+  try expectfail("matchabsent", FIBINFO)
+}
+testcase("__UNDEF__ does not match a present null") { try expectfail("undefonnull", FIBINFO) }
+testcase("__NULL__ does not match an absent key") { try expectfail("nullonabsent", FIBINFO) }
+testcase("an empty-string match leaf is not a wildcard") { try expectfail("emptystr", FIBINFO) }
 testcase("reports entry index and id") { try checkmessage() }
 
 print("\n\(passcount) passed, \(failcount) failed")

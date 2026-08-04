@@ -97,6 +97,23 @@ defmodule OmniTest do
         "wrongmatch" => %{"set" => [%{"in" => 6.0, "match" => %{"out" => 999.0}}]},
         "missing" => %{
           "set" => [%{"in" => 6.0, "match" => %{"out" => %{"nope" => "__EXISTS__"}}}]
+        },
+        # A concrete match leaf against a missing key must fail, not
+        # substring-match the text "undefined".
+        "matchabsent" => %{
+          "set" => [%{"in" => 6.0, "match" => %{"out" => %{"nope" => "fine"}}}]
+        },
+        # __UNDEF__ (absent) must not be satisfied by a present null.
+        "undefonnull" => %{
+          "set" => [%{"in" => 0.0, "match" => %{"out" => %{"prev" => "__UNDEF__"}}}]
+        },
+        # __NULL__ (present null) must not be satisfied by an absent key.
+        "nullonabsent" => %{
+          "set" => [%{"in" => 6.0, "match" => %{"out" => %{"nope" => "__NULL__"}}}]
+        },
+        # An empty-string match leaf is not a wildcard.
+        "emptystr" => %{
+          "set" => [%{"in" => 6.0, "match" => %{"out" => %{"label" => ""}}}]
         }
       }
     }
@@ -183,6 +200,34 @@ state =
 
 state =
   OmniTest.testcase("detects absent key", fn -> OmniTest.expectfail("missing", fibinfo) end, state)
+
+state =
+  OmniTest.testcase(
+    "a concrete match leaf does not match a missing key",
+    fn -> OmniTest.expectfail("matchabsent", fibinfo) end,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "__UNDEF__ does not match a present null",
+    fn -> OmniTest.expectfail("undefonnull", fibinfo) end,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "__NULL__ does not match an absent key",
+    fn -> OmniTest.expectfail("nullonabsent", fibinfo) end,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "an empty-string match leaf is not a wildcard",
+    fn -> OmniTest.expectfail("emptystr", fibinfo) end,
+    state
+  )
 
 state = OmniTest.testcase("reports entry index and id", &OmniTest.checkmessage/0, state)
 

@@ -109,15 +109,17 @@ function M.matchval(check, base)
   end
 
   local want = check
-  if u.NULLMARK == want or u.UNDEFMARK == want then
-    want = u.NULL
-  end
 
   if u.isnone(want) then
     return u.isnone(base) or u.NULLMARK == base
   end
 
   if u.isstr(want) then
+    -- An empty want would substring-match anything: reject it.
+    if '' == want then
+      return false
+    end
+
     local basestr = u.stringify(base)
 
     if 2 < #want and '/' == want:sub(1, 1) and '/' == want:sub(-1) then
@@ -178,6 +180,8 @@ end
 local function matchcheck(label, index, entry, check, base, path)
   path = path or {}
 
+  local where = 0 == #path and '<root>' or u.pathify(path)
+
   if u.islist(check) then
     for at, subcheck in ipairs(check) do
       local childpath = { table.unpack(path) }
@@ -198,13 +202,46 @@ local function matchcheck(label, index, entry, check, base, path)
 
   local baseval = u.getpath(base, path)
 
-  local ok = u.deepequal(check, baseval)
-    or (u.UNDEFMARK == check and u.isabsent(baseval))
-    or (u.EXISTSMARK == check and not u.isnone(baseval))
-    or M.matchval(check, baseval)
+  if u.deepequal(check, baseval) then
+    return
+  end
 
-  if not ok then
-    local where = 0 == #path and '<root>' or u.pathify(path)
+  -- Explicitly absent: satisfied only by a genuinely missing key, never by
+  -- a present null (the distinction the sentinels exist to keep).
+  if u.UNDEFMARK == check then
+    if u.isabsent(baseval) then
+      return
+    end
+    error(fail(label, index, entry, 'expected absent at ' .. where,
+      'absent', u.stringify(baseval)))
+  end
+
+  -- Explicitly null: satisfied only by a present null.
+  if u.NULLMARK == check then
+    if u.isnull(baseval) or u.NULLMARK == baseval then
+      return
+    end
+    error(fail(label, index, entry, 'expected null at ' .. where,
+      'null', u.stringify(baseval)))
+  end
+
+  -- Explicitly present: any present value, including null.
+  if u.EXISTSMARK == check then
+    if not u.isabsent(baseval) then
+      return
+    end
+    error(fail(label, index, entry, 'expected present at ' .. where,
+      'present', 'absent'))
+  end
+
+  -- A concrete expectation never matches a missing key - a match leaf
+  -- against an absent value must fail, not substring-match "undefined".
+  if u.isabsent(baseval) then
+    error(fail(label, index, entry, 'match failed at ' .. where,
+      u.stringify(check), 'absent'))
+  end
+
+  if not M.matchval(check, baseval) then
     error(fail(label, index, entry, 'match failed at ' .. where,
       u.stringify(check), u.stringify(baseval)))
   end

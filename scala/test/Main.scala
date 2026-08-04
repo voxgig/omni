@@ -101,6 +101,43 @@ object Main:
             )
           )
         ),
+        // A concrete match leaf against a missing key must fail, not
+        // substring-match the text "undefined".
+        "matchabsent" -> Json.map(
+          "set" -> Json.list(
+            Json.map(
+              "in" -> Json.num(6),
+              "match" -> Json.map("out" -> Json.map("nope" -> Json.str("fine"))),
+            )
+          )
+        ),
+        // __UNDEF__ (absent) must not be satisfied by a present null.
+        "undefonnull" -> Json.map(
+          "set" -> Json.list(
+            Json.map(
+              "in" -> Json.num(0),
+              "match" -> Json.map("out" -> Json.map("prev" -> Json.str("__UNDEF__"))),
+            )
+          )
+        ),
+        // __NULL__ (present null) must not be satisfied by an absent key.
+        "nullonabsent" -> Json.map(
+          "set" -> Json.list(
+            Json.map(
+              "in" -> Json.num(6),
+              "match" -> Json.map("out" -> Json.map("nope" -> Json.str("__NULL__"))),
+            )
+          )
+        ),
+        // An empty-string match leaf must not substring-match anything.
+        "emptystr" -> Json.map(
+          "set" -> Json.list(
+            Json.map(
+              "in" -> Json.num(6),
+              "match" -> Json.map("out" -> Json.map("label" -> Json.str(""))),
+            )
+          )
+        ),
       )
     )
 
@@ -155,6 +192,10 @@ object Main:
     testcase("detects missing error") { expectfail("wrongerr", FIB) }
     testcase("detects failed match") { expectfail("wrongmatch", FIB) }
     testcase("detects absent key") { expectfail("missing", FIBINFO) }
+    testcase("concrete leaf does not match missing key") { expectfail("matchabsent", FIBINFO) }
+    testcase("__UNDEF__ does not match present null") { expectfail("undefonnull", FIBINFO) }
+    testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
+    testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
 
     println(s"\n$passcount passed, $failcount failed")

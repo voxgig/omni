@@ -295,7 +295,14 @@ function handleerror(flags, index, entry, err) {
 function match(flags, index, entry, check, base) {
   const cbase = clone(base)
 
+  const at = (path) => (0 === path.length ? '<root>' : pathify(path))
+
   walk(clone(check), (_key, val, _parent, path) => {
+    // An empty container in the check is a structural placeholder: it has
+    // no leaves to check, so it matches whatever is at that path. This is
+    // deliberate - voxgig/struct's corpus relies on it (struct-compat), and
+    // an empty sub-pattern matching anything is the usual partial-match
+    // convention. The leaf checks below are where the strictness lives.
     if (!isnode(val)) {
       const baseval = getpath(cbase, path)
 
@@ -303,31 +310,46 @@ function match(flags, index, entry, check, base) {
         return val
       }
 
-      // Explicitly absent.
-      if (UNDEFMARK === val && undefined === baseval) {
-        return val
+      // Explicitly absent: satisfied only by a genuinely missing key, never
+      // by a present null (the distinction the sentinels exist to keep).
+      if (UNDEFMARK === val) {
+        if (undefined === baseval) {
+          return val
+        }
+        throw fail(flags, index, entry, 'expected absent at ' + at(path), 'absent', stringify(baseval))
       }
 
-      // Explicitly present.
-      if (EXISTSMARK === val && null != baseval) {
-        return val
+      // Explicitly null: satisfied only by a present null.
+      if (NULLMARK === val) {
+        if (null === baseval || NULLMARK === baseval) {
+          return val
+        }
+        throw fail(flags, index, entry, 'expected null at ' + at(path), 'null', stringify(baseval))
+      }
+
+      // Explicitly present: any present value, including null.
+      if (EXISTSMARK === val) {
+        if (undefined !== baseval) {
+          return val
+        }
+        throw fail(flags, index, entry, 'expected present at ' + at(path), 'present', 'absent')
+      }
+
+      // A concrete expectation never matches a missing key - a match leaf
+      // against an absent value must fail, not substring-match "undefined".
+      if (undefined === baseval) {
+        throw fail(flags, index, entry, 'match failed at ' + at(path), stringify(val), 'absent')
       }
 
       if (!matchval(val, baseval)) {
-        throw fail(
-          flags,
-          index,
-          entry,
-          'match failed at ' + (0 === path.length ? '<root>' : pathify(path)),
-          stringify(val),
-          stringify(baseval),
-        )
+        throw fail(flags, index, entry, 'match failed at ' + at(path), stringify(val), stringify(baseval))
       }
     }
 
     return val
   })
 }
+
 
 // Match one leaf. Strings are matched as /regex/ or as a case-insensitive
 // substring, which is what makes error-message expectations portable.
@@ -346,6 +368,12 @@ function matchval(check, base) {
   }
 
   if ('string' === typeof want) {
+    // An empty want is not a wildcard: the empty string is a substring of
+    // everything, so `match:{out:""}` (or `err:""`) would accept any value.
+    if ('' === want) {
+      return '' === base
+    }
+
     const basestr = stringify(base)
 
     const rem = want.match(/^\/(.+)\/$/)

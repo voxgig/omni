@@ -498,6 +498,14 @@ fn matchwalk(
     base: &Json,
     path: &mut Vec<String>,
 ) -> Result<(), OmniError> {
+    let where_ = |path: &[String]| {
+        if path.is_empty() {
+            "<root>".to_string()
+        } else {
+            pathify(path)
+        }
+    };
+
     match check {
         Json::List(list) => {
             for (subindex, subcheck) in list.iter().enumerate() {
@@ -522,31 +530,76 @@ fn matchwalk(
                 return Ok(());
             }
 
-            // Explicitly absent.
-            if Some(UNDEFMARK) == leaf.asstr() && baseval.isabsent() {
-                return Ok(());
+            // Explicitly absent: satisfied only by a genuinely missing key,
+            // never by a present null (the distinction the sentinels exist
+            // to keep).
+            if Some(UNDEFMARK) == leaf.asstr() {
+                if baseval.isabsent() {
+                    return Ok(());
+                }
+                return Err(fail(
+                    flags,
+                    index,
+                    entry,
+                    &format!("expected absent at {}", where_(path)),
+                    Some("absent".to_string()),
+                    Some(stringify(&baseval)),
+                ));
             }
 
-            // Explicitly present.
-            if Some(EXISTSMARK) == leaf.asstr() && !baseval.isnone() {
-                return Ok(());
+            // Explicitly null: satisfied only by a present null.
+            if Some(NULLMARK) == leaf.asstr() {
+                if baseval.isnull() || Some(NULLMARK) == baseval.asstr() {
+                    return Ok(());
+                }
+                return Err(fail(
+                    flags,
+                    index,
+                    entry,
+                    &format!("expected null at {}", where_(path)),
+                    Some("null".to_string()),
+                    Some(stringify(&baseval)),
+                ));
+            }
+
+            // Explicitly present: any present value, including null.
+            if Some(EXISTSMARK) == leaf.asstr() {
+                if !baseval.isabsent() {
+                    return Ok(());
+                }
+                return Err(fail(
+                    flags,
+                    index,
+                    entry,
+                    &format!("expected present at {}", where_(path)),
+                    Some("present".to_string()),
+                    Some("absent".to_string()),
+                ));
+            }
+
+            // A concrete expectation never matches a missing key - a match
+            // leaf against an absent value must fail, not substring-match
+            // "undefined".
+            if baseval.isabsent() {
+                return Err(fail(
+                    flags,
+                    index,
+                    entry,
+                    &format!("match failed at {}", where_(path)),
+                    Some(stringify(leaf)),
+                    Some("absent".to_string()),
+                ));
             }
 
             if matchval(leaf, &baseval) {
                 return Ok(());
             }
 
-            let where_ = if path.is_empty() {
-                "<root>".to_string()
-            } else {
-                pathify(path)
-            };
-
             Err(fail(
                 flags,
                 index,
                 entry,
-                &format!("match failed at {}", where_),
+                &format!("match failed at {}", where_(path)),
                 Some(stringify(leaf)),
                 Some(stringify(&baseval)),
             ))
@@ -560,16 +613,18 @@ pub fn matchval(check: &Json, base: &Json) -> bool {
         return true;
     }
 
-    let mut want = check.clone();
-    if Some(UNDEFMARK) == want.asstr() || Some(NULLMARK) == want.asstr() {
-        want = Json::Null;
-    }
+    let want = check.clone();
 
     if want.isnone() {
         return base.isnone() || Some(NULLMARK) == base.asstr();
     }
 
     if let Some(text) = want.asstr() {
+        // An empty want would substring-match anything: reject it.
+        if text.is_empty() {
+            return false;
+        }
+
         let basestr = stringify(base);
 
         if 2 < text.len() && text.starts_with('/') && text.ends_with('/') {

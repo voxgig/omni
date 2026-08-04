@@ -318,7 +318,15 @@ final class Runner
     {
         $cbase = Util::clone($base);
 
-        Util::walk(Util::clone($check), function ($_key, $val, $_parent, $path) use ($flags, $index, $entry, $cbase) {
+        $at = function (array $path): string {
+            return 0 === count($path) ? '<root>' : Util::pathify($path);
+        };
+
+        Util::walk(Util::clone($check), function ($_key, $val, $_parent, $path) use ($flags, $index, $entry, $cbase, $at) {
+            // An empty container in the check is a structural placeholder:
+            // walk visits no leaves inside {} or [], so it asserts nothing
+            // about the base. (struct's corpus relies on this "map is here,
+            // contents unchecked" behaviour, so omni stays a faithful drop-in.)
             if (!Util::isnode($val)) {
                 $baseval = Util::getpath($cbase, $path);
 
@@ -326,25 +334,41 @@ final class Runner
                     return $val;
                 }
 
-                // Explicitly absent.
-                if (Util::UNDEFMARK === $val && Util::isabsent($baseval)) {
-                    return $val;
+                // Explicitly absent: satisfied only by a genuinely missing
+                // key, never by a present null (the distinction the
+                // sentinels exist to keep).
+                if (Util::UNDEFMARK === $val) {
+                    if (Util::isabsent($baseval)) {
+                        return $val;
+                    }
+                    throw self::fail($flags, $index, $entry, 'expected absent at ' . $at($path), 'absent', Util::stringify($baseval));
                 }
 
-                // Explicitly present.
-                if (Util::EXISTSMARK === $val && !Util::isabsent($baseval) && null !== $baseval) {
-                    return $val;
+                // Explicitly null: satisfied only by a present null.
+                if (Util::NULLMARK === $val) {
+                    if (null === $baseval || Util::NULLMARK === $baseval) {
+                        return $val;
+                    }
+                    throw self::fail($flags, $index, $entry, 'expected null at ' . $at($path), 'null', Util::stringify($baseval));
+                }
+
+                // Explicitly present: any present value, including null.
+                if (Util::EXISTSMARK === $val) {
+                    if (!Util::isabsent($baseval)) {
+                        return $val;
+                    }
+                    throw self::fail($flags, $index, $entry, 'expected present at ' . $at($path), 'present', 'absent');
+                }
+
+                // A concrete expectation never matches a missing key - a
+                // match leaf against an absent value must fail, not
+                // substring-match the stringified absent value.
+                if (Util::isabsent($baseval)) {
+                    throw self::fail($flags, $index, $entry, 'match failed at ' . $at($path), Util::stringify($val), 'absent');
                 }
 
                 if (!self::matchval($val, $baseval)) {
-                    throw self::fail(
-                        $flags,
-                        $index,
-                        $entry,
-                        'match failed at ' . (0 === count($path) ? '<root>' : Util::pathify($path)),
-                        Util::stringify($val),
-                        Util::stringify($baseval)
-                    );
+                    throw self::fail($flags, $index, $entry, 'match failed at ' . $at($path), Util::stringify($val), Util::stringify($baseval));
                 }
             }
 
@@ -369,6 +393,13 @@ final class Runner
         }
 
         if (is_string($want)) {
+            // An empty want is not a wildcard: the empty string is a substring
+            // of everything, so `match:{out:""}` (or `err:""`) would accept any
+            // value.
+            if ('' === $want) {
+                return '' === $base;
+            }
+
             $basestr = Util::stringify($base);
 
             if (1 === preg_match('#^/(.+)/$#s', $want, $rem)) {

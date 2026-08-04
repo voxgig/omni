@@ -115,6 +115,43 @@ fun badspec(): Json =
                     ),
                 ),
             ),
+            // A concrete match leaf against a missing key must fail, not
+            // substring-match the text "undefined".
+            "matchabsent" to Json.map(
+                "set" to Json.list(
+                    Json.map(
+                        "in" to Json.num(6),
+                        "match" to Json.map("out" to Json.map("nope" to Json.str("fine"))),
+                    ),
+                ),
+            ),
+            // __UNDEF__ (absent) must not be satisfied by a present null.
+            "undefonnull" to Json.map(
+                "set" to Json.list(
+                    Json.map(
+                        "in" to Json.num(0),
+                        "match" to Json.map("out" to Json.map("prev" to Json.str("__UNDEF__"))),
+                    ),
+                ),
+            ),
+            // __NULL__ (present null) must not be satisfied by an absent key.
+            "nullonabsent" to Json.map(
+                "set" to Json.list(
+                    Json.map(
+                        "in" to Json.num(6),
+                        "match" to Json.map("out" to Json.map("nope" to Json.str("__NULL__"))),
+                    ),
+                ),
+            ),
+            // An empty-string match leaf must not substring-match anything.
+            "emptystr" to Json.map(
+                "set" to Json.list(
+                    Json.map(
+                        "in" to Json.num(6),
+                        "match" to Json.map("out" to Json.map("label" to Json.str(""))),
+                    ),
+                ),
+            ),
         ),
     )
 
@@ -180,6 +217,10 @@ fun main(args: Array<String>) {
     testcase("detects missing error") { expectfail("wrongerr", FIB) }
     testcase("detects failed match") { expectfail("wrongmatch", FIB) }
     testcase("detects absent key") { expectfail("missing", FIBINFO) }
+    testcase("concrete leaf does not match missing key") { expectfail("matchabsent", FIBINFO) }
+    testcase("__UNDEF__ does not match present null") { expectfail("undefonnull", FIBINFO) }
+    testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
+    testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
 
     println("\n$passcount passed, $failcount failed")

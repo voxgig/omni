@@ -83,7 +83,24 @@ def badspec : Json :=
       jmap [("in", jnum 6), ("match", jmap [("out", jnum 999)])]])]),
     ("missing", jmap [("set", jlist [
       jmap [("in", jnum 6),
-            ("match", jmap [("out", jmap [("nope", jstr "__EXISTS__")])])]])])])]
+            ("match", jmap [("out", jmap [("nope", jstr "__EXISTS__")])])]])]),
+    -- A concrete match leaf against a missing key must fail, not
+    -- substring-match the text "undefined".
+    ("matchabsent", jmap [("set", jlist [
+      jmap [("in", jnum 6),
+            ("match", jmap [("out", jmap [("nope", jstr "fine")])])]])]),
+    -- __UNDEF__ (absent) must not be satisfied by a present null.
+    ("undefonnull", jmap [("set", jlist [
+      jmap [("in", jnum 0),
+            ("match", jmap [("out", jmap [("prev", jstr "__UNDEF__")])])]])]),
+    -- __NULL__ (present null) must not be satisfied by an absent key.
+    ("nullonabsent", jmap [("set", jlist [
+      jmap [("in", jnum 6),
+            ("match", jmap [("out", jmap [("nope", jstr "__NULL__")])])]])]),
+    -- An empty-string match leaf is not a wildcard.
+    ("emptystr", jmap [("set", jlist [
+      jmap [("in", jnum 6),
+            ("match", jmap [("out", jmap [("label", jstr "")])])]])])])]
 
 def expectfail (setname : String) (subject : Subject) : Except String Unit :=
   let pack := makeRunnerSpec badspec emptyProvider "fib"
@@ -128,6 +145,10 @@ def main (argv : List String) : IO UInt32 := do
   run "detects missing error" (expectfail "wrongerr" FIB)
   run "detects failed match" (expectfail "wrongmatch" FIB)
   run "detects absent key" (expectfail "missing" FIBINFO)
+  run "a concrete match leaf does not match a missing key" (expectfail "matchabsent" FIBINFO)
+  run "__UNDEF__ does not match a present null" (expectfail "undefonnull" FIBINFO)
+  run "__NULL__ does not match an absent key" (expectfail "nullonabsent" FIBINFO)
+  run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" FIBINFO)
   run "reports entry index and id" checkmessage
 
   let final ← counts.get

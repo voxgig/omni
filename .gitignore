@@ -171,3 +171,8 @@ zig-out/
 *.ilean
 
 .build/
+
+# build caches (local)
+.cpcache/
+.bsp/
+.scala-build/

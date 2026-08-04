@@ -128,6 +128,12 @@ public final class FibTest {
     testcase("detects missing error", () -> expectfail("wrongerr", FIB));
     testcase("detects failed match", () -> expectfail("wrongmatch", FIB));
     testcase("detects absent key", () -> expectfail("missing", FIBINFO));
+    testcase(
+        "concrete leaf does not match missing key", () -> expectfail("matchabsent", FIBINFO));
+    testcase("__UNDEF__ does not match present null", () -> expectfail("undefonnull", FIBINFO));
+    testcase("__NULL__ does not match absent key", () -> expectfail("nullonabsent", FIBINFO));
+    testcase(
+        "an empty-string match leaf is not a wildcard", () -> expectfail("emptystr", FIBINFO));
     testcase("reports entry index and id", FibTest::checkmessage);
 
     System.out.println("\n" + passcount + " passed, " + failcount + " failed");
@@ -161,7 +167,20 @@ public final class FibTest {
             "wrongmatch",
             map("set", list(map("in", 6.0, "match", map("out", 999.0)))),
             "missing",
-            map("set", list(map("in", 6.0, "match", map("out", map("nope", "__EXISTS__")))))));
+            map("set", list(map("in", 6.0, "match", map("out", map("nope", "__EXISTS__"))))),
+            // A concrete match leaf against a missing key must fail, not
+            // substring-match the text "undefined".
+            "matchabsent",
+            map("set", list(map("in", 6.0, "match", map("out", map("nope", "fine"))))),
+            // __UNDEF__ (absent) must not be satisfied by a present null.
+            "undefonnull",
+            map("set", list(map("in", 0.0, "match", map("out", map("prev", "__UNDEF__"))))),
+            // __NULL__ (present null) must not be satisfied by an absent key.
+            "nullonabsent",
+            map("set", list(map("in", 6.0, "match", map("out", map("nope", "__NULL__"))))),
+            // An empty-string match leaf must not substring-match anything.
+            "emptystr",
+            map("set", list(map("in", 6.0, "match", map("out", map("label", "")))))));
   }
 
   static void expectfail(String setname, Subject subject) {

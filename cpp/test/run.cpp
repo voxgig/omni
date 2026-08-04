@@ -129,6 +129,35 @@ omni::Json badspec() {
                             {{"in", Json::num(6)},
                              {"match", Json::map({{"out", Json::map({{"nope",
                                                                       Json::str("__EXISTS__")}})}})}})})}})},
+           // A concrete match leaf against a missing key must fail, not
+           // substring-match the text "undefined".
+           {"matchabsent",
+            Json::map({{"set",
+                        Json::list({Json::map(
+                            {{"in", Json::num(6)},
+                             {"match", Json::map({{"out", Json::map({{"nope",
+                                                                      Json::str("fine")}})}})}})})}})},
+           // __UNDEF__ (absent) must not be satisfied by a present null.
+           {"undefonnull",
+            Json::map({{"set",
+                        Json::list({Json::map(
+                            {{"in", Json::num(0)},
+                             {"match", Json::map({{"out", Json::map({{"prev",
+                                                                      Json::str("__UNDEF__")}})}})}})})}})},
+           // __NULL__ (present null) must not be satisfied by an absent key.
+           {"nullonabsent",
+            Json::map({{"set",
+                        Json::list({Json::map(
+                            {{"in", Json::num(6)},
+                             {"match", Json::map({{"out", Json::map({{"nope",
+                                                                      Json::str("__NULL__")}})}})}})})}})},
+           // An empty-string want is a substring of everything, not a wildcard.
+           {"emptystr",
+            Json::map({{"set",
+                        Json::list({Json::map(
+                            {{"in", Json::num(6)},
+                             {"match", Json::map({{"out", Json::map({{"label",
+                                                                      Json::str("")}})}})}})})}})},
        })},
   });
 }
@@ -199,6 +228,14 @@ int main(int argc, char** argv) {
   testcase("detects missing error", [] { expectfail("wrongerr", FIB); });
   testcase("detects failed match", [] { expectfail("wrongmatch", FIB); });
   testcase("detects absent key", [] { expectfail("missing", FIBINFO); });
+  testcase("a concrete match leaf does not match a missing key",
+           [] { expectfail("matchabsent", FIBINFO); });
+  testcase("__UNDEF__ does not match a present null",
+           [] { expectfail("undefonnull", FIBINFO); });
+  testcase("__NULL__ does not match an absent key",
+           [] { expectfail("nullonabsent", FIBINFO); });
+  testcase("an empty-string match leaf is not a wildcard",
+           [] { expectfail("emptystr", FIBINFO); });
   testcase("reports entry index and id", checkmessage);
 
   std::cout << "\n" << PASSCOUNT << " passed, " << FAILCOUNT << " failed\n";
