@@ -132,7 +132,6 @@ public final class FibTest {
         "concrete leaf does not match missing key", () -> expectfail("matchabsent", FIBINFO));
     testcase("__UNDEF__ does not match present null", () -> expectfail("undefonnull", FIBINFO));
     testcase("__NULL__ does not match absent key", () -> expectfail("nullonabsent", FIBINFO));
-    testcase("empty match container is not vacuous", () -> expectfail("emptymatch", FIBINFO));
     testcase(
         "an empty-string match leaf is not a wildcard", () -> expectfail("emptystr", FIBINFO));
     testcase("reports entry index and id", FibTest::checkmessage);
@@ -179,9 +178,6 @@ public final class FibTest {
             // __NULL__ (present null) must not be satisfied by an absent key.
             "nullonabsent",
             map("set", list(map("in", 6.0, "match", map("out", map("nope", "__NULL__"))))),
-            // An empty container asserts an empty container, not "anything".
-            "emptymatch",
-            map("set", list(map("in", 6.0, "match", map("out", map())))),
             // An empty-string match leaf must not substring-match anything.
             "emptystr",
             map("set", list(map("in", 6.0, "match", map("out", map("label", "")))))));

@@ -101,8 +101,6 @@ describe('runner', () => {
       undefonnull: { set: [{ in: 0, match: { out: { prev: '__UNDEF__' } } }] },
       // __NULL__ (present null) must not be satisfied by an absent key.
       nullonabsent: { set: [{ in: 6, match: { out: { nope: '__NULL__' } } }] },
-      // An empty container asserts an empty container, not "anything".
-      emptymatch: { set: [{ in: 6, match: { out: {} } }] },
       // An empty-string match leaf is not a wildcard.
       emptystr: { set: [{ in: 6, match: { out: { label: '' } } }] },
     },
@@ -143,10 +141,6 @@ describe('runner', () => {
 
   test('__NULL__ does not match an absent key', async () => {
     await expectfail('nullonabsent', fibinfo)
-  })
-
-  test('an empty match container is not vacuous', async () => {
-    await expectfail('emptymatch', fibinfo)
   })
 
   test('an empty-string match leaf is not a wildcard', async () => {

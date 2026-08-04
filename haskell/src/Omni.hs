@@ -717,12 +717,6 @@ failure label index entry reason expected actual =
 -- Check that every leaf of `check` is present, and matches, in `base`.
 matchcheck :: String -> Int -> Json -> Json -> Json -> [String] -> IO ()
 matchcheck label index entry check base path = case check of
-  -- An empty container asserts structure that recursion would otherwise
-  -- skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
-  -- to pass any result. Require the base at this path to be an equal
-  -- empty container. (The synthetic root wrapper is never empty.)
-  JList [] | not (null path) -> emptycheck
-  JMap [] | not (null path) -> emptycheck
   JList entries ->
     mapM_
       (\(at, subcheck) -> matchcheck label index entry subcheck base (path ++ [show at]))
@@ -738,11 +732,6 @@ matchcheck label index entry check base path = case check of
 
     bad reason expected actual =
       throwIO (failure label index entry (reason ++ place) (Just expected) (Just actual))
-
-    emptycheck =
-      if deepequal check baseval
-        then pure ()
-        else bad "match failed at " (stringify check) (stringify baseval)
 
     checkleaf leaf
       | deepequal leaf baseval = pure ()

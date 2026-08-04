@@ -181,21 +181,6 @@ inline bool matchval(const Json& check, const Json& base) {
 // Check that every leaf of `check` is present, and matches, in `base`.
 inline void matchcheck(const Flags& flags, size_t index, const Json& entry, const Json& check,
                        const Json& base, std::vector<std::string> path = {}) {
-  // An empty container asserts structure that the traversal would
-  // otherwise skip: it has no leaves, so `match:{out:{}}` used to pass
-  // any result. Require the base at this path to be an equal empty
-  // container. (The synthetic root wrapper is never empty, so skip it.)
-  if (!path.empty() && ((check.islist() && check.listval.empty()) ||
-                        (check.ismap() && check.mapval.empty()))) {
-    Json emptybase = getpath(base, path);
-    if (!deepequal(check, emptybase)) {
-      std::string expected = stringify(check);
-      std::string actual = stringify(emptybase);
-      throw fail(flags, index, entry, "match failed at " + pathify(path), &expected, &actual);
-    }
-    return;
-  }
-
   if (check.islist()) {
     for (size_t at = 0; at < check.listval.size(); at++) {
       std::vector<std::string> childpath = path;

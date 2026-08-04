@@ -109,16 +109,6 @@
   ([label index entry check base path]
    (let [at (if (empty? path) "<root>" (u/pathify path))]
      (cond
-       ;; An empty container asserts structure that the traversal would
-       ;; otherwise skip: it has no leaves, so `match:{out:{}}` used to pass
-       ;; any result. Require the base at this path to be an equal empty
-       ;; container. (The synthetic root wrapper is never empty, so skip it.)
-       (and (u/isnode check) (seq path) (empty? check))
-       (let [baseval (u/getpath base path)]
-         (when-not (u/deepequal check baseval)
-           (throw (fail label index entry (str "match failed at " at)
-                        (u/stringify check) (u/stringify baseval)))))
-
        (u/islist check)
        (doseq [[index2 subcheck] (map-indexed vector check)]
          (match label index entry subcheck base (conj path (str index2))))

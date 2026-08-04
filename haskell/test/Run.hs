@@ -158,14 +158,6 @@ badspec =
                   )
                 ]
             ),
-            -- An empty container asserts an empty container, not "anything".
-            ( "emptymatch",
-              JMap
-                [ ( "set",
-                    JList [JMap [("in", Num 6), ("match", JMap [("out", JMap [])])]]
-                  )
-                ]
-            ),
             -- An empty-string match leaf is not a wildcard.
             ( "emptystr",
               JMap
@@ -260,7 +252,6 @@ main = do
   run "a concrete match leaf does not match a missing key" (expectfail "matchabsent" fibinfosub)
   run "__UNDEF__ does not match a present null" (expectfail "undefonnull" fibinfosub)
   run "__NULL__ does not match an absent key" (expectfail "nullonabsent" fibinfosub)
-  run "an empty match container is not vacuous" (expectfail "emptymatch" fibinfosub)
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" fibinfosub)
   run "reports entry index and id" checkmessage
 

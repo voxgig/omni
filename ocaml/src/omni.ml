@@ -758,16 +758,6 @@ let fail label index entry reason expected actual =
 let rec matchcheck label index entry check base path =
   let where = if path = [] then "<root>" else pathify path in
   match check with
-  (* An empty container asserts structure that recursion would otherwise
-     skip: it visits no leaves inside {} or [], so `match:{out:{}}` used to
-     pass any result. Require the base at this path to be an equal empty
-     container. (The synthetic root wrapper is never empty.) *)
-  | (JList [] | JMap []) when path <> [] ->
-    let baseval = getpath base path in
-    if not (deepequal check baseval) then
-      raise
-        (fail label index entry ("match failed at " ^ where) (Some (stringify check))
-           (Some (stringify baseval)))
   | JList entries ->
     List.iteri
       (fun at subcheck -> matchcheck label index entry subcheck base (path @ [ string_of_int at ]))

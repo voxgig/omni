@@ -323,19 +323,10 @@ final class Runner
         };
 
         Util::walk(Util::clone($check), function ($_key, $val, $_parent, $path) use ($flags, $index, $entry, $cbase, $at) {
-            // An empty container asserts structure that walk would otherwise
-            // skip: it visits no leaves inside {} or [], so `match:{out:{}}`
-            // used to pass any result. Require the base at this path to be an
-            // equal empty container. (The synthetic root wrapper is never
-            // empty, so skip it.)
-            if (Util::isnode($val) && 0 < count($path) && self::isempty($val)) {
-                $baseval = Util::getpath($cbase, $path);
-                if (!Util::deepequal($val, $baseval)) {
-                    throw self::fail($flags, $index, $entry, 'match failed at ' . $at($path), Util::stringify($val), Util::stringify($baseval));
-                }
-                return $val;
-            }
-
+            // An empty container in the check is a structural placeholder:
+            // walk visits no leaves inside {} or [], so it asserts nothing
+            // about the base. (struct's corpus relies on this "map is here,
+            // contents unchecked" behaviour, so omni stays a faithful drop-in.)
             if (!Util::isnode($val)) {
                 $baseval = Util::getpath($cbase, $path);
 
@@ -383,12 +374,6 @@ final class Runner
 
             return $val;
         });
-    }
-
-    /** Is this container empty? */
-    public static function isempty($val): bool
-    {
-        return 0 === count($val);
     }
 
     /** Match one leaf: /regex/ or case-insensitive substring for strings. */

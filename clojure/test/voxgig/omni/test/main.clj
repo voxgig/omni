@@ -78,8 +78,6 @@
     "undefonnull" {"set" [{"in" 0.0 "match" {"out" {"prev" "__UNDEF__"}}}]}
     ;; __NULL__ (present null) must not be satisfied by an absent key.
     "nullonabsent" {"set" [{"in" 6.0 "match" {"out" {"nope" "__NULL__"}}}]}
-    ;; An empty container asserts an empty container, not "anything".
-    "emptymatch" {"set" [{"in" 6.0 "match" {"out" {}}}]}
     ;; An empty-string want is a substring of everything, not a wildcard.
     "emptystr" {"set" [{"in" 6.0 "match" {"out" {"label" ""}}}]}}})
 
@@ -134,8 +132,6 @@
               #(expectfail "undefonnull" FIBINFO))
     (testcase "__NULL__ does not match an absent key"
               #(expectfail "nullonabsent" FIBINFO))
-    (testcase "an empty match container is not vacuous"
-              #(expectfail "emptymatch" FIBINFO))
     (testcase "an empty-string match leaf is not a wildcard"
               #(expectfail "emptystr" FIBINFO))
     (testcase "reports entry index and id" checkmessage)

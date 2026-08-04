@@ -278,17 +278,10 @@ def match(flags: dict, index: int, entry: dict, check: Any, base: Any) -> None:
         return '<root>' if len(path) == 0 else pathify(path)
 
     def apply(_key, val, _parent, path):
-        # An empty container asserts structure that walk would otherwise skip:
-        # it visits no leaves inside {} or [], so `match:{out:{}}` used to pass
-        # any result. Require the base at this path to be an equal empty
-        # container. (The synthetic root wrapper is never empty, so skip it.)
-        if isnode(val) and len(path) > 0 and isempty(val):
-            baseval = getpath(cbase, path)
-            if not deepequal(val, baseval):
-                raise fail(flags, index, entry, 'match failed at ' + at(path),
-                           stringify(val), stringify(baseval))
-            return val
-
+        # An empty container in the check is a structural placeholder: walk
+        # visits no leaves inside {} or [], so it asserts nothing about the
+        # base. (struct's corpus relies on this "map is here, contents
+        # unchecked" behaviour, so omni stays a faithful drop-in.)
         if not isnode(val):
             baseval = getpath(cbase, path)
 
@@ -331,11 +324,6 @@ def match(flags: dict, index: int, entry: dict, check: Any, base: Any) -> None:
         return val
 
     walk(clone(check), apply)
-
-
-def isempty(val: Any) -> bool:
-    """Is this container empty?"""
-    return len(val) == 0
 
 
 def matchval(check: Any, base: Any) -> bool:

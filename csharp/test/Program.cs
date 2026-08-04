@@ -120,9 +120,6 @@ internal static class Program
                 // __NULL__ (present null) must not be satisfied by an absent key.
                 "nullonabsent", Map("set", List(
                     Map("in", 6.0, "match", Map("out", Map("nope", "__NULL__"))))),
-                // An empty container asserts an empty container, not "anything".
-                "emptymatch", Map("set", List(
-                    Map("in", 6.0, "match", Map("out", Map())))),
                 // An empty-string match leaf must not substring-match anything.
                 "emptystr", Map("set", List(
                     Map("in", 6.0, "match", Map("out", Map("label", "")))))));
@@ -209,7 +206,6 @@ internal static class Program
         TestCase("concrete leaf does not match missing key", () => ExpectFail("matchabsent", FIBINFO));
         TestCase("__UNDEF__ does not match present null", () => ExpectFail("undefonnull", FIBINFO));
         TestCase("__NULL__ does not match absent key", () => ExpectFail("nullonabsent", FIBINFO));
-        TestCase("empty match container is not vacuous", () => ExpectFail("emptymatch", FIBINFO));
         TestCase("an empty-string match leaf is not a wildcard", () => ExpectFail("emptystr", FIBINFO));
         TestCase("reports entry index and id", CheckMessage);
 

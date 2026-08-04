@@ -143,15 +143,6 @@ fun badspec(): Json =
                     ),
                 ),
             ),
-            // An empty container asserts an empty container, not "anything".
-            "emptymatch" to Json.map(
-                "set" to Json.list(
-                    Json.map(
-                        "in" to Json.num(6),
-                        "match" to Json.map("out" to Json.map()),
-                    ),
-                ),
-            ),
             // An empty-string match leaf must not substring-match anything.
             "emptystr" to Json.map(
                 "set" to Json.list(
@@ -229,7 +220,6 @@ fun main(args: Array<String>) {
     testcase("concrete leaf does not match missing key") { expectfail("matchabsent", FIBINFO) }
     testcase("__UNDEF__ does not match present null") { expectfail("undefonnull", FIBINFO) }
     testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
-    testcase("empty match container is not vacuous") { expectfail("emptymatch", FIBINFO) }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
 

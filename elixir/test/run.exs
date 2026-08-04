@@ -111,10 +111,6 @@ defmodule OmniTest do
         "nullonabsent" => %{
           "set" => [%{"in" => 6.0, "match" => %{"out" => %{"nope" => "__NULL__"}}}]
         },
-        # An empty container asserts an empty container, not "anything".
-        "emptymatch" => %{
-          "set" => [%{"in" => 6.0, "match" => %{"out" => %{}}}]
-        },
         # An empty-string match leaf is not a wildcard.
         "emptystr" => %{
           "set" => [%{"in" => 6.0, "match" => %{"out" => %{"label" => ""}}}]
@@ -223,13 +219,6 @@ state =
   OmniTest.testcase(
     "__NULL__ does not match an absent key",
     fn -> OmniTest.expectfail("nullonabsent", fibinfo) end,
-    state
-  )
-
-state =
-  OmniTest.testcase(
-    "an empty match container is not vacuous",
-    fn -> OmniTest.expectfail("emptymatch", fibinfo) end,
     state
   )
 

@@ -112,10 +112,6 @@ local function badspec()
       nullonabsent = u.map({ set = u.list({
         u.map({ ['in'] = 6, match = u.map({ out = u.map({ nope = '__NULL__' }) }) }),
       }) }),
-      -- An empty container asserts an empty container, not "anything".
-      emptymatch = u.map({ set = u.list({
-        u.map({ ['in'] = 6, match = u.map({ out = u.map({}) }) }),
-      }) }),
       -- An empty-string want is not a wildcard substring match.
       emptystr = u.map({ set = u.list({
         u.map({ ['in'] = 6, match = u.map({ out = u.map({ label = '' }) }) }),
@@ -184,8 +180,6 @@ testcase('__UNDEF__ does not match a present null',
   function() expectfail('undefonnull', FIBINFO) end)
 testcase('__NULL__ does not match an absent key',
   function() expectfail('nullonabsent', FIBINFO) end)
-testcase('an empty match container is not vacuous',
-  function() expectfail('emptymatch', FIBINFO) end)
 testcase('an empty-string match leaf is not a wildcard',
   function() expectfail('emptystr', FIBINFO) end)
 testcase('reports entry index and id', checkmessage)

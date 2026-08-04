@@ -163,12 +163,6 @@ func TestRunner(t *testing.T) {
 					"out": map[string]any{"nope": "__NULL__"},
 				}},
 			}},
-			// An empty container asserts an empty container, not "anything".
-			"emptymatch": map[string]any{"set": []any{
-				map[string]any{"in": 6.0, "match": map[string]any{
-					"out": map[string]any{},
-				}},
-			}},
 			// An empty-string want is not a wildcard substring match.
 			"emptystr": map[string]any{"set": []any{
 				map[string]any{"in": 6.0, "match": map[string]any{
@@ -210,8 +204,6 @@ func TestRunner(t *testing.T) {
 		func(t *testing.T) { expectfail(t, "undefonnull", FIBINFO) })
 	t.Run("__NULL__ does not match an absent key",
 		func(t *testing.T) { expectfail(t, "nullonabsent", FIBINFO) })
-	t.Run("an empty match container is not vacuous",
-		func(t *testing.T) { expectfail(t, "emptymatch", FIBINFO) })
 	t.Run("an empty-string match leaf is not a wildcard",
 		func(t *testing.T) { expectfail(t, "emptystr", FIBINFO) })
 

@@ -490,18 +490,6 @@ func Match(flags Flags, index int, entry map[string]any, check any, base any) er
 		}
 
 		if IsNode(val) {
-			// An empty container asserts structure that Walk would otherwise
-			// skip: it visits no leaves inside {} or [], so `match:{out:{}}`
-			// used to pass any result. Require the base at this path to be an
-			// equal empty container. (The synthetic root wrapper is never
-			// empty, so skip it.)
-			if 0 < len(path) && isempty(val) {
-				baseval := GetPath(cbase, path)
-				if !DeepEqual(val, baseval) {
-					failure = fail(flags, index, entry, "match failed at "+where,
-						strptr(Stringify(val)), strptr(Stringify(baseval)))
-				}
-			}
 			return val
 		}
 
@@ -559,17 +547,6 @@ func Match(flags Flags, index int, entry map[string]any, check any, base any) er
 	})
 
 	return failure
-}
-
-// Is this container empty?
-func isempty(val any) bool {
-	if list, is := val.([]any); is {
-		return 0 == len(list)
-	}
-	if amap, is := val.(map[string]any); is {
-		return 0 == len(amap)
-	}
-	return false
 }
 
 // MatchVal matches one leaf: /regex/ or case-insensitive substring for

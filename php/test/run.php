@@ -113,8 +113,6 @@ const BADSPEC = [
         'undefonnull' => ['set' => [['in' => 0, 'match' => ['out' => ['prev' => '__UNDEF__']]]]],
         // __NULL__ (present null) must not be satisfied by an absent key.
         'nullonabsent' => ['set' => [['in' => 6, 'match' => ['out' => ['nope' => '__NULL__']]]]],
-        // An empty container asserts an empty container, not "anything".
-        'emptymatch' => ['set' => [['in' => 6, 'match' => ['out' => []]]]],
         // An empty-string match leaf is not a wildcard.
         'emptystr' => ['set' => [['in' => 6, 'match' => ['out' => ['label' => '']]]]],
     ],
@@ -138,7 +136,6 @@ testcase('detects absent key', fn() => expectfail('missing', $fibinfo));
 testcase('a concrete match leaf does not match a missing key', fn() => expectfail('matchabsent', $fibinfo));
 testcase('__UNDEF__ does not match a present null', fn() => expectfail('undefonnull', $fibinfo));
 testcase('__NULL__ does not match an absent key', fn() => expectfail('nullonabsent', $fibinfo));
-testcase('an empty match container is not vacuous', fn() => expectfail('emptymatch', $fibinfo));
 testcase('an empty-string match leaf is not a wildcard', fn() => expectfail('emptystr', $fibinfo));
 
 testcase('reports entry index and id', function () use ($fib) {

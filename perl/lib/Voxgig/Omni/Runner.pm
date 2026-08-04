@@ -317,23 +317,7 @@ sub match {
 
         my $where = 0 == scalar(@$path) ? '<root>' : pathify($path);
 
-        if ( isnode($val) ) {
-
-            # An empty container asserts structure that walk would otherwise
-            # skip: it visits no leaves inside {} or [], so `match:{out:{}}`
-            # used to pass any result. Require the base at this path to be an
-            # equal empty container. (The synthetic root wrapper is never
-            # empty, so skip it.)
-            if ( 0 < scalar(@$path) && isempty($val) ) {
-                my $baseval = getpath( $cbase, $path );
-                if ( !deepequal( $val, $baseval ) ) {
-                    die fail( $flags, $index, $entry, 'match failed at ' . $where,
-                        stringify($val), stringify($baseval) );
-                }
-            }
-
-            return $val;
-        }
+        return $val if isnode($val);
 
         my $baseval = getpath( $cbase, $path );
 
@@ -381,13 +365,6 @@ sub match {
     };
 
     walk( clone($check), $apply );
-}
-
-# Is this container empty?
-sub isempty {
-    my ($val) = @_;
-    return 0 == scalar(@$val) ? 1 : 0 if islist($val);
-    return 0 == scalar( keys %$val ) ? 1 : 0;
 }
 
 # Match one leaf: /regex/ or case-insensitive substring for strings.

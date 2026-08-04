@@ -347,18 +347,6 @@ defmodule Voxgig.Omni.Runner do
     where = if [] == path, do: "<root>", else: U.pathify(path)
 
     cond do
-      # An empty container asserts structure that recursion would otherwise
-      # skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
-      # to pass any result. Require the base at this path to be an equal
-      # empty container. (The synthetic root wrapper is never empty.)
-      U.isnode(check) and [] != path and isempty(check) ->
-        baseval = U.getpath(base, path)
-
-        if not U.deepequal(check, baseval) do
-          raise fail(label, index, entry, "match failed at #{where}",
-                  U.stringify(check), U.stringify(baseval))
-        end
-
       U.islist(check) ->
         check
         |> Enum.with_index()
@@ -420,11 +408,6 @@ defmodule Voxgig.Omni.Runner do
                     U.stringify(check), U.stringify(baseval))
         end
     end
-  end
-
-  # Is this container empty?
-  defp isempty(val) do
-    if U.islist(val), do: [] == val, else: 0 == map_size(val)
   end
 
   # The spec-defined part of an entry (drop runner bookkeeping).

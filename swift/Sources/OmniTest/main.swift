@@ -193,21 +193,6 @@ func badspec() -> Json {
             )
           ])
         ),
-        // An empty container asserts an empty container, not "anything".
-        (
-          "emptymatch",
-          Json.mapOf([
-            (
-              "set",
-              .list([
-                Json.mapOf([
-                  ("in", .num(6)),
-                  ("match", Json.mapOf([("out", .map([:]))])),
-                ])
-              ])
-            )
-          ])
-        ),
         // An empty-string leaf matches only an empty string, not "anything".
         (
           "emptystr",
@@ -306,7 +291,6 @@ testcase("a concrete match leaf does not match a missing key") {
 }
 testcase("__UNDEF__ does not match a present null") { try expectfail("undefonnull", FIBINFO) }
 testcase("__NULL__ does not match an absent key") { try expectfail("nullonabsent", FIBINFO) }
-testcase("an empty match container is not vacuous") { try expectfail("emptymatch", FIBINFO) }
 testcase("an empty-string match leaf is not a wildcard") { try expectfail("emptystr", FIBINFO) }
 testcase("reports entry index and id") { try checkmessage() }
 

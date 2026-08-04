@@ -151,11 +151,6 @@ omni::Json badspec() {
                             {{"in", Json::num(6)},
                              {"match", Json::map({{"out", Json::map({{"nope",
                                                                       Json::str("__NULL__")}})}})}})})}})},
-           // An empty container asserts an empty container, not "anything".
-           {"emptymatch",
-            Json::map({{"set", Json::list({Json::map(
-                                   {{"in", Json::num(6)},
-                                    {"match", Json::map({{"out", Json::map()}})}})})}})},
            // An empty-string want is a substring of everything, not a wildcard.
            {"emptystr",
             Json::map({{"set",
@@ -239,8 +234,6 @@ int main(int argc, char** argv) {
            [] { expectfail("undefonnull", FIBINFO); });
   testcase("__NULL__ does not match an absent key",
            [] { expectfail("nullonabsent", FIBINFO); });
-  testcase("an empty match container is not vacuous",
-           [] { expectfail("emptymatch", FIBINFO); });
   testcase("an empty-string match leaf is not a wildcard",
            [] { expectfail("emptystr", FIBINFO); });
   testcase("reports entry index and id", checkmessage);

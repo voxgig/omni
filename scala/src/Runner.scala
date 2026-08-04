@@ -289,31 +289,10 @@ class RunPack(
 
     check match
       case Json.JList(entries) =>
-        // An empty container asserts structure that the walk would otherwise
-        // skip: it visits no leaves inside {} or [], so `match:{out:{}}`
-        // used to pass any result. Require the base at this path to be an
-        // equal empty container. (The synthetic root wrapper is never empty,
-        // so skip it.)
-        if entries.isEmpty && path.nonEmpty then
-          val emptybase = getpath(base, path)
-          if !deepequal(check, emptybase) then
-            throw fail(
-              label, index, entry, s"match failed at $where",
-              Some(stringify(check)), Some(stringify(emptybase)),
-            )
-
         for (subcheck, at) <- entries.zipWithIndex do
           matchcheck(label, index, entry, subcheck, base, path :+ at.toString)
 
       case Json.JMap(entries) =>
-        if entries.isEmpty && path.nonEmpty then
-          val emptybase = getpath(base, path)
-          if !deepequal(check, emptybase) then
-            throw fail(
-              label, index, entry, s"match failed at $where",
-              Some(stringify(check)), Some(stringify(emptybase)),
-            )
-
         for (key, subcheck) <- entries do
           matchcheck(label, index, entry, subcheck, base, path :+ key)
 

@@ -295,21 +295,6 @@ class RunPack(
         val where = if (path.isEmpty()) "<root>" else pathify(path)
 
         if (check is Json.JList) {
-            // An empty container asserts structure that the walk would
-            // otherwise skip: it visits no leaves inside {} or [], so
-            // `match:{out:{}}` used to pass any result. Require the base at
-            // this path to be an equal empty container. (The synthetic root
-            // wrapper is never empty, so skip it.)
-            if (check.value.isEmpty() && path.isNotEmpty()) {
-                val emptybase = getpath(base, path)
-                if (!deepequal(check, emptybase)) {
-                    throw fail(
-                        label, index, entry, "match failed at $where",
-                        stringify(check), stringify(emptybase),
-                    )
-                }
-            }
-
             for ((at, subcheck) in check.value.withIndex()) {
                 matchcheck(label, index, entry, subcheck, base, path + "$at")
             }
@@ -317,16 +302,6 @@ class RunPack(
         }
 
         if (check is Json.JMap) {
-            if (check.value.isEmpty() && path.isNotEmpty()) {
-                val emptybase = getpath(base, path)
-                if (!deepequal(check, emptybase)) {
-                    throw fail(
-                        label, index, entry, "match failed at $where",
-                        stringify(check), stringify(emptybase),
-                    )
-                }
-            }
-
             for ((key, subcheck) in check.value) {
                 matchcheck(label, index, entry, subcheck, base, path + key)
             }

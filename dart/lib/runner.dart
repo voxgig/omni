@@ -335,22 +335,6 @@ class RunPack {
   // Check that every leaf of `check` is present, and matches, in `base`.
   void _match(String label, int index, Map entry, dynamic check, dynamic base,
       [List<String> path = const []]) {
-    // An empty container asserts structure the recursion would otherwise
-    // skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
-    // to pass any result. Require the base at this path to be an equal
-    // empty container. (The synthetic root wrapper is never empty, so
-    // skip it.)
-    final isemptynode =
-        (check is List && check.isEmpty) || (check is Map && check.isEmpty);
-    if (isemptynode && path.isNotEmpty) {
-      final baseval = getpath(base, path);
-      if (!deepequal(check, baseval)) {
-        throw _fail(label, index, entry, 'match failed at ${_at(path)}',
-            stringify(check), stringify(baseval));
-      }
-      return;
-    }
-
     if (check is List) {
       for (var at = 0; at < check.length; at++) {
         _match(label, index, entry, check[at], base, [...path, '$at']);

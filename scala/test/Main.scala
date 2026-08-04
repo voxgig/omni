@@ -129,15 +129,6 @@ object Main:
             )
           )
         ),
-        // An empty container asserts an empty container, not "anything".
-        "emptymatch" -> Json.map(
-          "set" -> Json.list(
-            Json.map(
-              "in" -> Json.num(6),
-              "match" -> Json.map("out" -> Json.map()),
-            )
-          )
-        ),
         // An empty-string match leaf must not substring-match anything.
         "emptystr" -> Json.map(
           "set" -> Json.list(
@@ -204,7 +195,6 @@ object Main:
     testcase("concrete leaf does not match missing key") { expectfail("matchabsent", FIBINFO) }
     testcase("__UNDEF__ does not match present null") { expectfail("undefonnull", FIBINFO) }
     testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
-    testcase("empty match container is not vacuous") { expectfail("emptymatch", FIBINFO) }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
 

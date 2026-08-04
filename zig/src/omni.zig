@@ -768,20 +768,8 @@ pub const RunPack = struct {
     ) error{OutOfMemory}!?[]const u8 {
         const alloc = self.alloc;
 
-        // An empty container asserts structure the recursion would
-        // otherwise skip: it visits no leaves inside {} or [], so
-        // `match:{out:{}}` used to pass any result. Require the base at
-        // this path to be an equal empty container. (The synthetic root
-        // wrapper is never empty, so skip it.)
         switch (check) {
             .array => |list| {
-                if (0 == list.items.len and 0 < path.len) {
-                    const baseval = getpath(base, path);
-                    if (!deepequal(check, baseval)) {
-                        return try self.matchfail(label, index, entry, check, baseval, path);
-                    }
-                    return null;
-                }
                 for (list.items, 0..) |subcheck, at| {
                     const childpath = try std.mem.concat(alloc, []const u8, &.{
                         path,
@@ -794,13 +782,6 @@ pub const RunPack = struct {
                 return null;
             },
             .object => |map| {
-                if (0 == map.count() and 0 < path.len) {
-                    const baseval = getpath(base, path);
-                    if (!deepequal(check, baseval)) {
-                        return try self.matchfail(label, index, entry, check, baseval, path);
-                    }
-                    return null;
-                }
                 var it = map.iterator();
                 while (it.next()) |field| {
                     const childpath = try std.mem.concat(alloc, []const u8, &.{

@@ -98,8 +98,6 @@ BADSPEC = {
     'undefonnull' => { 'set' => [{ 'in' => 0, 'match' => { 'out' => { 'prev' => '__UNDEF__' } } }] },
     # __NULL__ (present null) must not be satisfied by an absent key.
     'nullonabsent' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'nope' => '__NULL__' } } }] },
-    # An empty container asserts an empty container, not "anything".
-    'emptymatch' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => {} } }] },
     # An empty-string match leaf is not a wildcard.
     'emptystr' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'label' => '' } } }] }
   }
@@ -140,10 +138,6 @@ class TestRunner < Minitest::Test
 
   def test_null_does_not_match_absent_key
     expectfail('nullonabsent', FIBINFO)
-  end
-
-  def test_empty_match_container_is_not_vacuous
-    expectfail('emptymatch', FIBINFO)
   end
 
   def test_empty_string_match_leaf_is_not_a_wildcard

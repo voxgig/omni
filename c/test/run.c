@@ -277,21 +277,6 @@ static omni_json *badspec(void) {
   omni_map_set(group, "set", set);
   omni_map_set(fibgroup, "nullonabsent", group);
 
-  /* emptymatch: an empty container asserts an empty container, not
-   * "anything". */
-  group = omni_map(POOL);
-  set = omni_list(POOL);
-  entry = omni_map(POOL);
-  omni_map_set(entry, "in", omni_num(POOL, 6));
-  {
-    omni_json *check = omni_map(POOL);
-    omni_map_set(check, "out", omni_map(POOL));
-    omni_map_set(entry, "match", check);
-  }
-  omni_list_push(set, entry);
-  omni_map_set(group, "set", set);
-  omni_map_set(fibgroup, "emptymatch", group);
-
   /* emptystr: an empty-string want is a substring of everything, not a
    * wildcard. */
   group = omni_map(POOL);
@@ -436,8 +421,6 @@ int main(int argc, char **argv) {
   expectfail("__UNDEF__ does not match a present null", "undefonnull",
              makesubject(subject_fibinfo, NULL));
   expectfail("__NULL__ does not match an absent key", "nullonabsent",
-             makesubject(subject_fibinfo, NULL));
-  expectfail("an empty match container is not vacuous", "emptymatch",
              makesubject(subject_fibinfo, NULL));
   expectfail("an empty-string match leaf is not a wildcard", "emptystr",
              makesubject(subject_fibinfo, NULL));

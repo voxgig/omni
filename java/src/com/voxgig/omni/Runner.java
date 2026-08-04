@@ -531,23 +531,6 @@ public final class Runner {
           String atpath = path.isEmpty() ? "<root>" : Util.pathify(path);
 
           if (Util.isnode(val)) {
-            // An empty container asserts structure that walk would otherwise
-            // skip: it visits no leaves inside {} or [], so `match:{out:{}}`
-            // used to pass any result. Require the base at this path to be an
-            // equal empty container. (The synthetic root wrapper is never
-            // empty, so skip it.)
-            if (!path.isEmpty() && isempty(val)) {
-              Object emptybase = Util.getpath(cbase, path);
-              if (!Util.deepequal(val, emptybase)) {
-                throw fail(
-                    flags,
-                    index,
-                    entry,
-                    "match failed at " + atpath,
-                    Util.stringify(val),
-                    Util.stringify(emptybase));
-              }
-            }
             return val;
           }
 
@@ -610,14 +593,6 @@ public final class Runner {
 
           return val;
         });
-  }
-
-  /** Is this container empty? */
-  static boolean isempty(Object val) {
-    if (Util.islist(val)) {
-      return ((List<?>) val).isEmpty();
-    }
-    return ((Map<?, ?>) val).isEmpty();
   }
 
   /** Match one leaf: /regex/ or case-insensitive substring for strings. */

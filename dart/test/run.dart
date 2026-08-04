@@ -143,15 +143,6 @@ final Map<String, dynamic> BADSPEC = {
         },
       ]
     },
-    // An empty container asserts an empty container, not "anything".
-    'emptymatch': {
-      'set': [
-        {
-          'in': 6,
-          'match': {'out': <String, dynamic>{}}
-        },
-      ]
-    },
     // An empty-string leaf matches only an empty string, not "anything".
     'emptystr': {
       'set': [
@@ -233,8 +224,6 @@ void main(List<String> args) {
       () => expectfail('undefonnull', FIBINFO));
   testcase('__NULL__ does not match an absent key',
       () => expectfail('nullonabsent', FIBINFO));
-  testcase('an empty match container is not vacuous',
-      () => expectfail('emptymatch', FIBINFO));
   testcase('an empty-string match leaf is not a wildcard',
       () => expectfail('emptystr', FIBINFO));
   testcase('reports entry index and id', checkmessage);

@@ -370,18 +370,11 @@ function match(flags: Flags, index: number, entry: Json, check: Json, base: Json
   const at = (path: Json[]) => (0 === path.length ? '<root>' : pathify(path))
 
   walk(clone(check), (_key, val, _parent, path) => {
-    // An empty container asserts structure that walk would otherwise skip:
-    // it visits no leaves inside {} or [], so `match:{out:{}}` used to pass
-    // any result. Require the base at this path to be an equal empty
-    // container. (The synthetic root wrapper is never empty, so skip it.)
-    if (isnode(val) && 0 < path.length && isempty(val)) {
-      const baseval = getpath(cbase, path)
-      if (!deepequal(val, baseval)) {
-        throw fail(flags, index, entry, 'match failed at ' + at(path), stringify(val), stringify(baseval))
-      }
-      return val
-    }
-
+    // An empty container in the check is a structural placeholder: it has
+    // no leaves to check, so it matches whatever is at that path. This is
+    // deliberate - voxgig/struct's corpus relies on it (struct-compat), and
+    // an empty sub-pattern matching anything is the usual partial-match
+    // convention. The leaf checks below are where the strictness lives.
     if (!isnode(val)) {
       const baseval = getpath(cbase, path)
 
@@ -429,10 +422,6 @@ function match(flags: Flags, index: number, entry: Json, check: Json, base: Json
   })
 }
 
-// Is this container empty?
-function isempty(val: Json): boolean {
-  return Array.isArray(val) ? 0 === val.length : 0 === Object.keys(val as object).length
-}
 
 // Match one leaf. Strings are matched as /regex/ or as a case-insensitive
 // substring, which is what makes error-message expectations portable.

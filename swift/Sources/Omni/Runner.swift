@@ -365,21 +365,7 @@ public final class RunPack {
     _ flags: Flags, _ index: Int, _ entry: Json, _ check: Json, _ base: Json,
     _ path: [String] = []
   ) throws {
-    // An empty container asserts structure the recursion would otherwise
-    // skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
-    // to pass any result. Require the base at this path to be an equal
-    // empty container. (The synthetic root wrapper is never empty, so
-    // skip it.)
     if case .list(let entries) = check {
-      if entries.isEmpty && !path.isEmpty {
-        let baseval = getpath(base, path)
-        if !deepequal(check, baseval) {
-          throw fail(
-            flags, index, entry, "match failed at \(matchat(path))",
-            stringify(check), stringify(baseval))
-        }
-        return
-      }
       for (at, subcheck) in entries.enumerated() {
         try matchcheck(flags, index, entry, subcheck, base, path + [String(at)])
       }
@@ -387,15 +373,6 @@ public final class RunPack {
     }
 
     if case .map(let entries) = check {
-      if entries.isEmpty && !path.isEmpty {
-        let baseval = getpath(base, path)
-        if !deepequal(check, baseval) {
-          throw fail(
-            flags, index, entry, "match failed at \(matchat(path))",
-            stringify(check), stringify(baseval))
-        }
-        return
-      }
       for (key, subcheck) in entries {
         try matchcheck(flags, index, entry, subcheck, base, path + [key])
       }

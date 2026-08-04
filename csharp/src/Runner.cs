@@ -514,21 +514,6 @@ namespace Voxgig.Omni
 
             if (check is IList<object> list)
             {
-                // An empty container asserts structure that the walk would
-                // otherwise skip: it visits no leaves inside {} or [], so
-                // `match:{out:{}}` used to pass any result. Require the base
-                // at this path to be an equal empty container. (The synthetic
-                // root wrapper is never empty, so skip it.)
-                if (0 == list.Count && 0 < path.Count)
-                {
-                    object emptybase = Util.GetPath(base_, path);
-                    if (!Util.DeepEqual(check, emptybase))
-                    {
-                        throw Fail(flags, index, entry, "match failed at " + where,
-                                   Util.Stringify(check), Util.Stringify(emptybase));
-                    }
-                }
-
                 for (int at = 0; at < list.Count; at++)
                 {
                     var childpath = new List<string>(path) { at.ToString(CultureInfo.InvariantCulture) };
@@ -539,16 +524,6 @@ namespace Voxgig.Omni
 
             if (check is IDictionary<string, object> map)
             {
-                if (0 == map.Count && 0 < path.Count)
-                {
-                    object emptybase = Util.GetPath(base_, path);
-                    if (!Util.DeepEqual(check, emptybase))
-                    {
-                        throw Fail(flags, index, entry, "match failed at " + where,
-                                   Util.Stringify(check), Util.Stringify(emptybase));
-                    }
-                }
-
                 foreach (var field in map)
                 {
                     var childpath = new List<string>(path) { field.Key };

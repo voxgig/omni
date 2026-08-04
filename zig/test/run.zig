@@ -236,17 +236,6 @@ fn badspec(alloc: std.mem.Allocator) !Json {
                     }),
                 }) },
             }) },
-            // An empty container asserts an empty container, not "anything".
-            .{ "emptymatch", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(6) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{}) },
-                        }) },
-                    }),
-                }) },
-            }) },
             // An empty-string leaf matches only an empty string, not "anything".
             .{ "emptystr", try omni.jmap(alloc, &.{
                 .{ "set", try omni.jlist(alloc, &.{
@@ -359,7 +348,6 @@ pub fn main(init: std.process.Init) !void {
     try expectfail("a concrete match leaf does not match a missing key", "matchabsent", &FIBINFO);
     try expectfail("__UNDEF__ does not match a present null", "undefonnull", &FIBINFO);
     try expectfail("__NULL__ does not match an absent key", "nullonabsent", &FIBINFO);
-    try expectfail("an empty match container is not vacuous", "emptymatch", &FIBINFO);
     try expectfail("an empty-string match leaf is not a wildcard", "emptystr", &FIBINFO);
     try checkmessage();
 

@@ -527,29 +527,13 @@ private def failure (label : String) (index : Nat) (entry : Json) (reason : Stri
 private partial def matchcheck (label : String) (index : Nat) (entry check base : Json)
     (path : List String) : Except String Unit := do
   let place := if path.isEmpty then "<root>" else pathify path
-  -- An empty container asserts structure that recursion would otherwise
-  -- skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
-  -- to pass any result. Require the base at this path to be an equal
-  -- empty container. (The synthetic root wrapper is never empty.)
-  let checkempty : Except String Unit := do
-    let baseval := getpath (some base) path
-    if !deepequal (some check) baseval then
-      throw (failure label index entry s!"match failed at {place}"
-        (some (stringify (some check))) (some (stringify baseval)))
   match check with
   | .arr entries =>
-    if entries.isEmpty && !path.isEmpty then
-      checkempty
-    else
-      for idx in List.range entries.size do
-        matchcheck label index entry entries[idx]! base (path ++ [toString idx])
+    for idx in List.range entries.size do
+      matchcheck label index entry entries[idx]! base (path ++ [toString idx])
   | .obj kvs =>
-    let pairs := kvs.toArray.toList
-    if pairs.isEmpty && !path.isEmpty then
-      checkempty
-    else
-      for kv in pairs do
-        matchcheck label index entry kv.2 base (path ++ [kv.1])
+    for kv in kvs.toArray.toList do
+      matchcheck label index entry kv.2 base (path ++ [kv.1])
   | leaf =>
     let baseval := getpath (some base) path
     let leafval := some leaf

@@ -9,7 +9,7 @@ use warnings;
 
 use File::Basename qw(dirname);
 use File::Spec;
-use Test::More tests => 19;
+use Test::More tests => 18;
 
 use Voxgig::Omni::Runner qw(makeRunner);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -97,9 +97,6 @@ my $BADSPEC = {
         # __NULL__ (present null) must not be satisfied by an absent key.
         nullonabsent => { set => [ { 'in' => 6, match => { out => { nope => '__NULL__' } } } ] },
 
-        # An empty container asserts an empty container, not "anything".
-        emptymatch => { set => [ { 'in' => 6, match => { out => {} } } ] },
-
         # An empty-string want is not a wildcard substring match.
         emptystr => { set => [ { 'in' => 6, match => { out => { label => '' } } } ] },
     }
@@ -120,7 +117,6 @@ ok( expectfail( 'missing',    $FIBINFO ), 'detects absent key' );
 ok( expectfail( 'matchabsent',  $FIBINFO ), 'a concrete match leaf does not match a missing key' );
 ok( expectfail( 'undefonnull',  $FIBINFO ), '__UNDEF__ does not match a present null' );
 ok( expectfail( 'nullonabsent', $FIBINFO ), '__NULL__ does not match an absent key' );
-ok( expectfail( 'emptymatch',   $FIBINFO ), 'an empty match container is not vacuous' );
 ok( expectfail( 'emptystr',     $FIBINFO ), 'an empty-string match leaf is not a wildcard' );
 
 subtest 'reports entry index and id' => sub {

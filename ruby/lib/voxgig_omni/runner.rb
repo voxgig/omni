@@ -232,19 +232,10 @@ module VoxgigOmni
       at = ->(path) { path.empty? ? '<root>' : U.pathify(path) }
 
       apply = lambda do |_key, val, _parent, path|
-        # An empty container asserts structure that walk would otherwise skip:
-        # it visits no leaves inside {} or [], so `match:{out:{}}` used to pass
-        # any result. Require the base at this path to be an equal empty
-        # container. (The synthetic root wrapper is never empty, so skip it.)
-        if U.isnode(val) && !path.empty? && isempty(val)
-          baseval = U.getpath(cbase, path)
-          unless U.deepequal(val, baseval)
-            raise fail(flags, index, entry, 'match failed at ' + at.call(path),
-                       U.stringify(val), U.stringify(baseval))
-          end
-          next val
-        end
-
+        # An empty container in the check is a structural placeholder: walk
+        # visits no leaves inside {} or [], so it asserts nothing about the
+        # base. (struct's corpus relies on this "map is here, contents
+        # unchecked" behaviour, so omni stays a faithful drop-in.)
         unless U.isnode(val)
           baseval = U.getpath(cbase, path)
 
@@ -294,11 +285,6 @@ module VoxgigOmni
       end
 
       U.walk(U.clone(check), apply)
-    end
-
-    # Is this container empty?
-    def isempty(val)
-      val.empty?
     end
 
     # Match one leaf: /regex/ or case-insensitive substring for strings.

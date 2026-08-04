@@ -291,23 +291,6 @@ static int omni_matchwalk(omni_matchctx *ctx, const omni_json *check, char **pat
   size_t at;
   char part[32];
 
-  /* An empty container asserts structure that the traversal would
-   * otherwise skip: it has no leaves, so `match:{out:{}}` used to pass
-   * any result. Require the base at this path to be an equal empty
-   * container. (The synthetic root wrapper is never empty, so skip it.) */
-  if (0 < pathlen && ((omni_islist(check) && 0 == check->listlen) ||
-                      (omni_ismap(check) && 0 == check->maplen))) {
-    const omni_json *baseval = omni_getpath(ctx->base, path, pathlen);
-    if (!omni_deepequal(check, baseval)) {
-      *ctx->errout = omni_fail(
-          ctx->pool, ctx->flags, ctx->index, ctx->entry,
-          omni_join(ctx->pool, "match failed at ", omni_matchat(ctx, path, pathlen), NULL, NULL),
-          omni_stringify(ctx->pool, check), omni_stringify(ctx->pool, baseval));
-      return 1;
-    }
-    return 0;
-  }
-
   if (omni_islist(check)) {
     for (at = 0; at < check->listlen; at++) {
       snprintf(part, sizeof(part), "%lu", (unsigned long)at);

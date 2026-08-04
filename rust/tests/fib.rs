@@ -210,17 +210,6 @@ fn badspec() -> Json {
                     ])]),
                 )]),
             ),
-            // An empty container asserts an empty container, not "anything".
-            (
-                "emptymatch",
-                Json::map(vec![(
-                    "set",
-                    Json::list(vec![Json::map(vec![
-                        ("in", Json::Num(6.0)),
-                        ("match", Json::map(vec![("out", Json::map(vec![]))])),
-                    ])]),
-                )]),
-            ),
             // An empty-string want is not a wildcard substring match.
             (
                 "emptystr",
@@ -267,8 +256,6 @@ fn runner_detects_failures() {
     expectfail("undefonnull", &infosub);
     // __NULL__ does not match an absent key.
     expectfail("nullonabsent", &infosub);
-    // An empty match container is not vacuous.
-    expectfail("emptymatch", &infosub);
     // An empty-string match leaf is not a wildcard.
     expectfail("emptystr", &infosub);
 }

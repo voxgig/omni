@@ -97,9 +97,6 @@ def badspec : Json :=
     ("nullonabsent", jmap [("set", jlist [
       jmap [("in", jnum 6),
             ("match", jmap [("out", jmap [("nope", jstr "__NULL__")])])]])]),
-    -- An empty container asserts an empty container, not "anything".
-    ("emptymatch", jmap [("set", jlist [
-      jmap [("in", jnum 6), ("match", jmap [("out", jmap [])])]])]),
     -- An empty-string match leaf is not a wildcard.
     ("emptystr", jmap [("set", jlist [
       jmap [("in", jnum 6),
@@ -151,7 +148,6 @@ def main (argv : List String) : IO UInt32 := do
   run "a concrete match leaf does not match a missing key" (expectfail "matchabsent" FIBINFO)
   run "__UNDEF__ does not match a present null" (expectfail "undefonnull" FIBINFO)
   run "__NULL__ does not match an absent key" (expectfail "nullonabsent" FIBINFO)
-  run "an empty match container is not vacuous" (expectfail "emptymatch" FIBINFO)
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" FIBINFO)
   run "reports entry index and id" checkmessage
 

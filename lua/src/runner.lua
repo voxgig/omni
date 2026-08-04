@@ -182,30 +182,16 @@ local function matchcheck(label, index, entry, check, base, path)
 
   local where = 0 == #path and '<root>' or u.pathify(path)
 
-  if u.islist(check) or u.ismap(check) then
-    -- An empty container asserts structure that the walk would otherwise
-    -- skip: it visits no leaves inside {} or [], so `match:{out:{}}` used
-    -- to pass any result. Require the base at this path to be an equal
-    -- empty container. (The synthetic root wrapper is never empty, so
-    -- skip it.)
-    if nil == next(check) and 0 < #path then
-      local baseval = u.getpath(base, path)
-      if not u.deepequal(check, baseval) then
-        error(fail(label, index, entry, 'match failed at ' .. where,
-          u.stringify(check), u.stringify(baseval)))
-      end
-      return
+  if u.islist(check) then
+    for at, subcheck in ipairs(check) do
+      local childpath = { table.unpack(path) }
+      childpath[#childpath + 1] = tostring(at - 1)
+      matchcheck(label, index, entry, subcheck, base, childpath)
     end
+    return
+  end
 
-    if u.islist(check) then
-      for at, subcheck in ipairs(check) do
-        local childpath = { table.unpack(path) }
-        childpath[#childpath + 1] = tostring(at - 1)
-        matchcheck(label, index, entry, subcheck, base, childpath)
-      end
-      return
-    end
-
+  if u.ismap(check) then
     for key, subcheck in pairs(check) do
       local childpath = { table.unpack(path) }
       childpath[#childpath + 1] = key

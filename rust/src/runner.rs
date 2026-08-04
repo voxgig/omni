@@ -508,25 +508,6 @@ fn matchwalk(
 
     match check {
         Json::List(list) => {
-            // An empty container asserts structure that the walk would
-            // otherwise skip: it visits no leaves inside {} or [], so
-            // `match:{out:{}}` used to pass any result. Require the base at
-            // this path to be an equal empty container. (The synthetic root
-            // wrapper is never empty, so skip it.)
-            if list.is_empty() && !path.is_empty() {
-                let baseval = getpath(base, path);
-                if !deepequal(check, &baseval) {
-                    return Err(fail(
-                        flags,
-                        index,
-                        entry,
-                        &format!("match failed at {}", where_(path)),
-                        Some(stringify(check)),
-                        Some(stringify(&baseval)),
-                    ));
-                }
-                return Ok(());
-            }
             for (subindex, subcheck) in list.iter().enumerate() {
                 path.push(subindex.to_string());
                 matchwalk(flags, index, entry, subcheck, base, path)?;
@@ -535,22 +516,6 @@ fn matchwalk(
             Ok(())
         }
         Json::Map(map) => {
-            // See the empty-list note above: an empty map asserts an equal
-            // empty map in the base.
-            if map.is_empty() && !path.is_empty() {
-                let baseval = getpath(base, path);
-                if !deepequal(check, &baseval) {
-                    return Err(fail(
-                        flags,
-                        index,
-                        entry,
-                        &format!("match failed at {}", where_(path)),
-                        Some(stringify(check)),
-                        Some(stringify(&baseval)),
-                    ));
-                }
-                return Ok(());
-            }
             for (key, subcheck) in map.iter() {
                 path.push(key.clone());
                 matchwalk(flags, index, entry, subcheck, base, path)?;
