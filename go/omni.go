@@ -14,10 +14,13 @@ package omni
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -66,6 +69,25 @@ func (runpack *RunPack) Set(name string) any {
 // Runner resolves one named section of a spec.
 type Runner func(name string, store any) (*RunPack, error)
 
+// SPECVERSION is the newest spec format version this runner understands. A
+// spec with no OMNI block is version 0: the original, lenient format,
+// frozen forever. Version 1 turns on strict entry validation (see
+// checkentry).
+const SPECVERSION = 1
+
+// CAPABILITIES are the capability strings this runner supports beyond the
+// version baseline. A spec's OMNI.requires list is checked against this: an
+// unknown capability refuses the spec loudly at load time, instead of a
+// lagging port silently mis-running it. (Empty today; future format
+// features mint a string here.)
+var CAPABILITIES = []string{}
+
+// ENTRYFIELDS is the complete set of fields an entry may carry. Under
+// version 1 anything else is an error: an unrecognised key is almost
+// always a typo'd assertion, and a typo'd assertion is a test that
+// silently stopped testing.
+var ENTRYFIELDS = []string{"in", "args", "ctx", "out", "err", "match", "client", "id", "doc"}
+
 // OmniError is a test failure (or a malformed spec). Distinct from errors
 // returned by the subject under test, which are candidates for an `err`
 // expectation.
@@ -98,6 +120,88 @@ func LoadSpec(specref any) (any, error) {
 		return alltests, nil
 	}
 	return specref, nil
+}
+
+// resolveversion reads the spec's format version from its optional
+// top-level OMNI block, and refuses a spec this runner cannot faithfully
+// run: a version newer than SPECVERSION, or a required capability not in
+// CAPABILITIES.
+func resolveversion(alltests any) (int, error) {
+	specmap, is := alltests.(map[string]any)
+	if !is {
+		return 0, nil
+	}
+
+	meta, has := specmap["OMNI"]
+	if !has || nil == meta {
+		return 0, nil
+	}
+
+	metamap, ismetamap := meta.(map[string]any)
+	version, isnum := ToNum(metamap["version"])
+	if !ismetamap || !isnum || version != math.Trunc(version) {
+		return 0, &OmniError{Message: "omni: malformed OMNI version block"}
+	}
+
+	if version < 0 || SPECVERSION < version {
+		return 0, &OmniError{Message: "omni: unsupported spec version: " + strconv.Itoa(int(version))}
+	}
+
+	if requires, has := metamap["requires"]; has && nil != requires {
+		list, is := requires.([]any)
+		if !is {
+			return 0, &OmniError{Message: "omni: malformed OMNI requires list"}
+		}
+		for _, cap := range list {
+			capstr, is := cap.(string)
+			if !is || !slices.Contains(CAPABILITIES, capstr) {
+				return 0, &OmniError{Message: "omni: spec requires unsupported capability: " + Stringify(cap)}
+			}
+		}
+	}
+
+	return int(version), nil
+}
+
+// checkentry is strict entry validation, applied when the spec declares
+// version 1 or later. The lenient format converts each of these mistakes
+// into a silent pass or a dead field; here they fail with the entry named.
+func checkentry(flags Flags, index int, entry map[string]any) error {
+	keys := make([]string, 0, len(entry))
+	for key := range entry {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if !slices.Contains(ENTRYFIELDS, key) {
+			return fail(flags, index, entry, "unknown entry field: "+key, nil, nil)
+		}
+	}
+
+	argsources := 0
+	for _, key := range []string{"in", "args", "ctx"} {
+		if _, has := entry[key]; has {
+			argsources++
+		}
+	}
+	if 1 < argsources {
+		return fail(flags, index, entry, "entry has more than one of in, args, ctx", nil, nil)
+	}
+
+	if entryerr, has := entry["err"]; has && nil != entryerr {
+		if _, has := entry["out"]; has {
+			return fail(flags, index, entry, "entry has both err and out", nil, nil)
+		}
+	}
+
+	if id, has := entry["id"]; has && nil != id {
+		if _, is := id.(string); !is {
+			return fail(flags, index, entry, "entry id is not a string", nil, nil)
+		}
+	}
+
+	return nil
 }
 
 // ResolveSpec finds `primary.<name>`, then `<name>`, then the whole spec.
@@ -618,6 +722,11 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 		return nil, err
 	}
 
+	specversion, err := resolveversion(alltests)
+	if nil != err {
+		return nil, err
+	}
+
 	useprovider := provider
 	if nil == useprovider {
 		useprovider = &Provider{}
@@ -661,11 +770,26 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 				return &OmniError{Message: "omni: test spec has no set: " + Stringify(useflags["name"])}
 			}
 
+			// A vacuously green group proves nothing. Version 1 makes an empty
+			// set an error; a group that is deliberately empty says so.
+			if 1 <= specversion && 0 == len(testset) {
+				isempty, _ := testspecmap["empty"].(bool)
+				if !isempty {
+					return &OmniError{Message: "omni: empty test set: " + Stringify(useflags["name"])}
+				}
+			}
+
 			for index, rawentry := range testset {
 				entry, is := rawentry.(map[string]any)
 				if !is {
 					return &OmniError{
 						Message: fmt.Sprintf("omni: %s[%d]: entry is not a map", useflags["name"], index),
+					}
+				}
+
+				if 1 <= specversion {
+					if err := checkentry(useflags, index, entry); nil != err {
+						return err
 					}
 				}
 

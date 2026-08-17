@@ -23,6 +23,7 @@ end
 
 # The provider hosts the system under test. `shift` offsets the Fibonacci
 # index, so that a client-specific subject is observably different.
+# `contextify` marks the map, so the context group can prove the hook ran.
 def fibprovider(shift)
   subjects = {
     'fib' => ->(n) { Fib.fib(n.is_a?(Numeric) ? n + shift : n) },
@@ -33,7 +34,8 @@ def fibprovider(shift)
 
   {
     subject: ->(name) { subjects[name] },
-    client: ->(options) { fibprovider(options['shift'] || 0) }
+    client: ->(options) { fibprovider(options['shift'] || 0) },
+    contextify: ->(val) { val.merge('mark' => 'CTX') }
   }
 end
 
@@ -46,6 +48,18 @@ FIB = ->(n) { Fib.fib(n) }
 FIBSEQ = ->(n) { Fib.fibseq(n) }
 FIBRANGE = ->(s, e) { Fib.fibrange(s, e) }
 FIBINFO = ->(n) { Fib.fibinfo(n) }
+
+# The context-group subject: reports what the runner delivered - the
+# contextify mark and the attached client - as plain data, so the spec can
+# pin both with an ordinary `out` comparison in every port.
+FIBCTX = lambda do |ctx|
+  {
+    'n' => ctx['n'],
+    'val' => Fib.fib(ctx['n']),
+    'mark' => ctx['mark'],
+    'hasclient' => !ctx['client'].nil?
+  }
+end
 
 class TestFib < Minitest::Test
   def test_basic
@@ -82,6 +96,10 @@ class TestFib < Minitest::Test
 
   def test_client
     RUNSET.call(SPEC['client'], FIB)
+  end
+
+  def test_context
+    RUNSET.call(SPEC['context'], FIBCTX)
   end
 end
 
@@ -142,6 +160,92 @@ class TestRunner < Minitest::Test
 
   def test_empty_string_match_leaf_is_not_a_wildcard
     expectfail('emptystr', FIBINFO)
+  end
+
+  def test_rejects_an_unsupported_spec_version
+    err = assert_raises(VoxgigOmni::OmniError) do
+      VoxgigOmni.make_runner(
+        { 'OMNI' => { 'version' => 99 }, 'fib' => { 'g' => { 'set' => [] } } }
+      )
+    end
+    assert_includes err.message, 'unsupported spec version'
+  end
+
+  def test_rejects_an_unknown_required_capability
+    err = assert_raises(VoxgigOmni::OmniError) do
+      VoxgigOmni.make_runner(
+        { 'OMNI' => { 'version' => 1, 'requires' => ['nosuchfeature'] },
+          'fib' => { 'g' => { 'set' => [] } } }
+      )
+    end
+    assert_includes err.message, 'unsupported capability'
+  end
+
+  def test_rejects_a_malformed_version_block
+    err = assert_raises(VoxgigOmni::OmniError) do
+      VoxgigOmni.make_runner(
+        { 'OMNI' => { 'version' => 'one' }, 'fib' => { 'g' => { 'set' => [] } } }
+      )
+    end
+    assert_includes err.message, 'malformed OMNI'
+  end
+
+  def test_strict_an_unknown_entry_field_fails_instead_of_passing_vacuously
+    strict = VoxgigOmni.make_runner(
+      { 'OMNI' => { 'version' => 1 },
+        'fib' => { 'g' => { 'set' => [{ 'in' => 6, 'matches' => { 'out' => 999 } }] } } }
+    ).call('fib')
+
+    err = assert_raises(VoxgigOmni::OmniError) do
+      strict[:runset].call(strict[:spec]['g'], FIBINFO)
+    end
+    assert_includes err.message, 'unknown entry field: matches'
+  end
+
+  def test_strict_more_than_one_of_in_args_ctx_fails
+    strict = VoxgigOmni.make_runner(
+      { 'OMNI' => { 'version' => 1 },
+        'fib' => { 'g' => { 'set' => [{ 'in' => 5, 'args' => [5], 'out' => 5 }] } } }
+    ).call('fib')
+
+    err = assert_raises(VoxgigOmni::OmniError) do
+      strict[:runset].call(strict[:spec]['g'], FIB)
+    end
+    assert_includes err.message, 'more than one of in, args, ctx'
+  end
+
+  def test_strict_err_together_with_out_fails
+    strict = VoxgigOmni.make_runner(
+      { 'OMNI' => { 'version' => 1 },
+        'fib' => { 'g' => { 'set' => [{ 'in' => -1, 'err' => true, 'out' => 5 }] } } }
+    ).call('fib')
+
+    err = assert_raises(VoxgigOmni::OmniError) do
+      strict[:runset].call(strict[:spec]['g'], FIB)
+    end
+    assert_includes err.message, 'both err and out'
+  end
+
+  def test_strict_an_empty_set_fails_unless_marked_empty
+    strict = VoxgigOmni.make_runner(
+      { 'OMNI' => { 'version' => 1 },
+        'fib' => { 'g' => { 'set' => [] }, 'h' => { 'set' => [], 'empty' => true } } }
+    ).call('fib')
+
+    err = assert_raises(VoxgigOmni::OmniError) do
+      strict[:runset].call(strict[:spec]['g'], FIB)
+    end
+    assert_includes err.message, 'empty test set'
+
+    strict[:runset].call(strict[:spec]['h'], FIB)
+  end
+
+  def test_a_legacy_spec_no_omni_block_stays_lenient
+    legacy = VoxgigOmni.make_runner(
+      { 'fib' => { 'g' => { 'set' => [{ 'in' => 6, 'matches' => { 'out' => 999 }, 'out' => 8 }] } } }
+    ).call('fib')
+
+    legacy[:runset].call(legacy[:spec]['g'], FIB)
   end
 
   def test_reports_entry_index_and_id

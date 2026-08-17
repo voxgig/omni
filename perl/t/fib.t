@@ -9,7 +9,8 @@ use warnings;
 
 use File::Basename qw(dirname);
 use File::Spec;
-use Test::More tests => 18;
+use JSON::PP ();
+use Test::More tests => 27;
 
 use Voxgig::Omni::Runner qw(makeRunner);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -28,6 +29,7 @@ sub specfile {
 
 # The provider hosts the system under test. `shift` offsets the Fibonacci
 # index, so that a client-specific subject is observably different.
+# `contextify` marks the map, so the context group can prove the hook ran.
 sub fibprovider {
     my ($shift) = @_;
 
@@ -39,8 +41,9 @@ sub fibprovider {
     );
 
     return {
-        subject => sub { return $subjects{ $_[0] } },
-        client  => sub { return fibprovider( $_[0]->{shift} || 0 ) },
+        subject    => sub { return $subjects{ $_[0] } },
+        client     => sub { return fibprovider( $_[0]->{shift} || 0 ) },
+        contextify => sub { return { %{ $_[0] }, mark => 'CTX' } },
     };
 }
 
@@ -48,6 +51,19 @@ my $FIB      = sub { fib( $_[0] ) };
 my $FIBSEQ   = sub { fibseq( $_[0] ) };
 my $FIBRANGE = sub { fibrange( $_[0], $_[1] ) };
 my $FIBINFO  = sub { fibinfo( $_[0] ) };
+
+# The context-group subject: reports what the runner delivered - the
+# contextify mark and the attached client - as plain data, so the spec can
+# pin both with an ordinary `out` comparison.
+my $FIBCTX = sub {
+    my ($ctx) = @_;
+    return {
+        n         => $ctx->{n},
+        val       => fib( $ctx->{n} ),
+        mark      => $ctx->{mark},
+        hasclient => defined( $ctx->{client} ) ? JSON::PP::true : JSON::PP::false,
+    };
+};
 
 my $R = makeRunner( specfile('fib.json'), fibprovider(0) )->('fib');
 
@@ -77,6 +93,7 @@ group( 'error',     sub { $runset->( $spec->{error},     $FIB ) } );
 group( 'match',     sub { $runset->( $spec->{match},     $FIB ) } );
 group( 'matchinfo', sub { $runset->( $spec->{matchinfo}, $FIBINFO ) } );
 group( 'client',    sub { $runset->( $spec->{client},    $FIB ) } );
+group( 'context',   sub { $runset->( $spec->{context},   $FIBCTX ) } );
 
 # The runner must fail when the subject is wrong - otherwise a green suite
 # means nothing.
@@ -118,6 +135,86 @@ ok( expectfail( 'matchabsent',  $FIBINFO ), 'a concrete match leaf does not matc
 ok( expectfail( 'undefonnull',  $FIBINFO ), '__UNDEF__ does not match a present null' );
 ok( expectfail( 'nullonabsent', $FIBINFO ), '__NULL__ does not match an absent key' );
 ok( expectfail( 'emptystr',     $FIBINFO ), 'an empty-string match leaf is not a wildcard' );
+
+# makeRunner refuses a spec version it cannot faithfully run before ever
+# returning a runner - fail fast, at load time.
+sub expectloadfail {
+    my ( $specref, $pattern ) = @_;
+    my $ok = eval { makeRunner($specref); 1 };
+    return 0 if $ok;
+    return ( Voxgig::Omni::Runner::is_omni_error($@) && "$@" =~ $pattern ) ? 1 : 0;
+}
+
+ok( expectloadfail( { OMNI => { version => 99 }, fib => { g => { set => [] } } },
+        qr/unsupported spec version/ ),
+    'rejects an unsupported spec version' );
+
+ok( expectloadfail(
+        { OMNI => { version => 1, requires => ['nosuchfeature'] }, fib => { g => { set => [] } } },
+        qr/unsupported capability/
+    ),
+    'rejects an unknown required capability' );
+
+ok( expectloadfail( { OMNI => { version => 'one' }, fib => { g => { set => [] } } },
+        qr/malformed OMNI/ ),
+    'rejects a malformed version block' );
+
+# Strict (version 1) entry validation - each of these is a silent pass or a
+# dead field under the legacy (no OMNI block) format.
+sub expectstrictfail {
+    my ( $specref, $groupname, $subject, $pattern ) = @_;
+    my $strict = makeRunner($specref)->('fib');
+    my $ok = eval { $strict->{runset}->( $strict->{spec}{$groupname}, $subject ); 1 };
+    return 0 if $ok;
+    return ( Voxgig::Omni::Runner::is_omni_error($@) && "$@" =~ $pattern ) ? 1 : 0;
+}
+
+ok( expectstrictfail(
+        { OMNI => { version => 1 },
+          fib => { g => { set => [ { 'in' => 6, matches => { out => 999 } } ] } } },
+        'g', $FIBINFO, qr/unknown entry field: matches/
+    ),
+    'strict: an unknown entry field fails instead of passing vacuously' );
+
+ok( expectstrictfail(
+        { OMNI => { version => 1 },
+          fib => { g => { set => [ { 'in' => 5, args => [5], out => 5 } ] } } },
+        'g', $FIB, qr/more than one of in, args, ctx/
+    ),
+    'strict: more than one of in, args, ctx fails' );
+
+ok( expectstrictfail(
+        { OMNI => { version => 1 },
+          fib => { g => { set => [ { 'in' => -1, err => 1, out => 5 } ] } } },
+        'g', $FIB, qr/both err and out/
+    ),
+    'strict: err together with out fails' );
+
+subtest 'strict: an empty set fails unless marked empty' => sub {
+    plan tests => 2;
+
+    my $strict = makeRunner(
+        { OMNI => { version => 1 },
+          fib => { g => { set => [] }, h => { set => [], empty => JSON::PP::true } } }
+    )->('fib');
+
+    my $ok  = eval { $strict->{runset}->( $strict->{spec}{g}, $FIB ); 1 };
+    my $msg = $ok ? '' : "$@";
+    like( $msg, qr/empty test set/, 'an unmarked empty set fails' );
+
+    ok( ( eval { $strict->{runset}->( $strict->{spec}{h}, $FIB ); 1 } ? 1 : 0 ),
+        'a set marked empty:true passes' );
+};
+
+ok( ( eval {
+            my $legacy = makeRunner(
+                { fib => { g => { set => [ { 'in' => 6, matches => { out => 999 }, out => 8 } ] } } }
+            )->('fib');
+            $legacy->{runset}->( $legacy->{spec}{g}, $FIB );
+            1;
+        } ? 1 : 0
+    ),
+    'a legacy spec (no OMNI block) stays lenient' );
 
 subtest 'reports entry index and id' => sub {
     plan tests => 3;

@@ -39,6 +39,7 @@ function specfile(string $name): string
 /**
  * The provider hosts the system under test. `shift` offsets the Fibonacci
  * index, so that a client-specific subject is observably different.
+ * `contextify` marks the map, so the context group can prove the hook ran.
  */
 function fibprovider(int $shift): array
 {
@@ -52,6 +53,22 @@ function fibprovider(int $shift): array
     return [
         'subject' => fn(string $name) => $subjects[$name] ?? null,
         'client' => fn(array $options) => fibprovider((int) ($options['shift'] ?? 0)),
+        'contextify' => fn(array $val) => array_merge($val, ['mark' => 'CTX']),
+    ];
+}
+
+/**
+ * The context-group subject: reports what the runner delivered - the
+ * contextify mark and the attached client - as plain data, so the spec can
+ * pin both with an ordinary `out` comparison in every port.
+ */
+function fibctx(array $ctx): array
+{
+    return [
+        'n' => $ctx['n'] ?? null,
+        'val' => Fib::fib($ctx['n'] ?? null),
+        'mark' => $ctx['mark'] ?? null,
+        'hasclient' => null !== ($ctx['client'] ?? null),
     ];
 }
 
@@ -82,6 +99,7 @@ $fib = fn($n) => Fib::fib($n);
 $fibseq = fn($n) => Fib::fibseq($n);
 $fibrange = fn($s, $e) => Fib::fibrange($s, $e);
 $fibinfo = fn($n) => Fib::fibinfo($n);
+$fibctxsubject = fn($ctx) => fibctx($ctx);
 
 $R = (Runner::makeRunner(specfile('fib.json'), fibprovider(0)))('fib');
 $spec = $R['spec'];
@@ -97,6 +115,7 @@ testcase('error', fn() => $runset($spec['error'], $fib));
 testcase('match', fn() => $runset($spec['match'], $fib));
 testcase('matchinfo', fn() => $runset($spec['matchinfo'], $fibinfo));
 testcase('client', fn() => $runset($spec['client'], $fib));
+testcase('context', fn() => $runset($spec['context'], $fibctxsubject));
 
 // The runner must fail when the subject is wrong - otherwise a green suite
 // means nothing.
@@ -137,6 +156,96 @@ testcase('a concrete match leaf does not match a missing key', fn() => expectfai
 testcase('__UNDEF__ does not match a present null', fn() => expectfail('undefonnull', $fibinfo));
 testcase('__NULL__ does not match an absent key', fn() => expectfail('nullonabsent', $fibinfo));
 testcase('an empty-string match leaf is not a wildcard', fn() => expectfail('emptystr', $fibinfo));
+
+/** Expect makeRunner() itself to refuse the spec, message containing $want. */
+function expectloaderror($spec, string $want): void
+{
+    try {
+        Runner::makeRunner($spec);
+    } catch (OmniError $err) {
+        if (false === strpos($err->getMessage(), $want)) {
+            throw new \RuntimeException('omni: message missing [' . $want . ']: ' . $err->getMessage());
+        }
+        return;
+    }
+    throw new \RuntimeException('omni: expected OmniError loading spec');
+}
+
+/** Expect one runset() call against $spec['fib'][$group] to fail, message containing $want. */
+function expectrunerror($spec, string $group, callable $subject, string $want): void
+{
+    $bad = (Runner::makeRunner($spec))('fib');
+    try {
+        ($bad['runset'])($bad['spec'][$group], $subject);
+    } catch (OmniError $err) {
+        if (false === strpos($err->getMessage(), $want)) {
+            throw new \RuntimeException('omni: message missing [' . $want . ']: ' . $err->getMessage());
+        }
+        return;
+    }
+    throw new \RuntimeException('omni: expected OmniError for set: ' . $group);
+}
+
+testcase('rejects an unsupported spec version', fn() => expectloaderror(
+    ['OMNI' => ['version' => 99], 'fib' => ['g' => ['set' => []]]],
+    'unsupported spec version'
+));
+
+testcase('rejects an unknown required capability', fn() => expectloaderror(
+    ['OMNI' => ['version' => 1, 'requires' => ['nosuchfeature']], 'fib' => ['g' => ['set' => []]]],
+    'unsupported capability'
+));
+
+testcase('rejects a malformed version block', fn() => expectloaderror(
+    ['OMNI' => ['version' => 'one'], 'fib' => ['g' => ['set' => []]]],
+    'malformed OMNI'
+));
+
+testcase('strict: an unknown entry field fails instead of passing vacuously', fn() => expectrunerror(
+    ['OMNI' => ['version' => 1], 'fib' => ['g' => ['set' => [['in' => 6, 'matches' => ['out' => 999]]]]]],
+    'g',
+    $fibinfo,
+    'unknown entry field: matches'
+));
+
+testcase('strict: more than one of in, args, ctx fails', fn() => expectrunerror(
+    ['OMNI' => ['version' => 1], 'fib' => ['g' => ['set' => [['in' => 5, 'args' => [5], 'out' => 5]]]]],
+    'g',
+    $fib,
+    'more than one of in, args, ctx'
+));
+
+testcase('strict: err together with out fails', fn() => expectrunerror(
+    ['OMNI' => ['version' => 1], 'fib' => ['g' => ['set' => [['in' => -1, 'err' => true, 'out' => 5]]]]],
+    'g',
+    $fib,
+    'both err and out'
+));
+
+testcase('strict: an empty set fails unless marked empty', function () use ($fib) {
+    $bad = (Runner::makeRunner([
+        'OMNI' => ['version' => 1],
+        'fib' => ['g' => ['set' => []], 'h' => ['set' => [], 'empty' => true]],
+    ]))('fib');
+
+    try {
+        ($bad['runset'])($bad['spec']['g'], $fib);
+    } catch (OmniError $err) {
+        if (false === strpos($err->getMessage(), 'empty test set')) {
+            throw new \RuntimeException('omni: message missing [empty test set]: ' . $err->getMessage());
+        }
+        ($bad['runset'])($bad['spec']['h'], $fib);
+        return;
+    }
+    throw new \RuntimeException('omni: expected OmniError for set: g');
+});
+
+testcase('a legacy spec (no OMNI block) stays lenient', function () use ($fib) {
+    $legacy = (Runner::makeRunner([
+        'fib' => ['g' => ['set' => [['in' => 6, 'matches' => ['out' => 999], 'out' => 8]]]],
+    ]))('fib');
+    ($legacy['runset'])($legacy['spec']['g'], $fib);
+});
 
 testcase('reports entry index and id', function () use ($fib) {
     $bad = (Runner::makeRunner([

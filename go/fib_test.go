@@ -51,10 +51,27 @@ var (
 	FIBINFO = omni.Subject(func(args ...any) (any, error) {
 		return fib.FibInfo(args[0])
 	})
+	// The context-group subject: reports what the runner delivered - the
+	// contextify mark and the attached client - as plain data, so the spec
+	// can pin both with an ordinary `out` comparison in every port.
+	FIBCTX = omni.Subject(func(args ...any) (any, error) {
+		ctx, _ := args[0].(map[string]any)
+		val, err := fib.Fib(ctx["n"])
+		if nil != err {
+			return nil, err
+		}
+		return map[string]any{
+			"n":         ctx["n"],
+			"val":       val,
+			"mark":      ctx["mark"],
+			"hasclient": nil != ctx["client"],
+		}, nil
+	})
 )
 
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
+// `contextify` marks the map, so the context group can prove the hook ran.
 func fibprovider(shift float64) *omni.Provider {
 	subjects := map[string]omni.Subject{
 		"fib": func(args ...any) (any, error) {
@@ -80,6 +97,18 @@ func fibprovider(shift float64) *omni.Provider {
 				}
 			}
 			return fibprovider(shift), nil
+		},
+		Contextify: func(val any) any {
+			base, is := val.(map[string]any)
+			if !is {
+				return val
+			}
+			out := make(map[string]any, len(base)+1)
+			for key, entry := range base {
+				out[key] = entry
+			}
+			out["mark"] = "CTX"
+			return out
 		},
 	}
 }
@@ -109,6 +138,7 @@ func TestFib(t *testing.T) {
 		{"match", FIB, nil},
 		{"matchinfo", FIBINFO, nil},
 		{"client", FIB, nil},
+		{"context", FIBCTX, nil},
 	}
 
 	for _, group := range groups {
@@ -206,6 +236,147 @@ func TestRunner(t *testing.T) {
 		func(t *testing.T) { expectfail(t, "nullonabsent", FIBINFO) })
 	t.Run("an empty-string match leaf is not a wildcard",
 		func(t *testing.T) { expectfail(t, "emptystr", FIBINFO) })
+
+	t.Run("rejects an unsupported spec version", func(t *testing.T) {
+		_, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 99.0},
+			"fib":  map[string]any{"g": map[string]any{"set": []any{}}},
+		}, nil)
+		if nil == err || !omni.IsOmniError(err) {
+			t.Fatalf("omni: expected OmniError, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "unsupported spec version") {
+			t.Fatalf("omni: unexpected message: %s", err.Error())
+		}
+	})
+
+	t.Run("rejects an unknown required capability", func(t *testing.T) {
+		_, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 1.0, "requires": []any{"nosuchfeature"}},
+			"fib":  map[string]any{"g": map[string]any{"set": []any{}}},
+		}, nil)
+		if nil == err || !omni.IsOmniError(err) {
+			t.Fatalf("omni: expected OmniError, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "unsupported capability") {
+			t.Fatalf("omni: unexpected message: %s", err.Error())
+		}
+	})
+
+	t.Run("rejects a malformed version block", func(t *testing.T) {
+		_, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": "one"},
+			"fib":  map[string]any{"g": map[string]any{"set": []any{}}},
+		}, nil)
+		if nil == err || !omni.IsOmniError(err) {
+			t.Fatalf("omni: expected OmniError, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "malformed OMNI") {
+			t.Fatalf("omni: unexpected message: %s", err.Error())
+		}
+	})
+
+	t.Run("strict: an unknown entry field fails instead of passing vacuously", func(t *testing.T) {
+		runner, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 1.0},
+			"fib": map[string]any{"g": map[string]any{"set": []any{
+				map[string]any{"in": 6.0, "matches": map[string]any{"out": 999.0}},
+			}}},
+		}, nil)
+		if nil != err {
+			t.Fatalf("omni: cannot make runner: %v", err)
+		}
+		R, err := runner("fib", nil)
+		if nil != err {
+			t.Fatalf("omni: cannot resolve spec: %v", err)
+		}
+		err = R.RunSet(R.Set("g"), FIBINFO)
+		if nil == err || !strings.Contains(err.Error(), "unknown entry field: matches") {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+	})
+
+	t.Run("strict: more than one of in, args, ctx fails", func(t *testing.T) {
+		runner, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 1.0},
+			"fib": map[string]any{"g": map[string]any{"set": []any{
+				map[string]any{"in": 5.0, "args": []any{5.0}, "out": 5.0},
+			}}},
+		}, nil)
+		if nil != err {
+			t.Fatalf("omni: cannot make runner: %v", err)
+		}
+		R, err := runner("fib", nil)
+		if nil != err {
+			t.Fatalf("omni: cannot resolve spec: %v", err)
+		}
+		err = R.RunSet(R.Set("g"), FIB)
+		if nil == err || !strings.Contains(err.Error(), "more than one of in, args, ctx") {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+	})
+
+	t.Run("strict: err together with out fails", func(t *testing.T) {
+		runner, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 1.0},
+			"fib": map[string]any{"g": map[string]any{"set": []any{
+				map[string]any{"in": -1.0, "err": true, "out": 5.0},
+			}}},
+		}, nil)
+		if nil != err {
+			t.Fatalf("omni: cannot make runner: %v", err)
+		}
+		R, err := runner("fib", nil)
+		if nil != err {
+			t.Fatalf("omni: cannot resolve spec: %v", err)
+		}
+		err = R.RunSet(R.Set("g"), FIB)
+		if nil == err || !strings.Contains(err.Error(), "both err and out") {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+	})
+
+	t.Run("strict: an empty set fails unless marked empty", func(t *testing.T) {
+		runner, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 1.0},
+			"fib": map[string]any{
+				"g": map[string]any{"set": []any{}},
+				"h": map[string]any{"set": []any{}, "empty": true},
+			},
+		}, nil)
+		if nil != err {
+			t.Fatalf("omni: cannot make runner: %v", err)
+		}
+		R, err := runner("fib", nil)
+		if nil != err {
+			t.Fatalf("omni: cannot resolve spec: %v", err)
+		}
+		err = R.RunSet(R.Set("g"), FIB)
+		if nil == err || !strings.Contains(err.Error(), "empty test set") {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+		if err := R.RunSet(R.Set("h"), FIB); nil != err {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+	})
+
+	t.Run("a legacy spec (no OMNI block) stays lenient", func(t *testing.T) {
+		runner, err := omni.MakeRunner(map[string]any{
+			"fib": map[string]any{"g": map[string]any{"set": []any{
+				map[string]any{"in": 6.0, "matches": map[string]any{"out": 999.0}, "out": 8.0},
+			}}},
+		}, nil)
+		if nil != err {
+			t.Fatalf("omni: cannot make runner: %v", err)
+		}
+		R, err := runner("fib", nil)
+		if nil != err {
+			t.Fatalf("omni: cannot resolve spec: %v", err)
+		}
+		if err := R.RunSet(R.Set("g"), FIB); nil != err {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+	})
 
 	t.Run("reports entry index and id", func(t *testing.T) {
 		runner, err := omni.MakeRunner(map[string]any{

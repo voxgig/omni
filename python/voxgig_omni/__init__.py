@@ -1,8 +1,10 @@
 """voxgig_omni - shared multi-language test runner."""
 
 from .runner import (
+    CAPABILITIES,
     EXISTSMARK,
     NULLMARK,
+    SPECVERSION,
     UNDEFMARK,
     OmniError,
     errify,
@@ -30,8 +32,10 @@ from .util import (
 
 __all__ = [
     'ABSENT',
+    'CAPABILITIES',
     'EXISTSMARK',
     'NULLMARK',
+    'SPECVERSION',
     'UNDEFMARK',
     'OmniError',
     'clone',

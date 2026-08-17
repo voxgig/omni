@@ -19,10 +19,28 @@ from .util import (
     islist,
     ismap,
     isnode,
+    isnum,
     pathify,
     stringify,
     walk,
 )
+
+# The newest spec format version this runner understands. A spec with no
+# OMNI block is version 0: the original, lenient format, frozen forever.
+# Version 1 turns on strict entry validation (see checkentry).
+SPECVERSION = 1
+
+# Capability strings this runner supports beyond the version baseline. A
+# spec's OMNI.requires list is checked against this: an unknown capability
+# refuses the spec loudly at load time, instead of a lagging port silently
+# mis-running it. (Empty today; future format features mint a string here.)
+CAPABILITIES: list = []
+
+# The complete set of fields an entry may carry. Under version 1 anything
+# else is an error: an unrecognised key is almost always a typo'd
+# assertion, and a typo'd assertion is a test that silently stopped
+# testing.
+ENTRYFIELDS = ['in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc']
 
 
 class OmniError(AssertionError):
@@ -43,6 +61,60 @@ def loadspec(specref: Any) -> Any:
         with open(specref, encoding='utf-8') as spechandle:
             return json.load(spechandle)
     return specref
+
+
+def resolveversion(alltests: Any) -> int:
+    """Read the spec's format version from its optional top-level OMNI
+    block, and refuse a spec this runner cannot faithfully run: a version
+    newer than SPECVERSION, or a required capability not in CAPABILITIES.
+    """
+    if not ismap(alltests) or 'OMNI' not in alltests:
+        return 0
+
+    meta = alltests['OMNI']
+    version = meta.get('version') if ismap(meta) else None
+
+    if not ismap(meta) or not isnum(version) or version % 1 != 0:
+        raise OmniError('omni: malformed OMNI version block')
+
+    if version < 0 or version > SPECVERSION:
+        raise OmniError('omni: unsupported spec version: ' + stringify(version))
+
+    if 'requires' in meta:
+        requires = meta['requires']
+        if not islist(requires):
+            raise OmniError('omni: malformed OMNI requires list')
+        for cap in requires:
+            if not isinstance(cap, str) or cap not in CAPABILITIES:
+                raise OmniError('omni: spec requires unsupported capability: ' + stringify(cap))
+
+    return int(version)
+
+
+def checkentry(flags: dict, index: int, entry: Any) -> None:
+    """Strict entry validation, applied when the spec declares version 1
+    or later. The lenient format converts each of these mistakes into a
+    silent pass or a dead field; here they fail with the entry named.
+    """
+    if not ismap(entry):
+        raise fail(flags, index, entry, 'entry is not a map')
+
+    for key in entry.keys():
+        if key not in ENTRYFIELDS:
+            raise fail(flags, index, entry, 'unknown entry field: ' + str(key))
+
+    argsources = 0
+    for key in ('in', 'args', 'ctx'):
+        if key in entry:
+            argsources += 1
+    if argsources > 1:
+        raise fail(flags, index, entry, 'entry has more than one of in, args, ctx')
+
+    if entry.get('err') is not None and 'out' in entry:
+        raise fail(flags, index, entry, 'entry has both err and out')
+
+    if entry.get('id') is not None and not isinstance(entry['id'], str):
+        raise fail(flags, index, entry, 'entry id is not a string')
 
 
 def resolvespec(name: Optional[str], alltests: Any) -> Any:
@@ -372,6 +444,7 @@ def nullmodifier(val, key, parent, *_rest) -> None:
 def makeRunner(specref: Any, provider: Any = None) -> Callable:
     """Make a runner for a spec file (or spec object) and a provider."""
     alltests = loadspec(specref)
+    specversion = resolveversion(alltests)
     useprovider = provider or {}
 
     def runner(name: Optional[str] = None, store: Any = None) -> dict:
@@ -394,8 +467,16 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
 
             testset = testspecmap['set']
 
+            # A vacuously green group proves nothing. Version 1 makes an
+            # empty set an error; a group that is deliberately empty says so.
+            if specversion >= 1 and len(testset) == 0 and testspecmap.get('empty') is not True:
+                raise OmniError('omni: empty test set: ' + str(useflags['name']))
+
             for index, entry in enumerate(testset):
                 try:
+                    if specversion >= 1:
+                        checkentry(useflags, index, entry)
+
                     entry = resolveentry(entry, useflags)
 
                     testpack = resolvetestpack(name, entry, subject, useprovider, clients)
@@ -427,8 +508,10 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
 
 
 __all__ = [
+    'CAPABILITIES',
     'EXISTSMARK',
     'NULLMARK',
+    'SPECVERSION',
     'UNDEFMARK',
     'OmniError',
     'errify',
