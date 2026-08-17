@@ -76,6 +76,10 @@ Section resolution, for `runner("fib")`:
 The `primary` wrapper exists so one file can hold several independent
 suites. `DEF` is metadata, not a group; it is read before any group runs.
 
+A spec may also carry a top-level `OMNI` block, a sibling of `primary`,
+declaring its format version — see [2.7](#27-format-versions). `OMNI`,
+like `DEF`, is a reserved metadata key, never a section.
+
 A group is any map with a `set` list. Groups may be nested under other
 keys - the runner only ever sees the group you hand to `runset`.
 
@@ -97,9 +101,15 @@ compiles them to `test.json`.
 | `id` | string | Identifier, echoed in failure messages. |
 | `doc` | bool | Marks an entry as documentation-worthy. Ignored by the runner. |
 
-Exactly one of `in`, `args` and `ctx` determines the arguments, checked in
-the order `ctx`, `args`, `in`. An entry with none of them calls the subject
-with a single absent value.
+One of `in`, `args` and `ctx` determines the arguments, resolved in the
+order `ctx`, `args`, `in`. A version-1 spec ([2.7](#27-format-versions))
+rejects an entry carrying more than one of them; a legacy spec silently
+uses the highest-precedence field. An entry with none of them calls the
+subject with a single absent value.
+
+Fields outside this table are rejected by a version-1 spec — an
+unrecognised key is almost always a typo'd assertion — and silently
+ignored by a legacy spec.
 
 An entry with no `out` expects a null (or absent) result - see
 [5. Flags](#5-flags).
@@ -125,6 +135,15 @@ Run the same group with `{"null": false}` and it is written the natural
 way, with a real `null`. Both are in [`spec/fib.json`](spec/fib.json) - as
 the `info` and `nulls` groups - precisely so that every port proves it
 handles both.
+
+The sentinel strings are **reserved words of the format**: a spec must not
+use them as data values, and a subject whose real output can legitimately
+contain them must be run with `{"null": false}`, where result nulls stay
+null and the collision disappears. Note also that `nullmodifier` - the
+helper that converts sentinels back into real nulls inside inputs -
+rewrites occurrences *inside* string values too (`"a__NULL__b"` becomes
+`"anullb"`), so the reservation applies to substrings, not just whole
+values.
 
 ### 2.4 Errors
 
@@ -178,14 +197,19 @@ Leaf matching rules, in order:
 
 1. deep equality;
 2. `"__UNDEF__"` against an absent value;
-3. `"__EXISTS__"` against any present, non-null value;
+3. `"__EXISTS__"` against any present value, including null;
 4. `"/pattern/"` as a regular expression over the stringified base value;
 5. any other string as a case-insensitive substring of the stringified
    base value;
 6. otherwise, deep equality of the two values.
 
-Because `args` is in the base and is *not* cloned, a match can assert that
-a subject mutated its argument in place:
+The base differs by outcome: on success it carries `in`, `args`, `out`
+and `ctx`; when the subject fails it carries `in`, `out`, `ctx` and `err`
+- and **not** `args`, so an in-place mutation assertion is only possible
+on the success path.
+
+Because `args` is in the success base and is *not* cloned, a match can
+assert that a subject mutated its argument in place:
 
 ```json
 { "args": [ {"a": 1}, {"b": 2} ], "match": { "args": [ {"a":1,"b":2} ] } }
@@ -211,6 +235,51 @@ returned provider to resolve the subject for that entry. If the provider
 has no `client` hook, declared clients are simply not built - a spec may
 declare clients that a given run never uses.
 
+### 2.7 Format versions
+
+A spec may declare its format version in a top-level `OMNI` block:
+
+```json
+{
+  "OMNI": { "version": 1, "requires": [] },
+  "primary": { }
+}
+```
+
+**No block - version 0.** The original, lenient format, frozen forever:
+unknown entry fields are ignored, an entry may carry several of
+`in`/`args`/`ctx` (precedence decides), `err` beside `out` leaves the
+`out` dead, and an empty `set` passes vacuously. Existing corpora keep
+this behaviour untouched.
+
+**`version: 1` - strict validation.** The runner rejects, with the entry
+named in the failure:
+
+- an entry field outside `in`, `args`, `ctx`, `out`, `err`, `match`,
+  `client`, `id`, `doc`;
+- more than one of `in`, `args`, `ctx`;
+- `err` together with `out`;
+- a non-string `id`;
+- an empty `set` - unless the group carries `empty: true`, making the
+  emptiness a stated fact rather than an accident.
+
+Each of these is a mistake the lenient format converts into a silent pass
+or a dead field; version 1 makes them loud.
+
+**`requires`.** A list of capability strings beyond the version baseline.
+A runner that does not recognise a listed capability refuses the whole
+spec at load time (`spec requires unsupported capability`), so a port on
+an older omni fails loudly instead of silently mis-running a spec whose
+features it does not know. Future format features mint a string in the
+runner's `CAPABILITIES` registry; the registry is currently empty.
+
+A `version` newer than the runner's `SPECVERSION` is refused at load.
+
+[`spec/omni-spec.schema.json`](spec/omni-spec.schema.json) encodes the
+version-1 shape as a JSON Schema, for editor completion and CI validation
+of committed spec artifacts (`make spec-check` runs it). The runner
+remains the authority on semantics.
+
 
 ## 3. Runner semantics
 
@@ -223,17 +292,23 @@ Every port does exactly this.
    `null` is set, every null becomes `"__NULL__"` - including nulls inside
    `in` and `args`. A group can therefore be run repeatedly, with different
    flags, without contamination.
-3. For each entry, in order:
-   1. **Default the expectation.** No `out` and `null` set means
+3. **Check the set.** The group must be a map with a `set` list. In a
+   version-1 spec ([2.7](#27-format-versions)) an empty `set` fails unless
+   the group carries `empty: true`.
+4. For each entry, in order:
+   1. **Validate the entry** (version-1 specs only): unknown fields,
+      multiple argument sources, `err` with `out`, and a non-string `id`
+      all fail here, before anything runs.
+   2. **Default the expectation.** No `out` and `null` set means
       `out = "__NULL__"`.
-   2. **Resolve the subject.** `entry.client` overrides the default.
-   3. **Resolve the arguments.** `ctx`, else `args`, else `[clone(in)]`.
+   3. **Resolve the subject.** `entry.client` overrides the default.
+   4. **Resolve the arguments.** `ctx`, else `args`, else `[clone(in)]`.
       For `ctx`/`args`, a leading map argument is cloned and passed through
       `provider.contextify`.
-   4. **Call the subject.**
-   5. **On failure** - go to `err` handling ([2.4](#24-errors)), then the
+   5. **Call the subject.**
+   6. **On failure** - go to `err` handling ([2.4](#24-errors)), then the
       `match` check against a base carrying `err`.
-   6. **On success** - normalise the result the same way as the group,
+   7. **On success** - normalise the result the same way as the group,
       record it as `entry.res`, then:
       - if `err` was expected, fail;
       - if `match` is present, run it;
@@ -262,7 +337,7 @@ Every hook is optional.
 | `subject` | `(name) => Subject` | Resolve the default subject for a section, and the per-client subject for an entry with `client`. |
 | `client` | `(options) => Provider` | Build a provider for a `DEF.client` entry. |
 | `contextify` | `(val) => val` | Wrap a map argument before it is passed as `ctx`/`args[0]`. |
-| `inject` | `(options, store) => options` | Resolve references in client options against the runner store. |
+| `inject` | `(options, store) => void` | Resolve references in client options against the runner store, **mutating `options` in place** - the return value is ignored. |
 
 The runner sets `client` on a contextified map argument, so a subject can
 reach the provider that owns it.
@@ -314,6 +389,7 @@ every name, in local casing;
 
 Runner: `makeRunner`, `runset`, `runsetflags`, `loadspec`, `resolvespec`,
 `fixjson`, `errify`, `match`, `matchval`, `nullmodifier`, `OmniError`,
+`SPECVERSION`, `CAPABILITIES`,
 `NULLMARK`, `UNDEFMARK`, `EXISTSMARK`. Ports that cannot express one of
 these are listed, with a reason, in the tool's `EXEMPT` table - today only
 `OmniError`, in C, Zig and Lean, which all return failures rather than
@@ -594,8 +670,13 @@ one import:
 
 ```diff
 -const { makeRunner, nullModifier, NULLMARK } = require('./runner')
-+const { makeRunner, nullModifier, NULLMARK } = require('@voxgig/omni-js/compat/struct')
++const { makeRunner, nullModifier, NULLMARK } = require('./omni')
 ```
+
+where `./omni` is a ~20-line resolver that locates the local omni checkout
+(see [8.3](#83-porting-the-rest)) and re-exports
+`<checkout>/javascript/compat/struct.js`. (If omni is published one day,
+this becomes `require('@voxgig/omni-js/compat/struct')`.)
 
 The shim wraps struct's SDK as an omni provider, and forwards `utility()`
 and `tester()`, so test code that reaches through the returned `client`
@@ -616,8 +697,18 @@ with struct's own runner.
 
 For each struct port:
 
-1. Add omni as a **test-only** dependency (it never enters the shipped
-   library, so struct's zero-runtime-dependency rule is untouched).
+1. Wire omni in as a **local checkout** - omni is deliberately not
+   published to any package registry for now, and the supported
+   consumption mechanism is the one `voxgig/sekreto` already uses in all
+   ten of its ports: resolve the checkout from `$OMNI_HOME`, then sibling
+   paths (`../../omni`, `../../../omni`), taking the first directory that
+   contains `spec/fib.json`. Compiled languages link it without putting a
+   machine-specific path in a checked-in file: Go generates a `go.work`,
+   Rust symlinks `vendor/omni`, C# passes `-p:OmniPath=`, Java puts it on
+   the classpath - all gitignored. CI checks out `voxgig/omni` beside the
+   consuming repo and exports `OMNI_HOME`. Only the *tests* depend on
+   omni; the shipped library never does, so struct's zero-runtime-
+   dependency rule is untouched.
 2. Write the provider adapter - about 30 lines, mapping the four hooks in
    the table above onto that port's SDK.
 3. Replace the runner import in the port's test file.

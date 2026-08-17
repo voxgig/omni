@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/voxgig/omni/blob/main/spec/omni-spec.schema.json",
+  "title": "omni test spec (format version 1)",
+  "description": "The shape of an omni spec file under the version-1 strict rules: entries carry only the nine defined fields, at most one of in/args/ctx, and never err together with out. Legacy (version-0) specs are not required to satisfy this schema. The runner is the authority; this schema exists for editor completion and CI validation of spec artifacts.",
+  "type": "object",
+  "properties": {
+    "OMNI": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "minimum": 0 },
+        "requires": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["version"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": { "$ref": "#/definitions/node" },
+  "definitions": {
+    "node": {
+      "description": "Any spec value. Objects are containers (sections, groups, DEF blocks); everything else is data. Descent stops at entries, whose own maps (in, out, match, ...) are data, not containers.",
+      "anyOf": [
+        { "not": { "type": "object" } },
+        { "$ref": "#/definitions/container" }
+      ]
+    },
+    "container": {
+      "type": "object",
+      "properties": {
+        "set": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/entry" }
+        },
+        "empty": { "type": "boolean" }
+      },
+      "additionalProperties": { "$ref": "#/definitions/node" }
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "in": { "description": "Single argument (deep-cloned before the call)." },
+        "args": { "type": "array", "description": "Explicit argument list (not cloned)." },
+        "ctx": { "type": "object", "description": "Single context argument, passed through provider.contextify." },
+        "out": { "description": "Expected result, compared with deep equality." },
+        "err": { "type": ["boolean", "string"], "description": "true accepts any error; /pattern/ matches as a regex; any other string as a case-insensitive substring." },
+        "match": { "description": "Partial structure check against {in, args, out, ctx, err}." },
+        "client": { "type": "string", "description": "Resolve the subject from this DEF.client entry." },
+        "id": { "type": "string", "description": "Identifier echoed in failure messages; convention: 'group#label'." },
+        "doc": { "type": "boolean", "description": "Marks the entry as the canonical documentation example (requires an id)." }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        { "not": { "required": ["err", "out"] } },
+        { "not": { "required": ["in", "args"] } },
+        { "not": { "required": ["in", "ctx"] } },
+        { "not": { "required": ["args", "ctx"] } }
+      ]
+    }
+  }
+}

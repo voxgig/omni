@@ -38,6 +38,8 @@ CANONICAL = [
     'matchval',
     'nullmodifier',
     'OmniError',
+    'SPECVERSION',
+    'CAPABILITIES',
     # sentinels
     'NULLMARK',
     'UNDEFMARK',

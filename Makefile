@@ -71,7 +71,7 @@ spec:
 	@cd tools && npm install --no-audit --no-fund --silent && npm run --silent build-spec
 
 spec-check:
-	@cd tools && npm install --no-audit --no-fund --silent && npm run --silent build-spec-check
+	@cd tools && npm install --no-audit --no-fund --silent && npm run --silent build-spec-check && npm run --silent check-spec-schema
 
 # Run voxgig/struct's own JavaScript suite with omni's runner swapped in.
 # Pass STRUCT=<path> if the struct repo is not a sibling of this one.

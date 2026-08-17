@@ -1,4 +1,7 @@
 {
+  "OMNI": {
+    "version": 1
+  },
   "primary": {
     "fib": {
       "DEF": {
@@ -119,6 +122,45 @@
           }
         ]
       },
+      "context": {
+        "set": [
+          {
+            "ctx": {
+              "n": 6
+            },
+            "doc": true,
+            "id": "fib/context#basic",
+            "out": {
+              "hasclient": true,
+              "mark": "CTX",
+              "n": 6,
+              "val": 8
+            }
+          },
+          {
+            "ctx": {
+              "n": 0
+            },
+            "out": {
+              "hasclient": true,
+              "mark": "CTX",
+              "n": 0,
+              "val": 0
+            }
+          },
+          {
+            "ctx": {
+              "n": 10
+            },
+            "out": {
+              "hasclient": true,
+              "mark": "CTX",
+              "n": 10,
+              "val": 55
+            }
+          }
+        ]
+      },
       "error": {
         "set": [
           {
@@ -184,6 +226,16 @@
                 "message": "/not a number/"
               },
               "in": "zz"
+            }
+          },
+          {
+            "err": true,
+            "in": -1,
+            "match": {
+              "err": {
+                "message": "negative index",
+                "name": "__EXISTS__"
+              }
             }
           }
         ]

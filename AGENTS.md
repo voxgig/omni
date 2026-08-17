@@ -160,8 +160,8 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
   ignores the C `omni_` prefix.
 - **Naming inside the runner.** The internal helpers carry the same names
   in every port (`resolveentry`, `resolveargs`, `checkresult`,
-  `handleerror`, `fixjson`, `entryref`, `fail`), so the ports can be read
-  side by side.
+  `handleerror`, `fixjson`, `entryref`, `fail`, `resolveversion`,
+  `checkentry`), so the ports can be read side by side.
 - **Failure text is API.** The message format in
   [`DOCS.md`](DOCS.md#6-failure-messages) is identical in every port and is
   asserted by each port's "reports entry index and id" test. Changing it
@@ -205,6 +205,20 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
   translation; the rest use their standard library. Keep them in step.
 - **Toolchains may be missing.** If a port cannot be built in your
   environment, say so - do not guess that a change works.
+
+
+## The adoption plan register
+
+The cross-repo plan for omni becoming the shared test-spec utility of
+`voxgig/struct` and `voxgig/sekreto` (validated externally by
+`senecajs/Sekreto`) lives in [`doc/plan/adoption.md`](doc/plan/adoption.md),
+and its progress register in [`doc/plan/progress.md`](doc/plan/progress.md).
+
+**A work item's row in the register changes in the same commit that
+changes its status.** For work landing in *this* repo that is a hard rule;
+for rows tracking the other repos, update the row when the change merges
+there, citing the PR. Do not let the register drift from reality - it is
+the one place the whole goal is visible.
 
 
 ## Where to look next

@@ -1,9 +1,11 @@
 // @voxgig/omni - shared multi-language test runner.
 
 export {
+  CAPABILITIES,
   EXISTSMARK,
   NULLMARK,
   OmniError,
+  SPECVERSION,
   UNDEFMARK,
   errify,
   fixjson,
