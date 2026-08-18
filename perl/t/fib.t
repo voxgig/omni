@@ -10,7 +10,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use Test::More tests => 27;
+use Test::More tests => 28;
 
 use Voxgig::Omni::Runner qw(makeRunner);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -189,6 +189,13 @@ ok( expectstrictfail(
         'g', $FIB, qr/both err and out/
     ),
     'strict: err together with out fails' );
+
+ok( expectstrictfail(
+        { OMNI => { version => 1 },
+          fib => { g => { set => [ { 'in' => 1, out => 1, id => undef } ] } } },
+        'g', $FIB, qr/entry id is not a string/
+    ),
+    'strict: a null id fails even under null-normalisation' );
 
 subtest 'strict: an empty set fails unless marked empty' => sub {
     plan tests => 2;

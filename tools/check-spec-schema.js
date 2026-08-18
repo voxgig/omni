@@ -45,10 +45,26 @@ function main() {
     const rel = Path.relative(process.cwd(), file)
     const spec = JSON.parse(Fs.readFileSync(file, 'utf8'))
 
-    const version =
-      spec && 'object' === typeof spec.OMNI ? spec.OMNI.version : 0
-    if (!(1 <= version)) {
-      console.log('skip  ' + rel + ' (legacy spec, version 0)')
+    // Only a genuinely absent OMNI block (or an explicit version 0) is
+    // legacy. A present-but-malformed block is an error here, exactly as
+    // the runners treat it - skipping it would mislabel a bad artifact
+    // as a valid version-0 spec.
+    const meta = spec && 'object' === typeof spec ? spec.OMNI : undefined
+    if (undefined === meta) {
+      console.log('skip  ' + rel + ' (legacy spec, no OMNI block)')
+      continue
+    }
+    if (
+      null === meta || 'object' !== typeof meta || Array.isArray(meta) ||
+      !Number.isInteger(meta.version) || meta.version < 0
+    ) {
+      bad++
+      console.error('BAD   ' + rel)
+      console.error('  /OMNI malformed version block')
+      continue
+    }
+    if (0 === meta.version) {
+      console.log('skip  ' + rel + ' (explicit version 0)')
       continue
     }
 

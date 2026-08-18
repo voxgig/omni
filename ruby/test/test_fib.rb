@@ -226,6 +226,18 @@ class TestRunner < Minitest::Test
     assert_includes err.message, 'both err and out'
   end
 
+  def test_strict_a_null_id_fails_even_under_null_normalisation
+    strict = VoxgigOmni.make_runner(
+      { 'OMNI' => { 'version' => 1 },
+        'fib' => { 'g' => { 'set' => [{ 'in' => 1, 'out' => 1, 'id' => nil }] } } }
+    ).call('fib')
+
+    err = assert_raises(VoxgigOmni::OmniError) do
+      strict[:runset].call(strict[:spec]['g'], FIB)
+    end
+    assert_includes err.message, 'entry id is not a string'
+  end
+
   def test_strict_an_empty_set_fails_unless_marked_empty
     strict = VoxgigOmni.make_runner(
       { 'OMNI' => { 'version' => 1 },

@@ -132,8 +132,10 @@ func resolveversion(alltests any) (int, error) {
 		return 0, nil
 	}
 
+	// A present-but-null block is malformed, exactly as in canonical -
+	// only a genuinely absent OMNI key means version 0.
 	meta, has := specmap["OMNI"]
-	if !has || nil == meta {
+	if !has {
 		return 0, nil
 	}
 
@@ -147,7 +149,7 @@ func resolveversion(alltests any) (int, error) {
 		return 0, &OmniError{Message: "omni: unsupported spec version: " + strconv.Itoa(int(version))}
 	}
 
-	if requires, has := metamap["requires"]; has && nil != requires {
+	if requires, has := metamap["requires"]; has {
 		list, is := requires.([]any)
 		if !is {
 			return 0, &OmniError{Message: "omni: malformed OMNI requires list"}
@@ -195,9 +197,44 @@ func checkentry(flags Flags, index int, entry map[string]any) error {
 		}
 	}
 
-	if id, has := entry["id"]; has && nil != id {
+	if id, has := entry["id"]; has {
 		if _, is := id.(string); !is {
 			return fail(flags, index, entry, "entry id is not a string", nil, nil)
+		}
+	}
+
+	return nil
+}
+
+// checkset validates a version-1 group up front, against the AUTHORED
+// entries - null-normalisation would otherwise rewrite an authored null
+// (e.g. id: null) into a sentinel string and hide it from validation. A
+// malformed spec is a spec error, not a test result, so it fails before
+// any subject runs.
+func checkset(flags Flags, testspec any, normalset []any) error {
+	origset := normalset
+	var origmap map[string]any
+	if tmap, is := testspec.(map[string]any); is {
+		origmap = tmap
+		if oset, is := tmap["set"].([]any); is {
+			origset = oset
+		}
+	}
+
+	if 0 == len(origset) {
+		isempty, _ := origmap["empty"].(bool)
+		if !isempty {
+			return &OmniError{Message: "omni: empty test set: " + Stringify(flags["name"])}
+		}
+	}
+
+	for index, rawentry := range origset {
+		entry, is := rawentry.(map[string]any)
+		if !is {
+			return fail(flags, index, nil, "entry is not a map", nil, nil)
+		}
+		if err := checkentry(flags, index, entry); nil != err {
+			return err
 		}
 	}
 
@@ -770,12 +807,9 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 				return &OmniError{Message: "omni: test spec has no set: " + Stringify(useflags["name"])}
 			}
 
-			// A vacuously green group proves nothing. Version 1 makes an empty
-			// set an error; a group that is deliberately empty says so.
-			if 1 <= specversion && 0 == len(testset) {
-				isempty, _ := testspecmap["empty"].(bool)
-				if !isempty {
-					return &OmniError{Message: "omni: empty test set: " + Stringify(useflags["name"])}
+			if 1 <= specversion {
+				if err := checkset(useflags, testspec, testset); nil != err {
+					return err
 				}
 			}
 
@@ -784,12 +818,6 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 				if !is {
 					return &OmniError{
 						Message: fmt.Sprintf("omni: %s[%d]: entry is not a map", useflags["name"], index),
-					}
-				}
-
-				if 1 <= specversion {
-					if err := checkentry(useflags, index, entry); nil != err {
-						return err
 					}
 				}
 

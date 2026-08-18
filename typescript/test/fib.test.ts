@@ -186,6 +186,22 @@ describe('runner', () => {
     )
   })
 
+  // A present-but-null block is malformed; only a genuinely absent OMNI
+  // key is legacy. Ports that test definedness rather than presence
+  // silently skip strict mode here, so both cases are pinned.
+  test('rejects a null OMNI block, but accepts an absent one', async () => {
+    await assert.rejects(
+      async () => makeRunner({ OMNI: null, fib: { g: { set: [{ in: 1, out: 1 }] } } }),
+      (err: any) => err instanceof OmniError && /malformed OMNI/.test(err.message),
+    )
+    await assert.rejects(
+      async () =>
+        makeRunner({ OMNI: { version: 1, requires: null }, fib: { g: { set: [{ in: 1, out: 1 }] } } }),
+      (err: any) => err instanceof OmniError && /malformed OMNI requires list/.test(err.message),
+    )
+    await makeRunner({ fib: { g: { set: [{ in: 1, out: 1 }] } } })
+  })
+
   test('strict: an unknown entry field fails instead of passing vacuously', async () => {
     const runner = await makeRunner({
       OMNI: { version: 1 },
@@ -219,6 +235,18 @@ describe('runner', () => {
     await assert.rejects(
       async () => R.runset((R.spec as any).g, fib),
       (err: any) => err instanceof OmniError && /both err and out/.test(err.message),
+    )
+  })
+
+  test('strict: a null id fails even under null-normalisation', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [{ in: 1, out: 1, id: null }] } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset((R.spec as any).g, fib),
+      (err: any) => err instanceof OmniError && /entry id is not a string/.test(err.message),
     )
   })
 

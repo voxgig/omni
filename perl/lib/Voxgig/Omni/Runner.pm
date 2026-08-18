@@ -81,9 +81,12 @@ sub loadspec {
 # than SPECVERSION, or a required capability not in CAPABILITIES.
 sub resolveversion {
     my ($alltests) = @_;
-    my $meta = ismap($alltests) ? $alltests->{OMNI} : undef;
 
-    return 0 if !defined $meta;
+    # JSON null decodes to undef, so `defined` cannot tell a null OMNI
+    # block from an absent one - only `exists` can. A present-but-null
+    # block is malformed, exactly as in canonical.
+    return 0 if !ismap($alltests) || !exists $alltests->{OMNI};
+    my $meta = $alltests->{OMNI};
 
     # Perl scalars are untyped: a JSON number is told apart from anything
     # else with isnum, and "integer" is int()-equality rather than typeof.
@@ -100,7 +103,7 @@ sub resolveversion {
         die Voxgig::Omni::OmniError->new( 'omni: unsupported spec version: ' . $version );
     }
 
-    if ( defined $meta->{requires} ) {
+    if ( exists $meta->{requires} ) {
         my $requires = $meta->{requires};
         die Voxgig::Omni::OmniError->new('omni: malformed OMNI requires list')
           if !islist($requires);
@@ -137,7 +140,31 @@ sub checkentry {
       if defined $entry->{err} && exists $entry->{out};
 
     die fail( $flags, $index, $entry, 'entry id is not a string' )
-      if defined $entry->{id} && ( ref( $entry->{id} ) || isbool( $entry->{id} ) );
+      if exists $entry->{id}
+      && ( !defined $entry->{id} || ref( $entry->{id} ) || isbool( $entry->{id} ) );
+
+    return;
+}
+
+# Validate a version-1 group up front, against the AUTHORED entries -
+# null-normalisation would otherwise rewrite an authored null (e.g.
+# id: null) into a sentinel string and hide it from validation. A
+# malformed spec is a spec error, not a test result, so it fails before
+# any subject runs.
+sub checkset {
+    my ( $flags, $testspec, $normalset ) = @_;
+
+    my $origset =
+      ( ismap($testspec) && islist( $testspec->{set} ) ) ? $testspec->{set} : $normalset;
+
+    my $empty = ismap($testspec) ? $testspec->{empty} : undef;
+    my $isemptyok = ( isbool($empty) && $empty ) ? 1 : 0;
+    die Voxgig::Omni::OmniError->new( 'omni: empty test set: ' . $flags->{name} )
+      if 0 == scalar(@$origset) && !$isemptyok;
+
+    for my $index ( 0 .. $#$origset ) {
+        checkentry( $flags, $index, $origset->[$index] );
+    }
 
     return;
 }
@@ -533,18 +560,12 @@ sub makeRunner {
 
             my $testset = $testspecmap->{set};
 
-            # A vacuously green group proves nothing. Version 1 makes an empty
-            # set an error; a group that is deliberately empty says so.
-            my $isemptyok = ( isbool( $testspecmap->{empty} ) && $testspecmap->{empty} ) ? 1 : 0;
-            die Voxgig::Omni::OmniError->new( 'omni: empty test set: ' . $useflags->{name} )
-              if 1 <= $specversion && 0 == scalar(@$testset) && !$isemptyok;
+            checkset( $useflags, $testspec, $testset ) if 1 <= $specversion;
 
             for my $index ( 0 .. $#$testset ) {
                 my $entry = $testset->[$index];
 
                 my $ok = eval {
-                    checkentry( $useflags, $index, $entry ) if 1 <= $specversion;
-
                     $entry = resolveentry( $entry, $useflags );
 
                     my $testpack = resolvetestpack( $name, $entry, $subject, $useprovider, $clients );

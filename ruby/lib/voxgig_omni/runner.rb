@@ -94,7 +94,24 @@ module VoxgigOmni
 
       raise fail(flags, index, entry, 'entry has both err and out') if !entry['err'].nil? && entry.key?('out')
 
-      raise fail(flags, index, entry, 'entry id is not a string') if !entry['id'].nil? && !entry['id'].is_a?(String)
+      raise fail(flags, index, entry, 'entry id is not a string') if entry.key?('id') && !entry['id'].is_a?(String)
+    end
+
+    # Validate a version-1 group up front, against the AUTHORED entries -
+    # null-normalisation would otherwise rewrite an authored null (e.g.
+    # id: null) into a sentinel string and hide it from validation. A
+    # malformed spec is a spec error, not a test result, so it fails
+    # before any subject runs.
+    def checkset(flags, testspec, normalset)
+      origset = U.ismap(testspec) && U.islist(testspec['set']) ? testspec['set'] : normalset
+
+      if origset.empty? && (U.ismap(testspec) ? testspec['empty'] : nil) != true
+        raise OmniError, 'omni: empty test set: ' + flags[:name].to_s
+      end
+
+      origset.each_with_index do |entry, index|
+        checkentry(flags, index, entry)
+      end
     end
 
     # Find `primary.<name>`, then `<name>`, then the whole spec.
@@ -415,16 +432,10 @@ module VoxgigOmni
 
           testset = testspecmap['set']
 
-          # A vacuously green group proves nothing. Version 1 makes an
-          # empty set an error; a group that is deliberately empty says so.
-          if 1 <= specversion && testset.empty? && testspecmap['empty'] != true
-            raise OmniError, 'omni: empty test set: ' + useflags[:name].to_s
-          end
+          checkset(useflags, testspec, testset) if 1 <= specversion
 
           testset.each_with_index do |entry, index|
             begin
-              checkentry(useflags, index, entry) if 1 <= specversion
-
               entry = resolveentry(entry, useflags)
 
               testpack = resolvetestpack(name, entry, subject, useprovider, clients)

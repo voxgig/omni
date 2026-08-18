@@ -222,6 +222,18 @@ describe('runner', () => {
     )
   })
 
+  test('strict: a null id fails even under null-normalisation', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [{ in: 1, out: 1, id: null }] } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset(R.spec.g, fib),
+      (err) => err instanceof OmniError && /entry id is not a string/.test(err.message),
+    )
+  })
+
   test('strict: an empty set fails unless marked empty', async () => {
     const runner = await makeRunner({
       OMNI: { version: 1 },

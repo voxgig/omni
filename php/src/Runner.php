@@ -140,8 +140,29 @@ final class Runner
             throw self::fail($flags, $index, $entry, 'entry has both err and out');
         }
 
-        if (null !== ($entry['id'] ?? null) && !is_string($entry['id'])) {
+        if (array_key_exists('id', $entry) && !is_string($entry['id'])) {
             throw self::fail($flags, $index, $entry, 'entry id is not a string');
+        }
+    }
+
+    /**
+     * Validate a version-1 group up front, against the AUTHORED entries -
+     * null-normalisation would otherwise rewrite an authored null (e.g.
+     * id: null) into a sentinel string and hide it from validation. A
+     * malformed spec is a spec error, not a test result, so it fails
+     * before any subject runs.
+     */
+    public static function checkset(array $flags, $testspec, array $normalset): void
+    {
+        $origset = Util::ismap($testspec) && Util::islist($testspec['set'] ?? null)
+            ? $testspec['set'] : $normalset;
+
+        if (0 === count($origset) && true !== (Util::ismap($testspec) ? ($testspec['empty'] ?? null) : null)) {
+            throw new OmniError('omni: empty test set: ' . $flags['name']);
+        }
+
+        foreach ($origset as $index => $entry) {
+            self::checkentry($flags, $index, $entry);
         }
     }
 
@@ -558,19 +579,12 @@ final class Runner
 
                 $testset = $testspecmap['set'];
 
-                // A vacuously green group proves nothing. Version 1 makes an
-                // empty set an error; a group that is deliberately empty
-                // says so.
-                if (1 <= $specversion && 0 === count($testset) && true !== ($testspecmap['empty'] ?? null)) {
-                    throw new OmniError('omni: empty test set: ' . $useflags['name']);
+                if (1 <= $specversion) {
+                    self::checkset($useflags, $testspec, $testset);
                 }
 
                 foreach ($testset as $index => $entry) {
                     try {
-                        if (1 <= $specversion) {
-                            self::checkentry($useflags, $index, $entry);
-                        }
-
                         $entry = self::resolveentry($entry, $useflags);
 
                         $testpack = self::resolvetestpack($name, $entry, $subject, $useprovider, $clients);

@@ -336,6 +336,26 @@ func TestRunner(t *testing.T) {
 		}
 	})
 
+	t.Run("strict: a null id fails even under null-normalisation", func(t *testing.T) {
+		runner, err := omni.MakeRunner(map[string]any{
+			"OMNI": map[string]any{"version": 1.0},
+			"fib": map[string]any{"g": map[string]any{"set": []any{
+				map[string]any{"in": 1.0, "out": 1.0, "id": nil},
+			}}},
+		}, nil)
+		if nil != err {
+			t.Fatalf("omni: cannot make runner: %v", err)
+		}
+		R, err := runner("fib", nil)
+		if nil != err {
+			t.Fatalf("omni: cannot resolve spec: %v", err)
+		}
+		err = R.RunSet(R.Set("g"), FIB)
+		if nil == err || !strings.Contains(err.Error(), "entry id is not a string") {
+			t.Fatalf("omni: unexpected error: %v", err)
+		}
+	})
+
 	t.Run("strict: an empty set fails unless marked empty", func(t *testing.T) {
 		runner, err := omni.MakeRunner(map[string]any{
 			"OMNI": map[string]any{"version": 1.0},

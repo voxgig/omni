@@ -222,6 +222,13 @@ testcase('strict: err together with out fails', fn() => expectrunerror(
     'both err and out'
 ));
 
+testcase('strict: a null id fails even under null-normalisation', fn() => expectrunerror(
+    ['OMNI' => ['version' => 1], 'fib' => ['g' => ['set' => [['in' => 1, 'out' => 1, 'id' => null]]]]],
+    'g',
+    $fib,
+    'entry id is not a string'
+));
+
 testcase('strict: an empty set fails unless marked empty', function () use ($fib) {
     $bad = (Runner::makeRunner([
         'OMNI' => ['version' => 1],

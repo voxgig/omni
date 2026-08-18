@@ -113,8 +113,24 @@ def checkentry(flags: dict, index: int, entry: Any) -> None:
     if entry.get('err') is not None and 'out' in entry:
         raise fail(flags, index, entry, 'entry has both err and out')
 
-    if entry.get('id') is not None and not isinstance(entry['id'], str):
+    if 'id' in entry and not isinstance(entry['id'], str):
         raise fail(flags, index, entry, 'entry id is not a string')
+
+
+def checkset(flags: dict, testspec: Any, normalset: list) -> None:
+    """Validate a version-1 group up front, against the AUTHORED entries -
+    null-normalisation would otherwise rewrite an authored null (e.g.
+    id: null) into a sentinel string and hide it from validation. A
+    malformed spec is a spec error, not a test result, so it fails before
+    any subject runs.
+    """
+    origset = testspec['set'] if ismap(testspec) and islist(testspec.get('set')) else normalset
+
+    if len(origset) == 0 and (testspec.get('empty') if ismap(testspec) else None) is not True:
+        raise OmniError('omni: empty test set: ' + str(flags['name']))
+
+    for index, entry in enumerate(origset):
+        checkentry(flags, index, entry)
 
 
 def resolvespec(name: Optional[str], alltests: Any) -> Any:
@@ -467,16 +483,11 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
 
             testset = testspecmap['set']
 
-            # A vacuously green group proves nothing. Version 1 makes an
-            # empty set an error; a group that is deliberately empty says so.
-            if specversion >= 1 and len(testset) == 0 and testspecmap.get('empty') is not True:
-                raise OmniError('omni: empty test set: ' + str(useflags['name']))
+            if specversion >= 1:
+                checkset(useflags, testspec, testset)
 
             for index, entry in enumerate(testset):
                 try:
-                    if specversion >= 1:
-                        checkentry(useflags, index, entry)
-
                     entry = resolveentry(entry, useflags)
 
                     testpack = resolvetestpack(name, entry, subject, useprovider, clients)

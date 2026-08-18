@@ -31,9 +31,21 @@
           "type": "array",
           "items": { "$ref": "#/definitions/entry" }
         },
-        "empty": { "type": "boolean" }
+        "empty": { "type": "boolean" },
+        "DEF": {
+          "type": "object",
+          "description": "Section metadata (client declarations and their options). Opaque to the structural schema: option payloads are unrestricted JSON, so descent stops here as it does at entries."
+        }
       },
-      "additionalProperties": { "$ref": "#/definitions/node" }
+      "additionalProperties": { "$ref": "#/definitions/node" },
+      "if": {
+        "required": ["set"],
+        "properties": { "set": { "type": "array", "maxItems": 0 } }
+      },
+      "then": {
+        "required": ["empty"],
+        "properties": { "empty": { "const": true } }
+      }
     },
     "entry": {
       "type": "object",

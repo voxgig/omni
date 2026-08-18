@@ -193,6 +193,16 @@ class TestRunner(unittest.TestCase):
             bad['runset'](bad['spec']['g'], fib)
         self.assertIn('both err and out', str(caught.exception))
 
+    def test_strict_a_null_id_fails_even_under_null_normalisation(self):
+        runner = makeRunner({
+            'OMNI': {'version': 1},
+            'fib': {'g': {'set': [{'in': 1, 'out': 1, 'id': None}]}},
+        })
+        R = runner('fib')
+        with self.assertRaises(OmniError) as ctx:
+            R['runset'](R['spec']['g'], fib)
+        self.assertIn('entry id is not a string', str(ctx.exception))
+
     def test_strict_an_empty_set_fails_unless_marked_empty(self):
         bad = makeRunner(
             {'OMNI': {'version': 1}, 'fib': {'g': {'set': []}, 'h': {'set': [], 'empty': True}}}

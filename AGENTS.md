@@ -161,7 +161,7 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 - **Naming inside the runner.** The internal helpers carry the same names
   in every port (`resolveentry`, `resolveargs`, `checkresult`,
   `handleerror`, `fixjson`, `entryref`, `fail`, `resolveversion`,
-  `checkentry`), so the ports can be read side by side.
+  `checkset`, `checkentry`), so the ports can be read side by side.
 - **Failure text is API.** The message format in
   [`DOCS.md`](DOCS.md#6-failure-messages) is identical in every port and is
   asserted by each port's "reports entry index and id" test. Changing it

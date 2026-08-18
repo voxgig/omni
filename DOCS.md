@@ -293,22 +293,23 @@ Every port does exactly this.
    `in` and `args`. A group can therefore be run repeatedly, with different
    flags, without contamination.
 3. **Check the set.** The group must be a map with a `set` list. In a
-   version-1 spec ([2.7](#27-format-versions)) an empty `set` fails unless
-   the group carries `empty: true`.
+   version-1 spec ([2.7](#27-format-versions)) the *authored* group is
+   then validated up front, before any subject runs: an empty `set`
+   (without `empty: true`), an unknown entry field, multiple argument
+   sources, `err` with `out`, and a non-string `id` all fail here.
+   Validation reads the original entries, not the normalised copies, so
+   null-normalisation cannot mask an authored null.
 4. For each entry, in order:
-   1. **Validate the entry** (version-1 specs only): unknown fields,
-      multiple argument sources, `err` with `out`, and a non-string `id`
-      all fail here, before anything runs.
-   2. **Default the expectation.** No `out` and `null` set means
+   1. **Default the expectation.** No `out` and `null` set means
       `out = "__NULL__"`.
-   3. **Resolve the subject.** `entry.client` overrides the default.
-   4. **Resolve the arguments.** `ctx`, else `args`, else `[clone(in)]`.
+   2. **Resolve the subject.** `entry.client` overrides the default.
+   3. **Resolve the arguments.** `ctx`, else `args`, else `[clone(in)]`.
       For `ctx`/`args`, a leading map argument is cloned and passed through
       `provider.contextify`.
-   5. **Call the subject.**
-   6. **On failure** - go to `err` handling ([2.4](#24-errors)), then the
+   4. **Call the subject.**
+   5. **On failure** - go to `err` handling ([2.4](#24-errors)), then the
       `match` check against a base carrying `err`.
-   7. **On success** - normalise the result the same way as the group,
+   6. **On success** - normalise the result the same way as the group,
       record it as `entry.res`, then:
       - if `err` was expected, fail;
       - if `match` is present, run it;

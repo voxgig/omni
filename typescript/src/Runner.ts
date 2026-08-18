@@ -169,8 +169,26 @@ function checkentry(flags: Flags, index: number, entry: Json): void {
     throw fail(flags, index, entry, 'entry has both err and out')
   }
 
-  if (null != entry.id && 'string' !== typeof entry.id) {
+  if (undefined !== entry.id && 'string' !== typeof entry.id) {
     throw fail(flags, index, entry, 'entry id is not a string')
+  }
+}
+
+// Validate a version-1 group up front, against the AUTHORED entries -
+// null-normalisation would otherwise rewrite an authored null (e.g.
+// id: null) into a sentinel string and hide it from validation. A
+// malformed spec is a spec error, not a test result, so it fails before
+// any subject runs.
+function checkset(flags: Flags, testspec: Json, normalset: Json[]): void {
+  const origset =
+    ismap(testspec) && islist(testspec.set) ? testspec.set : normalset
+
+  if (0 === origset.length && true !== (ismap(testspec) ? testspec.empty : undefined)) {
+    throw new OmniError('omni: empty test set: ' + flags.name)
+  }
+
+  for (let index = 0; index < origset.length; index++) {
+    checkentry(flags, index, origset[index])
   }
 }
 
@@ -588,20 +606,14 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
 
       const testset: Json[] = testspecmap.set
 
-      // A vacuously green group proves nothing. Version 1 makes an empty
-      // set an error; a group that is deliberately empty says so.
-      if (1 <= specversion && 0 === testset.length && true !== testspecmap.empty) {
-        throw new OmniError('omni: empty test set: ' + useflags.name)
+      if (1 <= specversion) {
+        checkset(useflags, testspec, testset)
       }
 
       for (let index = 0; index < testset.length; index++) {
         let entry = testset[index]
 
         try {
-          if (1 <= specversion) {
-            checkentry(useflags, index, entry)
-          }
-
           entry = resolveentry(entry, useflags)
 
           const testpack = resolvetestpack(name, entry, subject, useprovider, clients)
