@@ -34,6 +34,30 @@ final class Runner
     public const UNDEFMARK = Util::UNDEFMARK;
     public const EXISTSMARK = Util::EXISTSMARK;
 
+    /**
+     * The newest spec format version this runner understands. A spec with
+     * no OMNI block is version 0: the original, lenient format, frozen
+     * forever. Version 1 turns on strict entry validation (see checkentry).
+     */
+    public const SPECVERSION = 1;
+
+    /**
+     * Capability strings this runner supports beyond the version baseline.
+     * A spec's OMNI.requires list is checked against this: an unknown
+     * capability refuses the spec loudly at load time, instead of a
+     * lagging port silently mis-running it. (Empty today; future format
+     * features mint a string here.)
+     */
+    public const CAPABILITIES = [];
+
+    /**
+     * The complete set of fields an entry may carry. Under version 1
+     * anything else is an error: an unrecognised key is almost always a
+     * typo'd assertion, and a typo'd assertion is a test that silently
+     * stopped testing.
+     */
+    private const ENTRYFIELDS = ['in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc'];
+
     /** Load a spec: a path to a JSON file, or an already-parsed value. */
     public static function loadspec($specref)
     {
@@ -45,6 +69,101 @@ final class Runner
             return json_decode($text, true, 512, JSON_THROW_ON_ERROR);
         }
         return $specref;
+    }
+
+    /**
+     * Read the spec's format version from its optional top-level OMNI
+     * block, and refuse a spec this runner cannot faithfully run: a
+     * version newer than SPECVERSION, or a required capability not in
+     * CAPABILITIES.
+     */
+    public static function resolveversion($alltests): int
+    {
+        if (!Util::ismap($alltests) || !array_key_exists('OMNI', $alltests)) {
+            return 0;
+        }
+
+        $meta = $alltests['OMNI'];
+        $version = Util::ismap($meta) ? ($meta['version'] ?? null) : null;
+
+        if (!Util::ismap($meta) || !Util::isnum($version) || 0.0 !== fmod((float) $version, 1.0)) {
+            throw new OmniError('omni: malformed OMNI version block');
+        }
+
+        if ($version < 0 || self::SPECVERSION < $version) {
+            throw new OmniError('omni: unsupported spec version: ' . Util::stringify($version));
+        }
+
+        if (array_key_exists('requires', $meta)) {
+            $requires = $meta['requires'];
+            if (!Util::islist($requires)) {
+                throw new OmniError('omni: malformed OMNI requires list');
+            }
+            foreach ($requires as $cap) {
+                if (!is_string($cap) || !in_array($cap, self::CAPABILITIES, true)) {
+                    throw new OmniError('omni: spec requires unsupported capability: ' . Util::stringify($cap));
+                }
+            }
+        }
+
+        return (int) $version;
+    }
+
+    /**
+     * Strict entry validation, applied when the spec declares version 1 or
+     * later. The lenient format converts each of these mistakes into a
+     * silent pass or a dead field; here they fail with the entry named.
+     */
+    public static function checkentry(array $flags, int $index, $entry): void
+    {
+        if (!Util::ismap($entry)) {
+            throw self::fail($flags, $index, $entry, 'entry is not a map');
+        }
+
+        foreach (array_keys($entry) as $key) {
+            if (!in_array($key, self::ENTRYFIELDS, true)) {
+                throw self::fail($flags, $index, $entry, 'unknown entry field: ' . $key);
+            }
+        }
+
+        $argsources = 0;
+        foreach (['in', 'args', 'ctx'] as $key) {
+            if (array_key_exists($key, $entry)) {
+                $argsources++;
+            }
+        }
+        if (1 < $argsources) {
+            throw self::fail($flags, $index, $entry, 'entry has more than one of in, args, ctx');
+        }
+
+        if (null !== ($entry['err'] ?? null) && array_key_exists('out', $entry)) {
+            throw self::fail($flags, $index, $entry, 'entry has both err and out');
+        }
+
+        if (array_key_exists('id', $entry) && !is_string($entry['id'])) {
+            throw self::fail($flags, $index, $entry, 'entry id is not a string');
+        }
+    }
+
+    /**
+     * Validate a version-1 group up front, against the AUTHORED entries -
+     * null-normalisation would otherwise rewrite an authored null (e.g.
+     * id: null) into a sentinel string and hide it from validation. A
+     * malformed spec is a spec error, not a test result, so it fails
+     * before any subject runs.
+     */
+    public static function checkset(array $flags, $testspec, array $normalset): void
+    {
+        $origset = Util::ismap($testspec) && Util::islist($testspec['set'] ?? null)
+            ? $testspec['set'] : $normalset;
+
+        if (0 === count($origset) && true !== (Util::ismap($testspec) ? ($testspec['empty'] ?? null) : null)) {
+            throw new OmniError('omni: empty test set: ' . $flags['name']);
+        }
+
+        foreach ($origset as $index => $entry) {
+            self::checkentry($flags, $index, $entry);
+        }
     }
 
     /** Find `primary.<name>`, then `<name>`, then the whole spec. */
@@ -435,14 +554,15 @@ final class Runner
     public static function makeRunner($specref, ?array $provider = null): callable
     {
         $alltests = self::loadspec($specref);
+        $specversion = self::resolveversion($alltests);
         $useprovider = $provider ?? [];
 
-        return function (?string $name = null, $store = null) use ($alltests, $useprovider): array {
+        return function (?string $name = null, $store = null) use ($alltests, $specversion, $useprovider): array {
             $spec = self::resolvespec($name, $alltests);
             $clients = self::resolveclients($useprovider, $spec, null === $store ? [] : $store);
             $defsubject = self::resolvesubject($name, $useprovider);
 
-            $runsetflags = function ($testspec, ?array $flags, $testsubject = null) use ($name, $useprovider, $clients, $defsubject): void {
+            $runsetflags = function ($testspec, ?array $flags, $testsubject = null) use ($name, $specversion, $useprovider, $clients, $defsubject): void {
                 $useflags = self::resolveflags($flags);
                 $useflags['name'] = $useflags['name'] ?? ($name ?? 'set');
 
@@ -458,6 +578,10 @@ final class Runner
                 }
 
                 $testset = $testspecmap['set'];
+
+                if (1 <= $specversion) {
+                    self::checkset($useflags, $testspec, $testset);
+                }
 
                 foreach ($testset as $index => $entry) {
                     try {

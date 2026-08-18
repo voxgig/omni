@@ -33,9 +33,24 @@ def FIBSEQ : Subject := fun args => Fib.fibseq (args.head?)
 def FIBRANGE : Subject := fun args => Fib.fibrange (args.head?) (args.get? 1)
 def FIBINFO : Subject := fun args => Fib.fibinfo (args.head?)
 
+/-- The context-group subject: reports what the runner delivered - the
+`contextify` mark and the attached client - as plain data, so the spec can
+pin both with an ordinary `out` comparison. -/
+def fibctx (ctx : Val) : Except String Json := do
+  let nval := jget ctx "n"
+  let val ← Fib.fib nval
+  pure (jmap [
+    ("n", nval.getD Json.null),
+    ("val", val),
+    ("mark", (jget ctx "mark").getD Json.null),
+    ("hasclient", jbool (!isnone (jget ctx "client")))])
+
+def FIBCTX : Subject := fun args => fibctx (args.head?)
+
 /-- The provider hosts the system under test. `shift` offsets the
 Fibonacci index, so that a client-specific subject is observably
-different. -/
+different. `contextify` marks the map, so the context group can prove the
+hook ran. -/
 partial def fibprovider (shift : Float) : Provider :=
   Omni.provider
     (subject := some (fun name =>
@@ -50,6 +65,7 @@ partial def fibprovider (shift : Float) : Provider :=
       | _ => none))
     (client := some (fun options =>
       fibprovider ((asnum (jget (some options) "shift")).getD 0.0)))
+    (contextify := some (fun val => jset val "mark" (jstr "CTX")))
 
 structure Counts where
   pass : Nat := 0
@@ -102,18 +118,18 @@ def badspec : Json :=
       jmap [("in", jnum 6),
             ("match", jmap [("out", jmap [("label", jstr "")])])]])])])]
 
-def expectfail (setname : String) (subject : Subject) : Except String Unit :=
-  let pack := makeRunnerSpec badspec emptyProvider "fib"
+def expectfail (setname : String) (subject : Subject) : Except String Unit := do
+  let pack ← makeRunnerSpec badspec emptyProvider "fib"
   match pack.runset (pack.set setname) (some subject) with
   | .error _ => pure ()
   | .ok () => throw s!"omni: expected a failure for set: {setname}"
 
-def checkmessage : Except String Unit :=
+def checkmessage : Except String Unit := do
   let spec := jmap [("fib", jmap [("g", jmap [("set", jlist [
     jmap [("in", jnum 1), ("out", jnum 1)],
     jmap [("id", jstr "x#2"), ("in", jnum 2), ("out", jnum 42)]])])])]
 
-  let pack := makeRunnerSpec spec emptyProvider "fib"
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
 
   match pack.runset (pack.set "g") (some FIB) with
   | .ok () => throw "omni: expected a failure"
@@ -122,6 +138,145 @@ def checkmessage : Except String Unit :=
     let missing := wants.filter (fun want => (message.splitOn want).length == 1)
     if missing.isEmpty then pure ()
     else throw s!"omni: message missing {missing}: {message}"
+
+-- Does `message` contain `want` as a substring? Mirrors the `wants` check
+-- in `checkmessage`, for the single-substring negative tests below.
+def hastext (message want : String) : Bool := 1 != (message.splitOn want).length
+
+-- A version-1 spec is rejected as a whole (before any group runs), so
+-- these build ad hoc specs with `jmap`/`jlist` rather than reusing
+-- `badspec`, and check the refusal through `makeRunnerSpec` directly.
+
+def testUnsupportedVersion : Except String Unit :=
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 99)]),
+    ("fib", jmap [("g", jmap [("set", jlist [])])])]
+  match makeRunnerSpec spec emptyProvider "fib" with
+  | .error message =>
+    if hastext message "unsupported spec version" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok _ => throw "omni: expected a refusal for an unsupported spec version"
+
+def testUnknownCapability : Except String Unit :=
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 1), ("requires", jlist [jstr "nosuchfeature"])]),
+    ("fib", jmap [("g", jmap [("set", jlist [])])])]
+  match makeRunnerSpec spec emptyProvider "fib" with
+  | .error message =>
+    if hastext message "unsupported capability" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok _ => throw "omni: expected a refusal for an unknown required capability"
+
+def testMalformedVersion : Except String Unit :=
+  let spec := jmap [
+    ("OMNI", jmap [("version", jstr "one")]),
+    ("fib", jmap [("g", jmap [("set", jlist [])])])]
+  match makeRunnerSpec spec emptyProvider "fib" with
+  | .error message =>
+    if hastext message "malformed OMNI" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok _ => throw "omni: expected a refusal for a malformed version block"
+
+-- A present-but-null block is malformed; only a genuinely absent OMNI key
+-- is legacy. A port that tests definedness rather than presence silently
+-- skips strict mode here, so both cases are pinned.
+def testNullOmniBlock : Except String Unit := do
+  let specnull := jmap [
+    ("OMNI", Json.null),
+    ("fib", jmap [("g", jmap [("set", jlist [jmap [("in", jnum 1), ("out", jnum 1)]])])])]
+  match makeRunnerSpec specnull emptyProvider "fib" with
+  | .error message =>
+    if hastext message "malformed OMNI" then pure ()
+    else throw s!"omni: wrong refusal message for a null OMNI block: {message}"
+  | .ok _ => throw "omni: expected a refusal for a null OMNI block"
+
+  let specnullrequires := jmap [
+    ("OMNI", jmap [("version", jnum 1), ("requires", Json.null)]),
+    ("fib", jmap [("g", jmap [("set", jlist [jmap [("in", jnum 1), ("out", jnum 1)]])])])]
+  match makeRunnerSpec specnullrequires emptyProvider "fib" with
+  | .error message =>
+    if hastext message "malformed OMNI requires list" then pure ()
+    else throw s!"omni: wrong refusal message for a null requires list: {message}"
+  | .ok _ => throw "omni: expected a refusal for a null OMNI requires list"
+
+  let specabsent := jmap [
+    ("fib", jmap [("g", jmap [("set", jlist [jmap [("in", jnum 1), ("out", jnum 1)]])])])]
+  match makeRunnerSpec specabsent emptyProvider "fib" with
+  | .ok _ => pure ()
+  | .error message => throw s!"omni: an absent OMNI key should load fine, got: {message}"
+
+def testStrictUnknownField : Except String Unit := do
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 1)]),
+    ("fib", jmap [("g", jmap [("set", jlist [
+      jmap [("in", jnum 6), ("matches", jmap [("out", jnum 999)])]])])])]
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
+  match pack.runset (pack.set "g") (some FIBINFO) with
+  | .error message =>
+    if hastext message "unknown entry field: matches" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok () => throw "omni: expected a failure for an unknown entry field"
+
+def testStrictMultipleArgSources : Except String Unit := do
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 1)]),
+    ("fib", jmap [("g", jmap [("set", jlist [
+      jmap [("in", jnum 5), ("args", jlist [jnum 5]), ("out", jnum 5)]])])])]
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
+  match pack.runset (pack.set "g") (some FIB) with
+  | .error message =>
+    if hastext message "more than one of in, args, ctx" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok () => throw "omni: expected a failure for more than one of in, args, ctx"
+
+def testStrictErrWithOut : Except String Unit := do
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 1)]),
+    ("fib", jmap [("g", jmap [("set", jlist [
+      jmap [("in", jnum (-1)), ("err", jbool true), ("out", jnum 5)]])])])]
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
+  match pack.runset (pack.set "g") (some FIB) with
+  | .error message =>
+    if hastext message "both err and out" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok () => throw "omni: expected a failure for err together with out"
+
+-- This is the test that catches a checkset that validates the
+-- already-normalised set: under default flags an authored `id: null`
+-- becomes the string "__NULL__", which silently passes the non-string-id
+-- rule unless validation reads the AUTHORED entry.
+def testStrictNullId : Except String Unit := do
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 1)]),
+    ("fib", jmap [("g", jmap [("set", jlist [
+      jmap [("in", jnum 1), ("out", jnum 1), ("id", Json.null)]])])])]
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
+  match pack.runset (pack.set "g") (some FIB) with
+  | .error message =>
+    if hastext message "entry id is not a string" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok () => throw "omni: expected a failure for a null id"
+
+def testStrictEmptySet : Except String Unit := do
+  let spec := jmap [
+    ("OMNI", jmap [("version", jnum 1)]),
+    ("fib", jmap [
+      ("g", jmap [("set", jlist [])]),
+      ("h", jmap [("set", jlist []), ("empty", jbool true)])])]
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
+  match pack.runset (pack.set "g") (some FIB) with
+  | .error message =>
+    if hastext message "empty test set" then pure ()
+    else throw s!"omni: wrong refusal message: {message}"
+  | .ok () => throw "omni: expected a failure for an empty set"
+  pack.runset (pack.set "h") (some FIB)
+
+def testLegacyLenient : Except String Unit := do
+  let spec := jmap [
+    ("fib", jmap [("g", jmap [("set", jlist [
+      jmap [("in", jnum 6), ("matches", jmap [("out", jnum 999)]), ("out", jnum 8)]])])])]
+  let pack ← makeRunnerSpec spec emptyProvider "fib"
+  pack.runset (pack.set "g") (some FIB)
 
 def main (argv : List String) : IO UInt32 := do
   let only := argv.head?
@@ -140,6 +295,7 @@ def main (argv : List String) : IO UInt32 := do
   run "match" (pack.runset (pack.set "match") (some FIB))
   run "matchinfo" (pack.runset (pack.set "matchinfo") (some FIBINFO))
   run "client" (pack.runset (pack.set "client") (some FIB))
+  run "context" (pack.runset (pack.set "context") (some FIBCTX))
 
   run "detects wrong result" (expectfail "wrongout" FIB)
   run "detects missing error" (expectfail "wrongerr" FIB)
@@ -150,6 +306,17 @@ def main (argv : List String) : IO UInt32 := do
   run "__NULL__ does not match an absent key" (expectfail "nullonabsent" FIBINFO)
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" FIBINFO)
   run "reports entry index and id" checkmessage
+
+  run "rejects an unsupported spec version" testUnsupportedVersion
+  run "rejects an unknown required capability" testUnknownCapability
+  run "rejects a malformed version block" testMalformedVersion
+  run "rejects a null OMNI block, but accepts an absent one" testNullOmniBlock
+  run "strict: an unknown entry field fails instead of passing vacuously" testStrictUnknownField
+  run "strict: more than one of in, args, ctx fails" testStrictMultipleArgSources
+  run "strict: err together with out fails" testStrictErrWithOut
+  run "strict: a null id fails even under null-normalisation" testStrictNullId
+  run "strict: an empty set fails unless marked empty" testStrictEmptySet
+  run "a legacy spec (no OMNI block) stays lenient" testLegacyLenient
 
   let final ← counts.get
   IO.println s!"\n{final.pass} passed, {final.fail} failed"

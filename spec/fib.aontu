@@ -12,6 +12,13 @@
 # matching, partial matching, and named clients.
 
 
+# Spec format version. Version 1 turns on strict entry validation in every
+# runner (unknown fields, multiple argument sources, err+out, empty sets
+# all fail instead of passing silently). `requires` would name capabilities
+# beyond the version baseline; this spec needs none.
+OMNI: version: 1
+
+
 primary: fib: {
 
   # Named clients the runner can build from a spec. `shift` moves the
@@ -114,6 +121,9 @@ primary: fib: {
     { in: { n: 1 }, err: 'not a number' }
     { in: -1, err: true, match: { err: { message: 'negative index' } } }
     { in: 'zz', err: true, match: { in: 'zz', err: { message: '/not a number/' } } }
+    # errify must surface a name for the error, whatever the language calls
+    # it - a port whose error-to-JSON conversion drops the name fails here.
+    { in: -1, err: true, match: { err: { name: '__EXISTS__', message: 'negative index' } } }
   ]
 
 
@@ -149,5 +159,17 @@ primary: fib: {
     { client: 'shift', in: 5, out: 13 }
     { client: 'shift', in: 0, out: 1 }
     { client: 'shift', in: 8, out: 55 }
+  ]
+
+
+  # Context arguments. A leading map argument is cloned, passed through the
+  # provider's contextify hook, and given the active client. The subject
+  # reports what it received - the contextify mark and whether a client was
+  # attached - as plain data, so both behaviours are pinned by an ordinary
+  # `out` comparison in every port.
+  context: set: [
+    { id: 'fib/context#basic', doc: true, ctx: { n: 6 }, out: { n: 6, val: 8, mark: 'CTX', hasclient: true } }
+    { ctx: { n: 0 }, out: { n: 0, val: 0, mark: 'CTX', hasclient: true } }
+    { ctx: { n: 10 }, out: { n: 10, val: 55, mark: 'CTX', hasclient: true } }
   ]
 }

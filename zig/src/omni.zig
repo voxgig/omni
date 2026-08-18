@@ -402,6 +402,31 @@ pub const Flags = struct {
     }
 };
 
+/// The newest spec format version this runner understands. A spec with no
+/// OMNI block is version 0: the original, lenient format, frozen forever.
+/// Version 1 turns on strict entry validation (see checkentry).
+pub const SPECVERSION = 1;
+
+/// Capability strings this runner supports beyond the version baseline. A
+/// spec's OMNI.requires list is checked against this: an unknown
+/// capability refuses the spec loudly at load time, instead of a lagging
+/// port silently mis-running it. (Empty today; future format features
+/// mint a string here.)
+pub const CAPABILITIES: []const []const u8 = &.{};
+
+/// The complete set of fields an entry may carry. Under version 1 anything
+/// else is an error: an unrecognised key is almost always a typo'd
+/// assertion, and a typo'd assertion is a test that silently stopped
+/// testing.
+const ENTRYFIELDS = [_][]const u8{ "in", "args", "ctx", "out", "err", "match", "client", "id", "doc" };
+
+fn isentryfield(key: []const u8) bool {
+    for (ENTRYFIELDS) |field| {
+        if (std.mem.eql(u8, field, key)) return true;
+    }
+    return false;
+}
+
 /// Load a spec: a path to a JSON file.
 pub fn loadspec(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !Json {
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited) catch {
@@ -428,6 +453,65 @@ pub fn resolvespec(name: []const u8, alltests: Json) Json {
     }
 
     return alltests;
+}
+
+/// Read the spec's format version from its optional top-level OMNI block,
+/// and refuse a spec this runner cannot faithfully run: a version newer
+/// than SPECVERSION, or a required capability outside CAPABILITIES. Only a
+/// genuinely absent OMNI key is legacy (version 0) - a present-but-null
+/// block, or a present-but-null requires list, is malformed; that
+/// distinction is why this checks presence (jhas) rather than nullness.
+/// This is a load-time failure, so it surfaces through makeRunner's own
+/// error-union return path rather than the ?[]const u8 channel runset
+/// failures use - Zig error values carry no message payload, so (unlike
+/// the checkset/checkentry failures below) this one is exempt from
+/// carrying byte-identical text; the distinct error name is what a caller
+/// matches on instead.
+fn resolveversion(alltests: Json) !i64 {
+    if (!jhas(alltests, "OMNI")) {
+        return 0;
+    }
+
+    const meta = jget(alltests, "OMNI");
+    const version = jget(meta, "version");
+
+    if (!ismap(meta) or !isnum(version)) {
+        return error.MalformedOmniVersion;
+    }
+
+    const vnum = asnum(version).?;
+    if (vnum != @trunc(vnum)) {
+        return error.MalformedOmniVersion;
+    }
+
+    const maxversion: f64 = SPECVERSION;
+    if (vnum < 0 or maxversion < vnum) {
+        return error.UnsupportedSpecVersion;
+    }
+
+    if (jhas(meta, "requires")) {
+        const requires = jget(meta, "requires").?;
+        if (!islist(requires)) {
+            return error.MalformedOmniRequires;
+        }
+
+        for (requires.array.items) |cap| {
+            const capstr = asstr(cap) orelse return error.UnsupportedCapability;
+
+            var known = false;
+            for (CAPABILITIES) |allowed| {
+                if (std.mem.eql(u8, allowed, capstr)) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                return error.UnsupportedCapability;
+            }
+        }
+    }
+
+    return @intFromFloat(vnum);
 }
 
 /// Nulls (and absent values) become NULLMARK. Always a fresh copy.
@@ -528,6 +612,7 @@ pub const RunPack = struct {
     name: []const u8,
     clientnames: []const []const u8,
     clients: []const *const Provider,
+    specversion: i64,
 
     /// A named group of the resolved spec.
     pub fn set(self: *const RunPack, setname: []const u8) Maybe {
@@ -558,6 +643,15 @@ pub const RunPack = struct {
 
         if (.array != testset) {
             return try std.fmt.allocPrint(alloc, "omni: test spec has no set: {s}", .{label});
+        }
+
+        // Validate the AUTHORED group (pre-fixjson), not the normalised
+        // one: null-normalisation would otherwise rewrite an authored
+        // `id: null` into a sentinel string and hide it from checkentry.
+        if (1 <= self.specversion) {
+            if (try self.checkset(label, testspec, testset)) |failure| {
+                return failure;
+            }
         }
 
         for (testset.array.items, 0..) |rawentry, index| {
@@ -621,6 +715,14 @@ pub const RunPack = struct {
                 if (self.client.contextify) |contextify| {
                     first = contextify(self.client, first);
                 }
+                // Canonical attaches the resolved client onto ctx/args[0]
+                // (testpack.client) so a context subject can tell it was
+                // invoked through one. std.json.Value has no case for a
+                // live Provider reference, and the resolved client is
+                // never absent (it defaults to the root provider), so a
+                // boolean marker carries the same observable meaning the
+                // corpus checks for - presence, never identity.
+                first = try jset(alloc, first, "client", jbool(true));
                 args.items[0] = first;
                 entry = try jset(alloc, entry, "ctx", first);
             }
@@ -642,6 +744,79 @@ pub const RunPack = struct {
                     }
                 },
             }
+        }
+
+        return null;
+    }
+
+    // Validate a version-1 group up front, against the AUTHORED entries -
+    // see the note on runsetflags's call site for why. Absorbs the
+    // empty-set check too: an empty `set` is refused unless the group
+    // carries `empty: true`, making the emptiness a stated fact rather
+    // than an accident.
+    fn checkset(self: *const RunPack, label: []const u8, testspec: Maybe, normalset: Json) !?[]const u8 {
+        const origset = if (ismap(testspec) and islist(jget(testspec, "set")))
+            jget(testspec, "set").?
+        else
+            normalset;
+
+        var isempty = false;
+        if (ismap(testspec)) {
+            if (jget(testspec, "empty")) |flag| {
+                isempty = .bool == flag and flag.bool;
+            }
+        }
+
+        if (0 == origset.array.items.len and !isempty) {
+            return try std.fmt.allocPrint(self.alloc, "omni: empty test set: {s}", .{label});
+        }
+
+        for (origset.array.items, 0..) |entry, index| {
+            if (try self.checkentry(label, index, entry)) |failure| {
+                return failure;
+            }
+        }
+
+        return null;
+    }
+
+    // Strict entry validation, applied when the spec declares version 1
+    // or later. The lenient format converts each of these mistakes into a
+    // silent pass or a dead field; here they fail with the entry named.
+    fn checkentry(self: *const RunPack, label: []const u8, index: usize, entry: Json) !?[]const u8 {
+        if (.object != entry) {
+            return try self.fail(label, index, entry, "entry is not a map", null, null);
+        }
+
+        var fields = entry.object.iterator();
+        while (fields.next()) |field| {
+            if (!isentryfield(field.key_ptr.*)) {
+                const reason = try std.fmt.allocPrint(
+                    self.alloc,
+                    "unknown entry field: {s}",
+                    .{field.key_ptr.*},
+                );
+                return try self.fail(label, index, entry, reason, null, null);
+            }
+        }
+
+        var argsources: usize = 0;
+        for ([_][]const u8{ "in", "args", "ctx" }) |key| {
+            if (jhas(entry, key)) argsources += 1;
+        }
+        if (1 < argsources) {
+            return try self.fail(label, index, entry, "entry has more than one of in, args, ctx", null, null);
+        }
+
+        if (!isnone(jget(entry, "err")) and jhas(entry, "out")) {
+            return try self.fail(label, index, entry, "entry has both err and out", null, null);
+        }
+
+        // Presence, not nullness: an authored `id: null` must fail here,
+        // before resolveentry's null-normalisation ever gets a chance to
+        // turn it into the sentinel string "__NULL__".
+        if (jhas(entry, "id") and null == asstr(jget(entry, "id"))) {
+            return try self.fail(label, index, entry, "entry id is not a string", null, null);
         }
 
         return null;
@@ -968,6 +1143,7 @@ pub const Runner = struct {
     alloc: std.mem.Allocator,
     alltests: Json,
     provider: *const Provider,
+    specversion: i64,
 
     /// Resolve one named section of the spec.
     pub fn runner(self: *const Runner, name: []const u8, store: Maybe) !RunPack {
@@ -1009,21 +1185,36 @@ pub const Runner = struct {
             .name = name,
             .clientnames = clientnames.items,
             .clients = clients.items,
+            .specversion = self.specversion,
         };
     }
 };
 
-/// Make a runner for a spec file path and a provider.
+/// Make a runner for a spec file path and a provider. Resolves the spec's
+/// format version immediately, so an unsupported or malformed OMNI block
+/// fails fast, before any group runs.
 pub fn makeRunner(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
     provider: *const Provider,
 ) !Runner {
-    return .{ .alloc = alloc, .alltests = try loadspec(alloc, io, path), .provider = provider };
+    const alltests = try loadspec(alloc, io, path);
+    return .{
+        .alloc = alloc,
+        .alltests = alltests,
+        .provider = provider,
+        .specversion = try resolveversion(alltests),
+    };
 }
 
-/// Make a runner for an in-memory spec and a provider.
-pub fn makeRunnerSpec(alloc: std.mem.Allocator, spec: Json, provider: *const Provider) Runner {
-    return .{ .alloc = alloc, .alltests = spec, .provider = provider };
+/// Make a runner for an in-memory spec and a provider. Same fail-fast
+/// version resolution as makeRunner.
+pub fn makeRunnerSpec(alloc: std.mem.Allocator, spec: Json, provider: *const Provider) !Runner {
+    return .{
+        .alloc = alloc,
+        .alltests = spec,
+        .provider = provider,
+        .specversion = try resolveversion(spec),
+    };
 }

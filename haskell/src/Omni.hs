@@ -21,6 +21,8 @@ module Omni
     nullmark,
     undefmark,
     existsmark,
+    specversion,
+    capabilities,
     defaultFlags,
     nonullFlags,
     emptyProvider,
@@ -628,6 +630,113 @@ data RunPack = RunPack
     packClient :: Provider
   }
 
+-- | The newest spec format version this runner understands. A spec with
+-- no OMNI block is version 0: the original, lenient format, frozen
+-- forever. Version 1 turns on strict entry validation (see checkentry).
+specversion :: Int
+specversion = 1
+
+-- | Capability strings this runner supports beyond the version baseline.
+-- A spec's OMNI.requires list is checked against this: an unknown
+-- capability refuses the spec loudly at load time, instead of a lagging
+-- port silently mis-running it. (Empty today; future format features
+-- mint a string here.)
+capabilities :: [String]
+capabilities = []
+
+-- | The complete set of fields an entry may carry. Under version 1
+-- anything else is an error: an unrecognised key is almost always a
+-- typo'd assertion, and a typo'd assertion is a test that silently
+-- stopped testing.
+entryfields :: [String]
+entryfields = ["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"]
+
+-- | Read the spec's format version from its optional top-level OMNI
+-- block, and refuse a spec this runner cannot faithfully run: a version
+-- newer than specversion, or a required capability not in capabilities.
+resolveversion :: Json -> IO Int
+resolveversion alltests
+  -- A present-but-null (or otherwise non-map) OMNI block is malformed;
+  -- only a genuinely absent key is legacy version 0 - presence, not
+  -- definedness, is the test.
+  | not (jhas alltests "OMNI") = pure 0
+  | otherwise = do
+      let meta = jget alltests "OMNI"
+
+      version <- case (asmap meta, asnum (jget meta "version")) of
+        (Just _, Just num)
+          | num == fromIntegral (truncate num :: Integer) -> pure (round num :: Int)
+        _ -> throwIO (OmniError "omni: malformed OMNI version block")
+
+      if version < 0 || specversion < version
+        then throwIO (OmniError ("omni: unsupported spec version: " ++ show version))
+        else pure ()
+
+      -- `requires` present but null (or otherwise not a list) is
+      -- malformed; a genuinely absent key skips the check.
+      if jhas meta "requires"
+        then case aslist (jget meta "requires") of
+          Nothing -> throwIO (OmniError "omni: malformed OMNI requires list")
+          Just caps -> mapM_ checkcap caps
+        else pure ()
+
+      pure version
+  where
+    checkcap cap = case asstr cap of
+      Just text | text `elem` capabilities -> pure ()
+      _ -> throwIO (OmniError ("omni: spec requires unsupported capability: " ++ stringify cap))
+
+-- | Strict entry validation, applied when the spec declares version 1 or
+-- later. The lenient format converts each of these mistakes into a
+-- silent pass or a dead field; here they fail with the entry named.
+checkentry :: String -> Int -> Json -> IO ()
+checkentry label index entry
+  | not (ismap entry) = throwIO (failure label index entry "entry is not a map" Nothing Nothing)
+  | otherwise = do
+      mapM_ checkfield (map fst (fromMaybe [] (asmap entry)))
+
+      let argsources = length (filter (jhas entry) ["in", "args", "ctx"])
+      if 1 < argsources
+        then throwIO (failure label index entry "entry has more than one of in, args, ctx" Nothing Nothing)
+        else pure ()
+
+      if not (isnone (jget entry "err")) && jhas entry "out"
+        then throwIO (failure label index entry "entry has both err and out" Nothing Nothing)
+        else pure ()
+
+      -- Presence, not definedness: an authored `id: null` must fail here,
+      -- before null-normalisation can rewrite it into a sentinel string.
+      let entryid = jget entry "id"
+      if not (isabsent entryid) && not (isJust (asstr entryid))
+        then throwIO (failure label index entry "entry id is not a string" Nothing Nothing)
+        else pure ()
+  where
+    checkfield key =
+      if key `elem` entryfields
+        then pure ()
+        else throwIO (failure label index entry ("unknown entry field: " ++ key) Nothing Nothing)
+
+-- | Validate a version-1 group up front, against the AUTHORED entries -
+-- null-normalisation would otherwise rewrite an authored null (e.g.
+-- id: null) into a sentinel string and hide it from validation. A
+-- malformed spec is a spec error, not a test result, so it fails before
+-- any subject runs.
+checkset :: String -> Json -> [Json] -> IO ()
+checkset label testspec normalset = do
+  let origset = case (asmap testspec, aslist (jget testspec "set")) of
+        (Just _, Just list) -> list
+        _ -> normalset
+
+      isemptymarked = case jget testspec "empty" of
+        Bool True -> True
+        _ -> False
+
+  if null origset && not isemptymarked
+    then throwIO (OmniError ("omni: empty test set: " ++ label))
+    else pure ()
+
+  mapM_ (\(index, entry) -> checkentry label index entry) (zip [0 :: Int ..] origset)
+
 -- | Find @primary.\<name\>@, then @\<name\>@, then the whole spec.
 resolvespec :: String -> Json -> Json
 resolvespec name alltests
@@ -851,6 +960,10 @@ handleerror label index entry message = do
 -- | Make a runner for a spec value and a provider.
 makeRunnerSpec :: Json -> Provider -> String -> IO RunPack
 makeRunnerSpec alltests provider name = do
+  -- Resolved once, immediately after the spec is available - fail fast on
+  -- an unsupported version rather than mid-run.
+  specver <- resolveversion alltests
+
   let spec = resolvespec name alltests
 
       clients = case (asmap (jget (jget spec "DEF") "client"), providerClient provider) of
@@ -880,6 +993,10 @@ makeRunnerSpec alltests provider name = do
         testset <- case aslist (jget testspecmap "set") of
           Just entries -> pure entries
           Nothing -> throwIO (OmniError ("omni: test spec has no set: " ++ label))
+
+        if 1 <= specver
+          then checkset label testspec testset
+          else pure ()
 
         mapM_ (runentry label subject clients flags) (zip [0 ..] testset)
 
@@ -914,9 +1031,16 @@ makeRunnerSpec alltests provider name = do
             (args, entry) =
               if (hasctx || hasargs) && not (null args0) && ismap (head args0)
                 then
-                  let first = case providerContextify provider of
+                  let contextified = case providerContextify provider of
                         Just contextify -> contextify (head args0)
                         Nothing -> head args0
+                      -- The resolved client is a live Provider (closures
+                      -- over the system under test), and this port's Json
+                      -- carries no host-object variant to hold one - so
+                      -- canonical's `first.client = testpack.client`
+                      -- becomes presence, not identity: enough for a
+                      -- subject to prove the runner attached a client.
+                      first = jset contextified "client" (Bool True)
                    in (first : tail args0, jset entry0 "ctx" first)
                 else (args0, entry0)
 

@@ -639,6 +639,24 @@ type provider = {
 
 let empty_provider = { subject = None; client = None; contextify = None; inject = None }
 
+(* The newest spec format version this runner understands. A spec with no
+   OMNI block is version 0: the original, lenient format, frozen forever.
+   Version 1 turns on strict entry validation (see checkentry). *)
+let specversion = 1
+
+(* Capability strings this runner supports beyond the version baseline. A
+   spec's OMNI.requires list is checked against this: an unknown
+   capability refuses the spec loudly at load time, instead of a lagging
+   port silently mis-running it. (Empty today; future format features
+   mint a string here.) *)
+let capabilities : string list = []
+
+(* The complete set of fields an entry may carry. Under version 1 anything
+   else is an error: an unrecognised key is almost always a typo'd
+   assertion, and a typo'd assertion is a test that silently stopped
+   testing. *)
+let entryfields = [ "in"; "args"; "ctx"; "out"; "err"; "match"; "client"; "id"; "doc" ]
+
 (* Load a spec: a path to a JSON file. *)
 let loadspec path =
   if not (Sys.file_exists path) then raise (Omni_error ("omni: cannot read spec: " ^ path));
@@ -647,6 +665,40 @@ let loadspec path =
   let text = really_input_string channel length in
   close_in channel;
   parse text
+
+(* Read the spec's format version from its optional top-level OMNI block,
+   and refuse a spec this runner cannot faithfully run: a version newer
+   than specversion, or a required capability not in capabilities. Only a
+   genuinely absent OMNI key is legacy - `OMNI: null` (or a malformed
+   requires/version) is a spec error, checked by presence, not by a null
+   test, so a present null is never mistaken for absence. *)
+let resolveversion alltests =
+  if not (jhas alltests "OMNI") then 0
+  else
+    let meta = jget alltests "OMNI" in
+    if not (ismap meta) then raise (Omni_error "omni: malformed OMNI version block");
+
+    let version =
+      match jget meta "version" with
+      | Num v when Float.is_integer v -> v
+      | _ -> raise (Omni_error "omni: malformed OMNI version block")
+    in
+
+    if version < 0.0 || float_of_int specversion < version then
+      raise (Omni_error ("omni: unsupported spec version: " ^ numstr version));
+
+    (if jhas meta "requires" then
+       match jget meta "requires" with
+       | JList items ->
+         List.iter
+           (fun cap ->
+             match cap with
+             | Str text when List.mem text capabilities -> ()
+             | _ -> raise (Omni_error ("omni: spec requires unsupported capability: " ^ stringify cap)))
+           items
+       | _ -> raise (Omni_error "omni: malformed OMNI requires list"));
+
+    int_of_float version
 
 (* Find `primary.<name>`, then `<name>`, then the whole spec. *)
 let resolvespec name alltests =
@@ -753,6 +805,50 @@ let fail label index entry reason expected actual =
   (match actual with Some text -> Buffer.add_string buf ("\n  actual:   " ^ text) | None -> ());
   Buffer.add_string buf ("\n  entry:    " ^ stringify (entrysummary entry));
   Omni_error (Buffer.contents buf)
+
+(* Strict entry validation, applied when the spec declares version 1 or
+   later. The lenient format converts each of these mistakes into a
+   silent pass or a dead field; here they fail with the entry named. *)
+let checkentry label index entry =
+  (match entry with
+  | JMap fields ->
+    List.iter
+      (fun (key, _) ->
+        if not (List.mem key entryfields) then
+          raise (fail label index entry ("unknown entry field: " ^ key) None None))
+      fields
+  | _ -> raise (fail label index entry "entry is not a map" None None));
+
+  let argsources = List.length (List.filter (fun key -> jhas entry key) [ "in"; "args"; "ctx" ]) in
+  if 1 < argsources then
+    raise (fail label index entry "entry has more than one of in, args, ctx" None None);
+
+  (* `err` here is a presence-and-non-null check (an `err: null` entry is
+     not "expects an error"), but `out` is presence alone - the two
+     sentinels the rest of the runner distinguishes throughout. *)
+  if (not (isnone (jget entry "err"))) && jhas entry "out" then
+    raise (fail label index entry "entry has both err and out" None None);
+
+  if jhas entry "id" && not (isstr (jget entry "id")) then
+    raise (fail label index entry "entry id is not a string" None None)
+
+(* Validate a version-1 group up front, against the AUTHORED entries -
+   null-normalisation would otherwise rewrite an authored null (e.g. id:
+   null) into a sentinel string and hide it from validation. A malformed
+   spec is a spec error, not a test result, so it fails before any
+   subject runs. *)
+let checkset label testspec normalset =
+  let origset =
+    if ismap testspec then
+      match aslist (jget testspec "set") with Some entries -> entries | None -> normalset
+    else normalset
+  in
+
+  let emptyflag = match jget testspec "empty" with Bool true -> true | _ -> false in
+
+  if [] = origset && not emptyflag then raise (Omni_error ("omni: empty test set: " ^ label));
+
+  List.iteri (fun index entry -> checkentry label index entry) origset
 
 (* Check that every leaf of `check` is present, and matches, in `base`. *)
 let rec matchcheck label index entry check base path =
@@ -866,8 +962,12 @@ let resolvesubject name (provider : provider) =
   if name = "" then None
   else match provider.subject with None -> None | Some resolve -> resolve name
 
-(* Make a runner for a spec value and a provider. *)
+(* Make a runner for a spec value and a provider. Resolving the version
+   here - outside the returned closure - fails fast: a spec this runner
+   cannot faithfully run is refused as soon as the runner is made, before
+   any group name is even chosen. *)
 let make_runner_spec alltests (provider : provider) =
+  let specversion = resolveversion alltests in
   fun name store ->
    let spec = resolvespec name alltests in
 
@@ -910,6 +1010,10 @@ let make_runner_spec alltests (provider : provider) =
        | None -> raise (Omni_error ("omni: test spec has no set: " ^ label))
      in
 
+     (* Validated against the AUTHORED `testspec`, not the null-normalised
+        `testset` above - see checkset. *)
+     if 1 <= specversion then checkset label testspec testset;
+
      List.iteri
        (fun index rawentry ->
          if not (ismap rawentry) then
@@ -948,6 +1052,13 @@ let make_runner_spec alltests (provider : provider) =
                | Some contextify -> contextify (List.hd args)
                | None -> List.hd args
              in
+             (* The resolved client is a live provider (closures over the
+                system under test), and this port's json carries no
+                host-object variant to hold one - so canonical's
+                `first.client = testpack.client` becomes presence, not
+                identity: enough for a subject to prove the runner
+                attached a client at all. *)
+             let first = jset first "client" (Bool true) in
              (first :: List.tl args, jset entry "ctx" first)
            else (args, entry)
          in

@@ -40,6 +40,7 @@ defmodule OmniTest do
 
   # The provider hosts the system under test. `shift` offsets the Fibonacci
   # index, so that a client-specific subject is observably different.
+  # `contextify` marks the map, so the context group can prove the hook ran.
   def fibprovider(shift) do
     %{
       subject: fn
@@ -64,7 +65,8 @@ defmodule OmniTest do
       client: fn options ->
         shiftval = U.get(options, "shift")
         fibprovider(if U.isnum(shiftval), do: shiftval, else: 0)
-      end
+      end,
+      contextify: fn val -> Map.put(val, "mark", "CTX") end
     }
   end
 
@@ -130,6 +132,159 @@ defmodule OmniTest do
     end
   end
 
+  # Run `build`, which must raise an OmniError whose message contains
+  # `wantsubstring`. Any other outcome - no raise, or a message missing
+  # the substring - fails the test.
+  def expectraises(build, wantsubstring) do
+    try do
+      build.()
+      raise "omni: expected a failure containing [#{wantsubstring}]"
+    rescue
+      err in OmniError ->
+        if not String.contains?(err.message, wantsubstring) do
+          raise "omni: message missing [#{wantsubstring}]: #{err.message}"
+        end
+    end
+  end
+
+  def rejects_unsupported_version do
+    expectraises(
+      fn ->
+        Runner.make_runner(%{"OMNI" => %{"version" => 99.0}, "fib" => %{"g" => %{"set" => []}}})
+      end,
+      "unsupported spec version"
+    )
+  end
+
+  def rejects_unknown_capability do
+    expectraises(
+      fn ->
+        Runner.make_runner(%{
+          "OMNI" => %{"version" => 1.0, "requires" => ["nosuchfeature"]},
+          "fib" => %{"g" => %{"set" => []}}
+        })
+      end,
+      "unsupported capability"
+    )
+  end
+
+  def rejects_malformed_version_block do
+    expectraises(
+      fn ->
+        Runner.make_runner(%{"OMNI" => %{"version" => "one"}, "fib" => %{"g" => %{"set" => []}}})
+      end,
+      "malformed OMNI"
+    )
+  end
+
+  # A present-but-null OMNI block is malformed; only a genuinely absent
+  # OMNI key is legacy. resolveversion must test presence, not
+  # definedness, or this pair collapses into one case.
+  def rejects_null_omni_block do
+    expectraises(
+      fn ->
+        Runner.make_runner(%{
+          "OMNI" => nil,
+          "fib" => %{"g" => %{"set" => [%{"in" => 1.0, "out" => 1.0}]}}
+        })
+      end,
+      "malformed OMNI"
+    )
+
+    expectraises(
+      fn ->
+        Runner.make_runner(%{
+          "OMNI" => %{"version" => 1.0, "requires" => nil},
+          "fib" => %{"g" => %{"set" => [%{"in" => 1.0, "out" => 1.0}]}}
+        })
+      end,
+      "malformed OMNI requires list"
+    )
+
+    Runner.make_runner(%{"fib" => %{"g" => %{"set" => [%{"in" => 1.0, "out" => 1.0}]}}})
+  end
+
+  def strict_unknown_entry_field do
+    strict =
+      Runner.make_runner(%{
+        "OMNI" => %{"version" => 1.0},
+        "fib" => %{"g" => %{"set" => [%{"in" => 6.0, "matches" => %{"out" => 999.0}}]}}
+      }).("fib", nil)
+
+    expectraises(
+      fn -> strict.runset.(strict.set.("g"), fn args -> Fib.fibinfo(hd(args)) end) end,
+      "unknown entry field: matches"
+    )
+  end
+
+  def strict_more_than_one_source do
+    strict =
+      Runner.make_runner(%{
+        "OMNI" => %{"version" => 1.0},
+        "fib" => %{"g" => %{"set" => [%{"in" => 5.0, "args" => [5.0], "out" => 5.0}]}}
+      }).("fib", nil)
+
+    expectraises(
+      fn -> strict.runset.(strict.set.("g"), fn args -> Fib.fib(hd(args)) end) end,
+      "more than one of in, args, ctx"
+    )
+  end
+
+  def strict_err_with_out do
+    strict =
+      Runner.make_runner(%{
+        "OMNI" => %{"version" => 1.0},
+        "fib" => %{"g" => %{"set" => [%{"in" => -1.0, "err" => true, "out" => 5.0}]}}
+      }).("fib", nil)
+
+    expectraises(
+      fn -> strict.runset.(strict.set.("g"), fn args -> Fib.fib(hd(args)) end) end,
+      "both err and out"
+    )
+  end
+
+  def strict_null_id do
+    strict =
+      Runner.make_runner(%{
+        "OMNI" => %{"version" => 1.0},
+        "fib" => %{"g" => %{"set" => [%{"in" => 1.0, "out" => 1.0, "id" => nil}]}}
+      }).("fib", nil)
+
+    expectraises(
+      fn -> strict.runset.(strict.set.("g"), fn args -> Fib.fib(hd(args)) end) end,
+      "entry id is not a string"
+    )
+  end
+
+  def strict_empty_set do
+    strict =
+      Runner.make_runner(%{
+        "OMNI" => %{"version" => 1.0},
+        "fib" => %{
+          "g" => %{"set" => []},
+          "h" => %{"set" => [], "empty" => true}
+        }
+      }).("fib", nil)
+
+    expectraises(
+      fn -> strict.runset.(strict.set.("g"), fn args -> Fib.fib(hd(args)) end) end,
+      "empty test set"
+    )
+
+    strict.runset.(strict.set.("h"), fn args -> Fib.fib(hd(args)) end)
+  end
+
+  def legacy_stays_lenient do
+    legacy =
+      Runner.make_runner(%{
+        "fib" => %{
+          "g" => %{"set" => [%{"in" => 6.0, "matches" => %{"out" => 999.0}, "out" => 8.0}]}
+        }
+      }).("fib", nil)
+
+    legacy.runset.(legacy.set.("g"), fn args -> Fib.fib(hd(args)) end)
+  end
+
   def checkmessage do
     spec = %{
       "fib" => %{
@@ -165,6 +320,20 @@ fibseq = fn args -> Fib.fibseq(hd(args)) end
 fibrange = fn args -> Fib.fibrange(hd(args), Enum.at(args, 1)) end
 fibinfo = fn args -> Fib.fibinfo(hd(args)) end
 
+# The context-group subject: reports what the runner delivered - the
+# contextify mark and the attached client - as plain data, so the spec can
+# pin both with an ordinary `out` comparison in every port.
+fibctx = fn args ->
+  ctx = hd(args)
+
+  %{
+    "n" => U.get(ctx, "n"),
+    "val" => Fib.fib(U.get(ctx, "n")),
+    "mark" => U.get(ctx, "mark"),
+    "hasclient" => not U.isnone(U.get(ctx, "client"))
+  }
+end
+
 pack = Runner.make_runner(OmniTest.specfile("fib.json"), OmniTest.fibprovider(0)).("fib", nil)
 
 state = {only, 0, 0}
@@ -188,6 +357,9 @@ state =
   OmniTest.testcase("matchinfo", fn -> pack.runset.(pack.set.("matchinfo"), fibinfo) end, state)
 
 state = OmniTest.testcase("client", fn -> pack.runset.(pack.set.("client"), fib) end, state)
+
+state =
+  OmniTest.testcase("context", fn -> pack.runset.(pack.set.("context"), fibctx) end, state)
 
 state =
   OmniTest.testcase("detects wrong result", fn -> OmniTest.expectfail("wrongout", fib) end, state)
@@ -230,6 +402,72 @@ state =
   )
 
 state = OmniTest.testcase("reports entry index and id", &OmniTest.checkmessage/0, state)
+
+state =
+  OmniTest.testcase(
+    "rejects an unsupported spec version",
+    &OmniTest.rejects_unsupported_version/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "rejects an unknown required capability",
+    &OmniTest.rejects_unknown_capability/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "rejects a malformed version block",
+    &OmniTest.rejects_malformed_version_block/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "rejects a null OMNI block, but accepts an absent one",
+    &OmniTest.rejects_null_omni_block/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "strict: an unknown entry field fails instead of passing vacuously",
+    &OmniTest.strict_unknown_entry_field/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "strict: more than one of in, args, ctx fails",
+    &OmniTest.strict_more_than_one_source/0,
+    state
+  )
+
+state =
+  OmniTest.testcase("strict: err together with out fails", &OmniTest.strict_err_with_out/0, state)
+
+state =
+  OmniTest.testcase(
+    "strict: a null id fails even under null-normalisation",
+    &OmniTest.strict_null_id/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "strict: an empty set fails unless marked empty",
+    &OmniTest.strict_empty_set/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "a legacy spec (no OMNI block) stays lenient",
+    &OmniTest.legacy_stays_lenient/0,
+    state
+  )
 
 {_only, passcount, failcount} = state
 

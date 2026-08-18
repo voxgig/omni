@@ -30,7 +30,8 @@ def fibprovider(shift):
     """The provider hosts the system under test.
 
     `shift` offsets the Fibonacci index, so that a client-specific subject
-    is observably different.
+    is observably different. `contextify` marks the map, so the context
+    group can prove the hook ran.
     """
     subjects = {
         'fib': lambda n: fib(n + shift if isinstance(n, (int, float)) else n),
@@ -42,6 +43,20 @@ def fibprovider(shift):
     return {
         'subject': lambda name: subjects.get(name),
         'client': lambda options: fibprovider(options.get('shift') or 0),
+        'contextify': lambda val: {**val, 'mark': 'CTX'},
+    }
+
+
+def fibctx(ctx):
+    """The context-group subject: reports what the runner delivered - the
+    contextify mark and the attached client - as plain data, so the spec
+    can pin both with an ordinary `out` comparison in every port.
+    """
+    return {
+        'n': ctx['n'],
+        'val': fib(ctx['n']),
+        'mark': ctx.get('mark'),
+        'hasclient': ctx.get('client') is not None,
     }
 
 
@@ -81,6 +96,9 @@ class TestFib(unittest.TestCase):
 
     def test_client(self):
         runset(spec['client'], fib)
+
+    def test_context(self):
+        runset(spec['context'], fibctx)
 
 
 BADSPEC = {
@@ -133,6 +151,72 @@ class TestRunner(unittest.TestCase):
 
     def test_empty_string_match_leaf_is_not_a_wildcard(self):
         self.expectfail('emptystr', fibinfo)
+
+    def test_rejects_an_unsupported_spec_version(self):
+        with self.assertRaises(OmniError) as caught:
+            makeRunner({'OMNI': {'version': 99}, 'fib': {'g': {'set': []}}})
+        self.assertIn('unsupported spec version', str(caught.exception))
+
+    def test_rejects_an_unknown_required_capability(self):
+        with self.assertRaises(OmniError) as caught:
+            makeRunner(
+                {'OMNI': {'version': 1, 'requires': ['nosuchfeature']}, 'fib': {'g': {'set': []}}}
+            )
+        self.assertIn('unsupported capability', str(caught.exception))
+
+    def test_rejects_a_malformed_version_block(self):
+        with self.assertRaises(OmniError) as caught:
+            makeRunner({'OMNI': {'version': 'one'}, 'fib': {'g': {'set': []}}})
+        self.assertIn('malformed OMNI', str(caught.exception))
+
+    def test_strict_an_unknown_entry_field_fails_instead_of_passing_vacuously(self):
+        bad = makeRunner(
+            {'OMNI': {'version': 1}, 'fib': {'g': {'set': [{'in': 6, 'matches': {'out': 999}}]}}}
+        )('fib')
+        with self.assertRaises(OmniError) as caught:
+            bad['runset'](bad['spec']['g'], fibinfo)
+        self.assertIn('unknown entry field: matches', str(caught.exception))
+
+    def test_strict_more_than_one_of_in_args_ctx_fails(self):
+        bad = makeRunner(
+            {'OMNI': {'version': 1}, 'fib': {'g': {'set': [{'in': 5, 'args': [5], 'out': 5}]}}}
+        )('fib')
+        with self.assertRaises(OmniError) as caught:
+            bad['runset'](bad['spec']['g'], fib)
+        self.assertIn('more than one of in, args, ctx', str(caught.exception))
+
+    def test_strict_err_together_with_out_fails(self):
+        bad = makeRunner(
+            {'OMNI': {'version': 1}, 'fib': {'g': {'set': [{'in': -1, 'err': True, 'out': 5}]}}}
+        )('fib')
+        with self.assertRaises(OmniError) as caught:
+            bad['runset'](bad['spec']['g'], fib)
+        self.assertIn('both err and out', str(caught.exception))
+
+    def test_strict_a_null_id_fails_even_under_null_normalisation(self):
+        runner = makeRunner({
+            'OMNI': {'version': 1},
+            'fib': {'g': {'set': [{'in': 1, 'out': 1, 'id': None}]}},
+        })
+        R = runner('fib')
+        with self.assertRaises(OmniError) as ctx:
+            R['runset'](R['spec']['g'], fib)
+        self.assertIn('entry id is not a string', str(ctx.exception))
+
+    def test_strict_an_empty_set_fails_unless_marked_empty(self):
+        bad = makeRunner(
+            {'OMNI': {'version': 1}, 'fib': {'g': {'set': []}, 'h': {'set': [], 'empty': True}}}
+        )('fib')
+        with self.assertRaises(OmniError) as caught:
+            bad['runset'](bad['spec']['g'], fib)
+        self.assertIn('empty test set', str(caught.exception))
+        bad['runset'](bad['spec']['h'], fib)
+
+    def test_a_legacy_spec_no_omni_block_stays_lenient(self):
+        bad = makeRunner({'fib': {'g': {'set': [{'in': 6, 'matches': {'out': 999}, 'out': 8}]}}})(
+            'fib'
+        )
+        bad['runset'](bad['spec']['g'], fib)
 
     def test_reports_entry_index_and_id(self):
         bad = makeRunner(

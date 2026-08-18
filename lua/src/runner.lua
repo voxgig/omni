@@ -14,6 +14,33 @@ M.EXISTSMARK = u.EXISTSMARK
 M.NULL = u.NULL
 M.ABSENT = u.ABSENT
 
+-- The newest spec format version this runner understands. A spec with no
+-- OMNI block is version 0: the original, lenient format, frozen forever.
+-- Version 1 turns on strict entry validation (see checkentry).
+M.SPECVERSION = 1
+
+-- Capability strings this runner supports beyond the version baseline. A
+-- spec's OMNI.requires list is checked against this: an unknown capability
+-- refuses the spec loudly at load time, instead of a lagging port silently
+-- mis-running it. (Empty today; future format features mint a string here.)
+M.CAPABILITIES = {}
+
+-- The complete set of fields an entry may carry. Under version 1 anything
+-- else is an error: an unrecognised key is almost always a typo'd
+-- assertion, and a typo'd assertion is a test that silently stopped
+-- testing.
+local ENTRYFIELDS = { 'in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc' }
+
+-- Linear membership check (Lua has no Array#includes).
+local function contains(list, value)
+  for _, item in ipairs(list) do
+    if item == value then
+      return true
+    end
+  end
+  return false
+end
+
 -- A test failure (or a malformed spec). Raised as a table, so that errors
 -- raised by the subject under test (plain strings) stay distinguishable.
 local OMNIMT = { __tostring = function(err) return err.message end }
@@ -67,6 +94,47 @@ function M.resolvespec(name, alltests)
   end
 
   return alltests
+end
+
+-- Read the spec's format version from its optional top-level OMNI block,
+-- and refuse a spec this runner cannot faithfully run: a version newer
+-- than SPECVERSION, or a required capability not in CAPABILITIES.
+local function resolveversion(alltests)
+  local meta = u.ABSENT
+  if u.ismap(alltests) then
+    meta = u.get(alltests, 'OMNI')
+  end
+
+  if u.isabsent(meta) then
+    return 0
+  end
+
+  local version = u.ABSENT
+  if u.ismap(meta) then
+    version = u.get(meta, 'version')
+  end
+
+  if not u.ismap(meta) or not u.isnum(version) or 0 ~= (version % 1) then
+    error(M.OmniError('omni: malformed OMNI version block'))
+  end
+
+  if 0 > version or M.SPECVERSION < version then
+    error(M.OmniError('omni: unsupported spec version: ' .. u.stringify(version)))
+  end
+
+  local requires = u.get(meta, 'requires')
+  if not u.isabsent(requires) then
+    if not u.islist(requires) then
+      error(M.OmniError('omni: malformed OMNI requires list'))
+    end
+    for _, cap in ipairs(requires) do
+      if not u.isstr(cap) or not contains(M.CAPABILITIES, cap) then
+        error(M.OmniError('omni: spec requires unsupported capability: ' .. u.stringify(cap)))
+      end
+    end
+  end
+
+  return version
 end
 
 --- Nulls (and absent values) become NULLMARK. Always a fresh copy.
@@ -145,6 +213,9 @@ end
 
 -- The spec-defined part of an entry (drop runner bookkeeping).
 local function entrysummary(entry)
+  if not u.ismap(entry) then
+    return entry
+  end
   local out = u.map({})
   for key, value in pairs(entry) do
     if 'res' ~= key and 'thrown' ~= key and 'ctx' ~= key then
@@ -174,6 +245,64 @@ local function fail(label, index, entry, reason, expected, actual)
   msg = msg .. '\n  entry:    ' .. u.stringify(entrysummary(entry))
 
   return M.OmniError(msg, entry)
+end
+
+-- Strict entry validation, applied when the spec declares version 1 or
+-- later. The lenient format converts each of these mistakes into a silent
+-- pass or a dead field; here they fail with the entry named.
+local function checkentry(label, index, entry)
+  if not u.ismap(entry) then
+    error(fail(label, index, entry, 'entry is not a map'))
+  end
+
+  for key in pairs(entry) do
+    if not contains(ENTRYFIELDS, key) then
+      error(fail(label, index, entry, 'unknown entry field: ' .. key))
+    end
+  end
+
+  local argsources = 0
+  for _, key in ipairs({ 'in', 'args', 'ctx' }) do
+    if u.has(entry, key) then
+      argsources = argsources + 1
+    end
+  end
+  if 1 < argsources then
+    error(fail(label, index, entry, 'entry has more than one of in, args, ctx'))
+  end
+
+  if not u.isnone(u.get(entry, 'err')) and u.has(entry, 'out') then
+    error(fail(label, index, entry, 'entry has both err and out'))
+  end
+
+  if u.has(entry, 'id') and not u.isstr(u.get(entry, 'id')) then
+    error(fail(label, index, entry, 'entry id is not a string'))
+  end
+end
+
+-- Validate a version-1 group up front, against the AUTHORED entries -
+-- null-normalisation would otherwise rewrite an authored null (e.g.
+-- id: null) into a sentinel string and hide it from validation. A
+-- malformed spec is a spec error, not a test result, so it fails before
+-- any subject runs.
+local function checkset(label, testspec, normalset)
+  local origset = normalset
+  if u.ismap(testspec) and u.islist(u.get(testspec, 'set')) then
+    origset = u.get(testspec, 'set')
+  end
+
+  local empty = u.ABSENT
+  if u.ismap(testspec) then
+    empty = u.get(testspec, 'empty')
+  end
+
+  if 0 == #origset and true ~= empty then
+    error(M.OmniError('omni: empty test set: ' .. label))
+  end
+
+  for at, entry in ipairs(origset) do
+    checkentry(label, at - 1, entry)
+  end
 end
 
 -- Check that every leaf of `check` is present, and matches, in `base`.
@@ -309,8 +438,12 @@ local function handleerror(label, index, entry, err)
   error(fail(label, index, entry, 'unexpected error', nil, M.errmessage(err)))
 end
 
--- Build the argument list: `ctx`, `args`, or `in`.
-local function resolveargs(entry, provider)
+-- Build the argument list: `ctx`, `args`, or `in`. `client` is the
+-- provider that owns this entry's subject (the root provider, unless
+-- `entry.client` names a DEF.client override) - the runner attaches it to
+-- a contextified map argument, so a subject can reach the provider that
+-- owns it.
+local function resolveargs(entry, client, provider)
   local args
 
   local hasctx = u.has(entry, 'ctx')
@@ -328,13 +461,16 @@ local function resolveargs(entry, provider)
     args = { u.clone(u.get(entry, 'in')) }
   end
 
-  if (hasctx or hasargs) and 0 < #args and u.ismap(args[1]) then
+  if (hasctx or hasargs) and u.ismap(args[1]) then
     local first = u.clone(args[1])
     if nil ~= provider.contextify then
       first = provider.contextify(first)
     end
     args[1] = first
     rawset(entry, 'ctx', first)
+    if u.ismap(first) then
+      rawset(first, 'client', client)
+    end
   end
 
   return args
@@ -343,6 +479,7 @@ end
 --- Make a runner for a spec file path (or spec value) and a provider.
 function M.makeRunner(specref, provider)
   local alltests = u.isstr(specref) and M.loadspec(specref) or specref
+  local specversion = resolveversion(alltests)
   local useprovider = provider or {}
 
   return function(name, store)
@@ -397,6 +534,10 @@ function M.makeRunner(specref, provider)
         error(M.OmniError('omni: test spec has no set: ' .. label))
       end
 
+      if 1 <= specversion then
+        checkset(label, testspec, testset)
+      end
+
       for at, entry in ipairs(testset) do
         local index = at - 1
 
@@ -410,6 +551,7 @@ function M.makeRunner(specref, provider)
         end
 
         local entrysubject = usesubject
+        local entryclient = useprovider
         local clientname = u.get(entry, 'client')
 
         if u.isstr(clientname) then
@@ -417,6 +559,7 @@ function M.makeRunner(specref, provider)
           if nil == client then
             error(M.OmniError('omni: unknown client: ' .. clientname, entry))
           end
+          entryclient = client
           if nil ~= client.subject then
             local clientsubject = client.subject(name)
             if nil ~= clientsubject then
@@ -425,7 +568,7 @@ function M.makeRunner(specref, provider)
           end
         end
 
-        local args = resolveargs(entry, useprovider)
+        local args = resolveargs(entry, entryclient, useprovider)
 
         local ok, result = pcall(entrysubject, table.unpack(args))
 

@@ -72,6 +72,23 @@ export type RunPack = {
 
 export type Runner = (name?: string, store?: Json) => Promise<RunPack>
 
+// The newest spec format version this runner understands. A spec with no
+// OMNI block is version 0: the original, lenient format, frozen forever.
+// Version 1 turns on strict entry validation (see checkentry).
+export const SPECVERSION = 1
+
+// Capability strings this runner supports beyond the version baseline. A
+// spec's OMNI.requires list is checked against this: an unknown capability
+// refuses the spec loudly at load time, instead of a lagging port silently
+// mis-running it. (Empty today; future format features mint a string here.)
+export const CAPABILITIES: string[] = []
+
+// The complete set of fields an entry may carry. Under version 1 anything
+// else is an error: an unrecognised key is almost always a typo'd
+// assertion, and a typo'd assertion is a test that silently stopped
+// testing.
+const ENTRYFIELDS = ['in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc']
+
 // A test failure (or a malformed spec). Distinct from errors thrown by the
 // subject under test, which are candidates for an `err` expectation.
 export class OmniError extends Error {
@@ -89,6 +106,90 @@ function loadspec(specref: string | Json): Json {
     return JSON.parse(readFileSync(specref, 'utf8'))
   }
   return specref
+}
+
+// Read the spec's format version from its optional top-level OMNI block,
+// and refuse a spec this runner cannot faithfully run: a version newer
+// than SPECVERSION, or a required capability not in CAPABILITIES.
+function resolveversion(alltests: Json): number {
+  const meta = ismap(alltests) ? alltests.OMNI : undefined
+
+  if (undefined === meta) {
+    return 0
+  }
+
+  if (!ismap(meta) || 'number' !== typeof meta.version || 0 !== meta.version % 1) {
+    throw new OmniError('omni: malformed OMNI version block')
+  }
+
+  if (meta.version < 0 || SPECVERSION < meta.version) {
+    throw new OmniError('omni: unsupported spec version: ' + meta.version)
+  }
+
+  const requires = meta.requires
+  if (undefined !== requires) {
+    if (!islist(requires)) {
+      throw new OmniError('omni: malformed OMNI requires list')
+    }
+    for (const cap of requires) {
+      if ('string' !== typeof cap || !CAPABILITIES.includes(cap)) {
+        throw new OmniError('omni: spec requires unsupported capability: ' + stringify(cap))
+      }
+    }
+  }
+
+  return meta.version
+}
+
+// Strict entry validation, applied when the spec declares version 1 or
+// later. The lenient format converts each of these mistakes into a silent
+// pass or a dead field; here they fail with the entry named.
+function checkentry(flags: Flags, index: number, entry: Json): void {
+  if (!ismap(entry)) {
+    throw fail(flags, index, entry, 'entry is not a map')
+  }
+
+  for (const key of Object.keys(entry)) {
+    if (!ENTRYFIELDS.includes(key)) {
+      throw fail(flags, index, entry, 'unknown entry field: ' + key)
+    }
+  }
+
+  let argsources = 0
+  for (const key of ['in', 'args', 'ctx']) {
+    if (undefined !== entry[key]) {
+      argsources++
+    }
+  }
+  if (1 < argsources) {
+    throw fail(flags, index, entry, 'entry has more than one of in, args, ctx')
+  }
+
+  if (null != entry.err && undefined !== entry.out) {
+    throw fail(flags, index, entry, 'entry has both err and out')
+  }
+
+  if (undefined !== entry.id && 'string' !== typeof entry.id) {
+    throw fail(flags, index, entry, 'entry id is not a string')
+  }
+}
+
+// Validate a version-1 group up front, against the AUTHORED entries -
+// null-normalisation would otherwise rewrite an authored null (e.g.
+// id: null) into a sentinel string and hide it from validation. A
+// malformed spec is a spec error, not a test result, so it fails before
+// any subject runs.
+function checkset(flags: Flags, testspec: Json, normalset: Json[]): void {
+  const origset =
+    ismap(testspec) && islist(testspec.set) ? testspec.set : normalset
+
+  if (0 === origset.length && true !== (ismap(testspec) ? testspec.empty : undefined)) {
+    throw new OmniError('omni: empty test set: ' + flags.name)
+  }
+
+  for (let index = 0; index < origset.length; index++) {
+    checkentry(flags, index, origset[index])
+  }
 }
 
 // Find the named section of a spec: `primary.<name>`, then `<name>`, then
@@ -476,6 +577,7 @@ function nullmodifier(val: Json, key: any, parent: Json) {
 // Make a runner for a spec file (or spec object) and a provider.
 async function makeRunner(specref: string | Json, provider?: Provider): Promise<Runner> {
   const alltests = loadspec(specref)
+  const specversion = resolveversion(alltests)
   const useprovider: Provider = provider || {}
 
   return async function runner(name?: string, store?: Json): Promise<RunPack> {
@@ -503,6 +605,10 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
       }
 
       const testset: Json[] = testspecmap.set
+
+      if (1 <= specversion) {
+        checkset(useflags, testspec, testset)
+      }
 
       for (let index = 0; index < testset.length; index++) {
         let entry = testset[index]

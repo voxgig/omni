@@ -26,6 +26,7 @@ function specfile(name) {
 
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
+// `contextify` marks the map, so the context group can prove the hook ran.
 function fibprovider(shift) {
   const subjects = {
     fib: (n) => fib('number' === typeof n ? n + shift : n),
@@ -37,6 +38,19 @@ function fibprovider(shift) {
   return {
     subject: (name) => subjects[name],
     client: (options) => fibprovider(options && options.shift ? options.shift : 0),
+    contextify: (val) => ({ ...val, mark: 'CTX' }),
+  }
+}
+
+// The context-group subject: reports what the runner delivered - the
+// contextify mark and the attached client - as plain data, so the spec can
+// pin both with an ordinary `out` comparison in every port.
+function fibctx(ctx) {
+  return {
+    n: ctx.n,
+    val: fib(ctx.n),
+    mark: ctx.mark,
+    hasclient: null != ctx.client,
   }
 }
 
@@ -82,6 +96,10 @@ describe('fib', () => {
 
   test('client', async () => {
     await R.runset(R.spec.client, fib)
+  })
+
+  test('context', async () => {
+    await R.runset(R.spec.context, fibctx)
   })
 })
 
@@ -145,6 +163,96 @@ describe('runner', () => {
 
   test('an empty-string match leaf is not a wildcard', async () => {
     await expectfail('emptystr', fibinfo)
+  })
+
+  test('rejects an unsupported spec version', async () => {
+    await assert.rejects(
+      async () => makeRunner({ OMNI: { version: 99 }, fib: { g: { set: [] } } }),
+      (err) => err instanceof OmniError && /unsupported spec version/.test(err.message),
+    )
+  })
+
+  test('rejects an unknown required capability', async () => {
+    await assert.rejects(
+      async () => makeRunner({ OMNI: { version: 1, requires: ['nosuchfeature'] }, fib: { g: { set: [] } } }),
+      (err) => err instanceof OmniError && /unsupported capability/.test(err.message),
+    )
+  })
+
+  test('rejects a malformed version block', async () => {
+    await assert.rejects(
+      async () => makeRunner({ OMNI: { version: 'one' }, fib: { g: { set: [] } } }),
+      (err) => err instanceof OmniError && /malformed OMNI/.test(err.message),
+    )
+  })
+
+  test('strict: an unknown entry field fails instead of passing vacuously', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [{ in: 6, matches: { out: 999 } }] } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset(R.spec.g, fibinfo),
+      (err) => err instanceof OmniError && /unknown entry field: matches/.test(err.message),
+    )
+  })
+
+  test('strict: more than one of in, args, ctx fails', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [{ in: 5, args: [5], out: 5 }] } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset(R.spec.g, fib),
+      (err) => err instanceof OmniError && /more than one of in, args, ctx/.test(err.message),
+    )
+  })
+
+  test('strict: err together with out fails', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [{ in: -1, err: true, out: 5 }] } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset(R.spec.g, fib),
+      (err) => err instanceof OmniError && /both err and out/.test(err.message),
+    )
+  })
+
+  test('strict: a null id fails even under null-normalisation', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [{ in: 1, out: 1, id: null }] } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset(R.spec.g, fib),
+      (err) => err instanceof OmniError && /entry id is not a string/.test(err.message),
+    )
+  })
+
+  test('strict: an empty set fails unless marked empty', async () => {
+    const runner = await makeRunner({
+      OMNI: { version: 1 },
+      fib: { g: { set: [] }, h: { set: [], empty: true } },
+    })
+    const R = await runner('fib')
+    await assert.rejects(
+      async () => R.runset(R.spec.g, fib),
+      (err) => err instanceof OmniError && /empty test set/.test(err.message),
+    )
+    await R.runset(R.spec.h, fib)
+  })
+
+  test('a legacy spec (no OMNI block) stays lenient', async () => {
+    const runner = await makeRunner({
+      fib: { g: { set: [{ in: 6, matches: { out: 999 }, out: 8 }] } },
+    })
+    const R = await runner('fib')
+    await R.runset(R.spec.g, fib)
   })
 
   test('reports entry index and id', async () => {

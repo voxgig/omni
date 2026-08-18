@@ -11,6 +11,8 @@
 #ifndef VOXGIG_OMNI_HPP
 #define VOXGIG_OMNI_HPP
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
@@ -58,6 +60,60 @@ struct Provider {
   // Resolve references in client options against the store.
   std::function<Json(const Json&, const Json&)> inject;
 };
+
+// The newest spec format version this runner understands. A spec with no
+// OMNI block is version 0: the original, lenient format, frozen forever.
+// Version 1 turns on strict entry validation (see checkentry).
+inline const int SPECVERSION = 1;
+
+// Capability strings this runner supports beyond the version baseline. A
+// spec's OMNI.requires list is checked against this: an unknown capability
+// refuses the spec loudly at load time, instead of a lagging port silently
+// mis-running it. (Empty today; future format features mint a string here.)
+inline const std::vector<std::string> CAPABILITIES = {};
+
+// The complete set of fields an entry may carry. Under version 1 anything
+// else is an error: an unrecognised key is almost always a typo'd
+// assertion, and a typo'd assertion is a test that silently stopped
+// testing.
+inline const std::vector<std::string> ENTRYFIELDS = {
+    "in", "args", "ctx", "out", "err", "match", "client", "id", "doc"};
+
+// Read the spec's format version from its optional top-level OMNI block,
+// and refuse a spec this runner cannot faithfully run: a version newer
+// than SPECVERSION, or a required capability not in CAPABILITIES.
+inline int resolveversion(const Json& alltests) {
+  Json meta = alltests.ismap() ? alltests.get("OMNI") : Json::absent();
+
+  if (meta.isabsent()) {
+    return 0;
+  }
+
+  Json version = meta.get("version");
+  if (!meta.ismap() || !version.isnum() || version.numval != std::floor(version.numval)) {
+    throw OmniError("omni: malformed OMNI version block");
+  }
+
+  if (version.numval < 0 || SPECVERSION < version.numval) {
+    throw OmniError("omni: unsupported spec version: " + numstr(version.numval));
+  }
+
+  Json reqlist = meta.get("requires");
+  if (!reqlist.isabsent()) {
+    if (!reqlist.islist()) {
+      throw OmniError("omni: malformed OMNI requires list");
+    }
+    for (const auto& cap : reqlist.listval) {
+      bool known = cap.isstr() &&
+                  CAPABILITIES.end() != std::find(CAPABILITIES.begin(), CAPABILITIES.end(), cap.strval);
+      if (!known) {
+        throw OmniError("omni: spec requires unsupported capability: " + stringify(cap));
+      }
+    }
+  }
+
+  return static_cast<int>(version.numval);
+}
 
 // ---- internals -------------------------------------------------------
 
@@ -131,6 +187,70 @@ inline OmniError fail(const Flags& flags, size_t index, const Json& entry,
   message += "\n  entry:    " + stringify(entrysummary(entry));
 
   return OmniError(message);
+}
+
+// Strict entry validation, applied when the spec declares version 1 or
+// later. The lenient format converts each of these mistakes into a silent
+// pass or a dead field; here they fail with the entry named.
+inline void checkentry(const Flags& flags, size_t index, const Json& entry) {
+  if (!entry.ismap()) {
+    throw fail(flags, index, entry, "entry is not a map");
+  }
+
+  for (const auto& field : entry.mapval) {
+    if (ENTRYFIELDS.end() == std::find(ENTRYFIELDS.begin(), ENTRYFIELDS.end(), field.first)) {
+      throw fail(flags, index, entry, "unknown entry field: " + field.first);
+    }
+  }
+
+  int argsources = 0;
+  for (const char* key : {"in", "args", "ctx"}) {
+    if (entry.has(key)) {
+      argsources++;
+    }
+  }
+  if (1 < argsources) {
+    throw fail(flags, index, entry, "entry has more than one of in, args, ctx");
+  }
+
+  if (!entry.get("err").isnone() && entry.has("out")) {
+    throw fail(flags, index, entry, "entry has both err and out");
+  }
+
+  // Presence, not definedness: a present `id: null` is malformed, not a
+  // sentinel to skip. Test against genuine absence, never `isnone()`.
+  Json id = entry.get("id");
+  if (!id.isabsent() && !id.isstr()) {
+    throw fail(flags, index, entry, "entry id is not a string");
+  }
+}
+
+// Validate a version-1 group up front, against the AUTHORED entries -
+// null-normalisation would otherwise rewrite an authored null (e.g.
+// id: null) into a sentinel string and hide it from validation. A
+// malformed spec is a spec error, not a test result, so it fails before
+// any subject runs. Absorbs the empty-set check too.
+inline void checkset(const Flags& flags, const Json& testspec, const Json& normalset) {
+  Json rawset = testspec.ismap() ? testspec.get("set") : Json::absent();
+  Json origset = rawset.islist() ? rawset : normalset;
+
+  Json emptyflag = testspec.ismap() ? testspec.get("empty") : Json::absent();
+  bool marked = emptyflag.isbool() && emptyflag.boolval;
+
+  if (origset.listval.empty() && !marked) {
+    throw OmniError("omni: empty test set: " + flags.name);
+  }
+
+  for (size_t index = 0; index < origset.listval.size(); index++) {
+    checkentry(flags, index, origset.listval[index]);
+  }
+}
+
+// An entry with no `out` expects a null (or absent) result.
+inline void resolveentry(Json& entry, const Flags& flags) {
+  if (flags.null && entry.get("out").isnone()) {
+    entry.set("out", Json::str(NULLMARK));
+  }
 }
 
 // Match one leaf: /regex/ or case-insensitive substring for strings.
@@ -265,9 +385,9 @@ class RunPack {
 
   RunPack(const Json& spec, const Subject& subject, const std::shared_ptr<Provider>& provider,
           const std::map<std::string, std::shared_ptr<Provider>>& clients,
-          const std::string& name)
+          const std::string& name, int specversion)
       : spec(spec), subject(subject), client(provider), provider_(provider), clients_(clients),
-        name_(name) {}
+        name_(name), specversion_(specversion) {}
 
   // A named group of the resolved spec.
   Json set(const std::string& name) const { return spec.get(name); }
@@ -296,18 +416,15 @@ class RunPack {
       throw OmniError("omni: test spec has no set: " + flags.name);
     }
 
+    // Validated against the AUTHORED (pre-fixjson) group - see checkset.
+    if (1 <= specversion_) {
+      checkset(flags, testspec, testset);
+    }
+
     for (size_t index = 0; index < testset.listval.size(); index++) {
       Json entry = testset.listval[index];
 
-      if (!entry.ismap()) {
-        throw OmniError("omni: " + flags.name + "[" + std::to_string(index) +
-                        "]: entry is not a map");
-      }
-
-      // An entry with no `out` expects a null (or absent) result.
-      if (flags.null && entry.get("out").isnone()) {
-        entry.set("out", Json::str(NULLMARK));
-      }
+      resolveentry(entry, flags);
 
       Subject entrysubject = usesubject;
       Json clientname = entry.get("client");
@@ -348,6 +465,7 @@ class RunPack {
   std::shared_ptr<Provider> provider_;
   std::map<std::string, std::shared_ptr<Provider>> clients_;
   std::string name_;
+  int specversion_ = 0;
 
   // Build the argument list: `ctx`, `args`, or `in`.
   std::vector<Json> resolveargs(Json& entry) const {
@@ -373,6 +491,14 @@ class RunPack {
       Json first = args[0];
       if (provider_ && provider_->contextify) {
         first = provider_->contextify(first);
+      }
+      if (first.ismap()) {
+        // The resolved client is a live Provider (closures over the system
+        // under test), and this port's Json carries no host-object variant
+        // to hold one - so canonical's `first.client = testpack.client`
+        // becomes presence, not identity: enough for a subject to prove the
+        // runner attached a client at all.
+        first.set("client", Json::boolean(true));
       }
       args[0] = first;
       entry.set("ctx", first);
@@ -500,8 +626,13 @@ inline Json resolvespec(const std::string& name, const Json& alltests) {
 // A loaded spec plus its provider.
 class Runner {
  public:
+  // Fail fast: resolveversion runs immediately after the spec is loaded, so
+  // a version this runner cannot faithfully run is refused before any entry
+  // in it gets a chance to run.
   Runner(const Json& alltests, const std::shared_ptr<Provider>& provider)
-      : alltests_(alltests), provider_(provider ? provider : std::make_shared<Provider>()) {}
+      : alltests_(alltests),
+        specversion_(resolveversion(alltests)),
+        provider_(provider ? provider : std::make_shared<Provider>()) {}
 
   // Resolve one named section of the spec.
   RunPack runner(const std::string& name, const Json& store = Json::absent()) const {
@@ -530,11 +661,12 @@ class Runner {
       subject = provider_->subject(name);
     }
 
-    return RunPack(spec, subject, provider_, clients, name);
+    return RunPack(spec, subject, provider_, clients, name, specversion_);
   }
 
  private:
   Json alltests_;
+  int specversion_;
   std::shared_ptr<Provider> provider_;
 };
 

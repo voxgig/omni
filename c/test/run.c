@@ -55,6 +55,33 @@ static omni_result subject_fibinfo(omni_subject *self, omni_json **args, size_t 
   return fib_info(POOL, 0 < nargs ? args[0] : NULL);
 }
 
+/* The context-group subject: reports what the runner delivered - the
+ * contextify mark and the attached client - as plain data, so the spec
+ * can pin both with an ordinary `out` comparison. */
+static omni_result subject_fibctx(omni_subject *self, omni_json **args, size_t nargs) {
+  omni_json *ctx = 0 < nargs ? args[0] : NULL;
+  omni_json *nval = omni_map_get(ctx, "n");
+  omni_result out;
+  long index = 0;
+
+  (void)self;
+
+  out.val = NULL;
+  out.err = NULL;
+
+  if (0 != fib_index(POOL, nval, &index, &out.err)) {
+    return out;
+  }
+
+  out.val = omni_map(POOL);
+  omni_map_set(out.val, "n", nval);
+  omni_map_set(out.val, "val", omni_num(POOL, (double)fib_num(index)));
+  omni_map_set(out.val, "mark", omni_map_get(ctx, "mark"));
+  omni_map_set(out.val, "hasclient", omni_bool(POOL, omni_ismap(ctx) && NULL != ctx->client));
+
+  return out;
+}
+
 static omni_subject *makesubject(omni_result (*call)(omni_subject *, omni_json **, size_t),
                                  void *data) {
   omni_subject *subject = (omni_subject *)omni_pool_alloc(POOL, sizeof(omni_subject));
@@ -80,6 +107,9 @@ static omni_subject *provider_subject(omni_provider *self, const char *name) {
   if (0 == strcmp(name, "fibinfo")) {
     return makesubject(subject_fibinfo, NULL);
   }
+  if (0 == strcmp(name, "fibctx")) {
+    return makesubject(subject_fibctx, NULL);
+  }
   return NULL;
 }
 
@@ -87,6 +117,15 @@ static omni_provider *provider_client(omni_provider *self, omni_json *options) {
   omni_json *shift = omni_map_get(options, "shift");
   (void)self;
   return fibprovider(omni_isnum(shift) ? omni_numval(shift) : 0);
+}
+
+/* Marks the map, so the context group can prove the hook ran. The map is
+ * already a fresh copy by the time the runner calls this (see
+ * omni_runsetflags), so mutating it in place is safe. */
+static omni_json *provider_contextify(omni_provider *self, omni_json *val) {
+  (void)self;
+  omni_map_set(val, "mark", omni_str(POOL, "CTX"));
+  return val;
 }
 
 /* The provider hosts the system under test. `shift` offsets the Fibonacci
@@ -99,7 +138,7 @@ static omni_provider *fibprovider(double shift) {
 
   provider->subject = provider_subject;
   provider->client = provider_client;
-  provider->contextify = NULL;
+  provider->contextify = provider_contextify;
   provider->data = data;
 
   return provider;
@@ -317,6 +356,320 @@ static void expectfail(const char *label, const char *setname, omni_subject *sub
   report(label, !failed, "omni: expected a failure, got none");
 }
 
+/* ---- version and strict-entry negative tests ------------------------ */
+
+/* omni_make_runner itself must refuse the spec; there is no pack to run
+ * against. */
+static void expectloadfail(const char *label, omni_json *spec, const char *wantsubstr) {
+  char *err = NULL;
+  omni_runner *runner;
+
+  if (!wanted(label)) {
+    return;
+  }
+
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+
+  if (NULL != runner) {
+    report(label, 1, "omni: expected make_runner to fail, got a runner");
+    return;
+  }
+
+  if (NULL == err || NULL == strstr(err, wantsubstr)) {
+    report(label, 1, err);
+    return;
+  }
+
+  report(label, 0, NULL);
+}
+
+static omni_json *emptysetgroup(void) {
+  omni_json *group = omni_map(POOL);
+  omni_map_set(group, "set", omni_list(POOL));
+  return group;
+}
+
+static void versionnegatives(void) {
+  omni_json *spec;
+  omni_json *meta;
+  omni_json *fibgroup;
+
+  /* unsupported spec version */
+  spec = omni_map(POOL);
+  meta = omni_map(POOL);
+  omni_map_set(meta, "version", omni_num(POOL, 99));
+  fibgroup = omni_map(POOL);
+  omni_map_set(fibgroup, "g", emptysetgroup());
+  omni_map_set(spec, "OMNI", meta);
+  omni_map_set(spec, "fib", fibgroup);
+  expectloadfail("rejects an unsupported spec version", spec, "unsupported spec version");
+
+  /* unknown required capability */
+  spec = omni_map(POOL);
+  meta = omni_map(POOL);
+  omni_map_set(meta, "version", omni_num(POOL, 1));
+  {
+    omni_json *requires = omni_list(POOL);
+    omni_list_push(requires, omni_str(POOL, "nosuchfeature"));
+    omni_map_set(meta, "requires", requires);
+  }
+  fibgroup = omni_map(POOL);
+  omni_map_set(fibgroup, "g", emptysetgroup());
+  omni_map_set(spec, "OMNI", meta);
+  omni_map_set(spec, "fib", fibgroup);
+  expectloadfail("rejects an unknown required capability", spec, "unsupported capability");
+
+  /* malformed version block */
+  spec = omni_map(POOL);
+  meta = omni_map(POOL);
+  omni_map_set(meta, "version", omni_str(POOL, "one"));
+  fibgroup = omni_map(POOL);
+  omni_map_set(fibgroup, "g", emptysetgroup());
+  omni_map_set(spec, "OMNI", meta);
+  omni_map_set(spec, "fib", fibgroup);
+  expectloadfail("rejects a malformed version block", spec, "malformed OMNI");
+}
+
+/* A present-but-null block is malformed; only a genuinely absent OMNI
+ * key is legacy. A port that tests definedness rather than presence
+ * silently skips strict mode here, so both cases are pinned. */
+static omni_json *onegroup(void) {
+  omni_json *group = omni_map(POOL);
+  omni_json *set = omni_list(POOL);
+  omni_json *entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 1));
+  omni_map_set(entry, "out", omni_num(POOL, 1));
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  return group;
+}
+
+static void nullomninegative(void) {
+  const char *label = "rejects a null OMNI block, but accepts an absent one";
+  omni_json *spec;
+  omni_json *meta;
+  omni_json *fibgroup;
+  char *err;
+  omni_runner *runner;
+
+  if (!wanted(label)) {
+    return;
+  }
+
+  /* OMNI: null refuses with "malformed OMNI". */
+  spec = omni_map(POOL);
+  omni_map_set(spec, "OMNI", omni_null(POOL));
+  fibgroup = omni_map(POOL);
+  omni_map_set(fibgroup, "g", onegroup());
+  omni_map_set(spec, "fib", fibgroup);
+
+  err = NULL;
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+  if (NULL != runner || NULL == err || NULL == strstr(err, "malformed OMNI")) {
+    report(label, 1, NULL == err ? "omni: expected malformed OMNI, got a runner" : err);
+    return;
+  }
+
+  /* {version: 1, requires: null} refuses with "malformed OMNI requires
+   * list". */
+  spec = omni_map(POOL);
+  meta = omni_map(POOL);
+  omni_map_set(meta, "version", omni_num(POOL, 1));
+  omni_map_set(meta, "requires", omni_null(POOL));
+  omni_map_set(spec, "OMNI", meta);
+  fibgroup = omni_map(POOL);
+  omni_map_set(fibgroup, "g", onegroup());
+  omni_map_set(spec, "fib", fibgroup);
+
+  err = NULL;
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+  if (NULL != runner || NULL == err || NULL == strstr(err, "malformed OMNI requires list")) {
+    report(label, 1, NULL == err ? "omni: expected malformed OMNI requires list, got a runner" : err);
+    return;
+  }
+
+  /* A spec with no OMNI key at all loads fine. */
+  spec = omni_map(POOL);
+  fibgroup = omni_map(POOL);
+  omni_map_set(fibgroup, "g", onegroup());
+  omni_map_set(spec, "fib", fibgroup);
+
+  err = NULL;
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+  if (NULL == runner) {
+    report(label, 1, err);
+    return;
+  }
+
+  report(label, 0, NULL);
+}
+
+/* A version-1 spec with one bad entry in group "g"; the runner must
+ * refuse it at runset time with `wantsubstr` in the message. */
+static void expectstrictfail(const char *label, omni_json *entry, const char *wantsubstr,
+                             omni_subject *subject) {
+  omni_json *spec = omni_map(POOL);
+  omni_json *meta = omni_map(POOL);
+  omni_json *fibgroup = omni_map(POOL);
+  omni_json *group = omni_map(POOL);
+  omni_json *set = omni_list(POOL);
+  char *err = NULL;
+  omni_runner *runner;
+  omni_runpack *pack;
+  int failed;
+
+  if (!wanted(label)) {
+    return;
+  }
+
+  omni_map_set(meta, "version", omni_num(POOL, 1));
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "g", group);
+  omni_map_set(spec, "OMNI", meta);
+  omni_map_set(spec, "fib", fibgroup);
+
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+  pack = omni_runner_run(runner, "fib", NULL, &err);
+  failed = omni_runset(pack, omni_set(pack, "g"), subject, &err);
+
+  if (!failed) {
+    report(label, 1, "omni: expected a failure, got none");
+    return;
+  }
+
+  if (NULL == err || NULL == strstr(err, wantsubstr)) {
+    report(label, 1, err);
+    return;
+  }
+
+  report(label, 0, NULL);
+}
+
+static void strictnegatives(void) {
+  omni_json *entry;
+
+  /* an unknown entry field fails instead of passing vacuously */
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 6));
+  {
+    omni_json *check = omni_map(POOL);
+    omni_map_set(check, "out", omni_num(POOL, 999));
+    omni_map_set(entry, "matches", check);
+  }
+  expectstrictfail("strict: an unknown entry field fails instead of passing vacuously", entry,
+                   "unknown entry field: matches", makesubject(subject_fibinfo, NULL));
+
+  /* more than one of in, args, ctx */
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 5));
+  {
+    omni_json *args = omni_list(POOL);
+    omni_list_push(args, omni_num(POOL, 5));
+    omni_map_set(entry, "args", args);
+  }
+  omni_map_set(entry, "out", omni_num(POOL, 5));
+  expectstrictfail("strict: more than one of in, args, ctx fails", entry,
+                   "more than one of in, args, ctx", makesubject(subject_fib, NULL));
+
+  /* err together with out */
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, -1));
+  omni_map_set(entry, "err", omni_bool(POOL, 1));
+  omni_map_set(entry, "out", omni_num(POOL, 5));
+  expectstrictfail("strict: err together with out fails", entry, "both err and out",
+                   makesubject(subject_fib, NULL));
+
+  /* a null id fails even under null-normalisation: checkset must
+   * validate the AUTHORED entry (real null), not the fixjson-normalised
+   * one (which would have turned the null into the NULLMARK string and
+   * hidden it from the "is a string" check). */
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 1));
+  omni_map_set(entry, "out", omni_num(POOL, 1));
+  omni_map_set(entry, "id", omni_null(POOL));
+  expectstrictfail("strict: a null id fails even under null-normalisation", entry,
+                   "entry id is not a string", makesubject(subject_fib, NULL));
+}
+
+static void emptysetnegative(void) {
+  const char *label = "strict: an empty set fails unless marked empty";
+  omni_json *spec = omni_map(POOL);
+  omni_json *meta = omni_map(POOL);
+  omni_json *fibgroup = omni_map(POOL);
+  omni_json *g = emptysetgroup();
+  omni_json *h = emptysetgroup();
+  char *err = NULL;
+  omni_runner *runner;
+  omni_runpack *pack;
+  int failed;
+
+  if (!wanted(label)) {
+    return;
+  }
+
+  omni_map_set(meta, "version", omni_num(POOL, 1));
+  omni_map_set(h, "empty", omni_bool(POOL, 1));
+  omni_map_set(fibgroup, "g", g);
+  omni_map_set(fibgroup, "h", h);
+  omni_map_set(spec, "OMNI", meta);
+  omni_map_set(spec, "fib", fibgroup);
+
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+  pack = omni_runner_run(runner, "fib", NULL, &err);
+
+  err = NULL;
+  failed = omni_runset(pack, omni_set(pack, "g"), makesubject(subject_fib, NULL), &err);
+  if (!failed || NULL == err || NULL == strstr(err, "empty test set")) {
+    report(label, 1, NULL == err ? "omni: expected a failure, got none" : err);
+    return;
+  }
+
+  err = NULL;
+  failed = omni_runset(pack, omni_set(pack, "h"), makesubject(subject_fib, NULL), &err);
+  if (failed) {
+    report(label, 1, err);
+    return;
+  }
+
+  report(label, 0, NULL);
+}
+
+static void legacylenient(void) {
+  const char *label = "a legacy spec (no OMNI block) stays lenient";
+  omni_json *spec = omni_map(POOL);
+  omni_json *fibgroup = omni_map(POOL);
+  omni_json *group = omni_map(POOL);
+  omni_json *set = omni_list(POOL);
+  omni_json *entry = omni_map(POOL);
+  char *err = NULL;
+  omni_runner *runner;
+  omni_runpack *pack;
+  int failed;
+
+  if (!wanted(label)) {
+    return;
+  }
+
+  omni_map_set(entry, "in", omni_num(POOL, 6));
+  {
+    omni_json *check = omni_map(POOL);
+    omni_map_set(check, "out", omni_num(POOL, 999));
+    omni_map_set(entry, "matches", check);
+  }
+  omni_map_set(entry, "out", omni_num(POOL, 8));
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "g", group);
+  omni_map_set(spec, "fib", fibgroup);
+
+  runner = omni_make_runner(POOL, NULL, spec, NULL, &err);
+  pack = omni_runner_run(runner, "fib", NULL, &err);
+
+  failed = omni_runset(pack, omni_set(pack, "g"), makesubject(subject_fib, NULL), &err);
+  report(label, failed, err);
+}
+
 static void checkmessage(void) {
   const char *label = "reports entry index and id";
   omni_json *spec = omni_map(POOL);
@@ -411,6 +764,7 @@ int main(int argc, char **argv) {
   rungroup(pack, "match", makesubject(subject_fib, NULL), omni_flags_default());
   rungroup(pack, "matchinfo", makesubject(subject_fibinfo, NULL), omni_flags_default());
   rungroup(pack, "client", makesubject(subject_fib, NULL), omni_flags_default());
+  rungroup(pack, "context", makesubject(subject_fibctx, NULL), omni_flags_default());
 
   expectfail("detects wrong result", "wrongout", makesubject(subject_fib, NULL));
   expectfail("detects missing error", "wrongerr", makesubject(subject_fib, NULL));
@@ -424,6 +778,12 @@ int main(int argc, char **argv) {
              makesubject(subject_fibinfo, NULL));
   expectfail("an empty-string match leaf is not a wildcard", "emptystr",
              makesubject(subject_fibinfo, NULL));
+
+  versionnegatives();
+  nullomninegative();
+  strictnegatives();
+  emptysetnegative();
+  legacylenient();
   checkmessage();
 
   printf("\n%d passed, %d failed\n", PASSCOUNT, FAILCOUNT);

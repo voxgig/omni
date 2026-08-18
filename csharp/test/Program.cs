@@ -43,9 +43,25 @@ internal static class Program
     private static readonly Subject FIBRANGE = args => Fib.FibRange(args[0], args[1]);
     private static readonly Subject FIBINFO = args => Fib.FibInfo(args[0]);
 
+    // The context-group subject: reports what the runner delivered - the
+    // contextify mark and the attached client - as plain data, so the spec
+    // can pin both with an ordinary `out` comparison in every port.
+    private static readonly Subject FIBCTX = args =>
+    {
+        var ctx = (IDictionary<string, object>)args[0];
+        return new Dictionary<string, object>
+        {
+            ["n"] = ctx.ContainsKey("n") ? ctx["n"] : null,
+            ["val"] = Fib.FibOf(ctx.ContainsKey("n") ? ctx["n"] : null),
+            ["mark"] = ctx.ContainsKey("mark") ? ctx["mark"] : null,
+            ["hasclient"] = ctx.ContainsKey("client") && null != ctx["client"],
+        };
+    };
+
     // The provider hosts the system under test. `shift` offsets the
     // Fibonacci index, so that a client-specific subject is observably
-    // different.
+    // different. `contextify` marks the map, so the context group can prove
+    // the hook ran.
     private static Provider FibProvider(double shift)
     {
         var subjects = new Dictionary<string, Subject>
@@ -70,6 +86,14 @@ internal static class Program
                     clientshift = Util.ToNum(map["shift"]);
                 }
                 return FibProvider(clientshift);
+            },
+            Contextify = val =>
+            {
+                var outmap = new Dictionary<string, object>((IDictionary<string, object>)val)
+                {
+                    ["mark"] = "CTX",
+                };
+                return outmap;
             },
         };
     }
@@ -153,6 +177,47 @@ internal static class Program
         throw new InvalidOperationException("omni: expected OmniError for set: " + setname);
     }
 
+    // MakeRunner itself must refuse a spec it cannot faithfully run - a
+    // version check, so a lagging port fails loudly at load time instead of
+    // silently mis-running a spec whose features it does not know.
+    private static void ExpectMakeRunnerFail(object spec, string mustcontain)
+    {
+        try
+        {
+            Runner.MakeRunner(spec);
+        }
+        catch (OmniError err)
+        {
+            if (!err.Message.Contains(mustcontain))
+            {
+                throw new InvalidOperationException("omni: message missing [" + mustcontain + "]: " + err.Message);
+            }
+            return;
+        }
+
+        throw new InvalidOperationException("omni: expected OmniError containing: " + mustcontain);
+    }
+
+    private static void ExpectRunSetFail(object spec, string setname, Subject subject, string mustcontain)
+    {
+        RunPack r = Runner.MakeRunner(spec).Run("fib");
+
+        try
+        {
+            r.RunSet(r.Set(setname), subject);
+        }
+        catch (OmniError err)
+        {
+            if (!err.Message.Contains(mustcontain))
+            {
+                throw new InvalidOperationException("omni: message missing [" + mustcontain + "]: " + err.Message);
+            }
+            return;
+        }
+
+        throw new InvalidOperationException("omni: expected OmniError containing: " + mustcontain);
+    }
+
     private static void CheckMessage()
     {
         object spec = Map("fib", Map("g", Map("set", List(
@@ -198,6 +263,7 @@ internal static class Program
         TestCase("match", () => R.RunSet(R.Set("match"), FIB));
         TestCase("matchinfo", () => R.RunSet(R.Set("matchinfo"), FIBINFO));
         TestCase("client", () => R.RunSet(R.Set("client"), FIB));
+        TestCase("context", () => R.RunSet(R.Set("context"), FIBCTX));
 
         TestCase("detects wrong result", () => ExpectFail("wrongout", FIB));
         TestCase("detects missing error", () => ExpectFail("wrongerr", FIB));
@@ -208,6 +274,64 @@ internal static class Program
         TestCase("__NULL__ does not match absent key", () => ExpectFail("nullonabsent", FIBINFO));
         TestCase("an empty-string match leaf is not a wildcard", () => ExpectFail("emptystr", FIBINFO));
         TestCase("reports entry index and id", CheckMessage);
+
+        TestCase("rejects an unsupported spec version", () =>
+            ExpectMakeRunnerFail(
+                Map("OMNI", Map("version", 99.0), "fib", Map("g", Map("set", List()))),
+                "unsupported spec version"));
+
+        TestCase("rejects an unknown required capability", () =>
+            ExpectMakeRunnerFail(
+                Map("OMNI", Map("version", 1.0, "requires", List("nosuchfeature")),
+                    "fib", Map("g", Map("set", List()))),
+                "unsupported capability"));
+
+        TestCase("rejects a malformed version block", () =>
+            ExpectMakeRunnerFail(
+                Map("OMNI", Map("version", "one"), "fib", Map("g", Map("set", List()))),
+                "malformed OMNI"));
+
+        TestCase("strict: an unknown entry field fails instead of passing vacuously", () =>
+            ExpectRunSetFail(
+                Map("OMNI", Map("version", 1.0),
+                    "fib", Map("g", Map("set", List(Map("in", 6.0, "matches", Map("out", 999.0)))))),
+                "g", FIBINFO, "unknown entry field: matches"));
+
+        TestCase("strict: more than one of in, args, ctx fails", () =>
+            ExpectRunSetFail(
+                Map("OMNI", Map("version", 1.0),
+                    "fib", Map("g", Map("set", List(Map("in", 5.0, "args", List(5.0), "out", 5.0))))),
+                "g", FIB, "more than one of in, args, ctx"));
+
+        TestCase("strict: err together with out fails", () =>
+            ExpectRunSetFail(
+                Map("OMNI", Map("version", 1.0),
+                    "fib", Map("g", Map("set", List(Map("in", -1.0, "err", true, "out", 5.0))))),
+                "g", FIB, "both err and out"));
+
+        TestCase("strict: a null id fails even under null-normalisation", () =>
+            ExpectRunSetFail(
+                Map("OMNI", Map("version", 1.0),
+                    "fib", Map("g", Map("set", List(Map("in", 1.0, "out", 1.0, "id", null))))),
+                "g", FIB, "entry id is not a string"));
+
+        TestCase("strict: an empty set fails unless marked empty", () =>
+        {
+            object spec = Map("OMNI", Map("version", 1.0), "fib", Map(
+                "g", Map("set", List()),
+                "h", Map("set", List(), "empty", true)));
+            ExpectRunSetFail(spec, "g", FIB, "empty test set");
+            RunPack r = Runner.MakeRunner(spec).Run("fib");
+            r.RunSet(r.Set("h"), FIB);
+        });
+
+        TestCase("a legacy spec (no OMNI block) stays lenient", () =>
+        {
+            object spec = Map("fib", Map("g", Map("set", List(
+                Map("in", 6.0, "matches", Map("out", 999.0), "out", 8.0)))));
+            RunPack r = Runner.MakeRunner(spec).Run("fib");
+            r.RunSet(r.Set("g"), FIB);
+        });
 
         Console.WriteLine("\n" + passcount + " passed, " + failcount + " failed");
 

@@ -40,9 +40,22 @@ object Main:
   val FIBRANGE: Subject = args => Fib.fibrange(args.head, args(1))
   val FIBINFO: Subject = args => Fib.fibinfo(args.head)
 
+  // The context-group subject: reports what the runner delivered - the
+  // contextify mark and the attached client - as plain data, so the spec
+  // can pin both with an ordinary `out` comparison in every port.
+  val FIBCTX: Subject = args =>
+    val ctx = args.head
+    Json.map(
+      "n" -> ctx.get("n"),
+      "val" -> Fib.fib(ctx.get("n")),
+      "mark" -> ctx.get("mark"),
+      "hasclient" -> Json.Bool(!ctx.get("client").isnone),
+    )
+
   /** The provider hosts the system under test. `shift` offsets the
     * Fibonacci index, so that a client-specific subject is observably
-    * different.
+    * different. `contextify` marks the map, so the context group can
+    * prove the hook ran.
     */
   def fibprovider(shift: Double): Provider =
     Provider(
@@ -59,6 +72,11 @@ object Main:
         case _          => None
       },
       client = Some(options => fibprovider(options.get("shift").asnum.getOrElse(0.0))),
+      contextify = Some(value =>
+        value.asmap match
+          case Some(entries) => Json.JMap(entries.updated("mark", Json.str("CTX")))
+          case None          => value
+      ),
     )
 
   def testcase(name: String)(body: => Unit): Unit =
@@ -149,6 +167,31 @@ object Main:
 
     throw IllegalStateException(s"omni: expected OmniError for set: $setname")
 
+  // The runner must refuse a spec it cannot faithfully run, at load time,
+  // before any set is executed.
+  def expectmakerunnerfail(spec: Json, mustcontain: String): Unit =
+    try Runner.makeRunner(spec)
+    catch
+      case err: OmniError =>
+        if !err.text.contains(mustcontain) then
+          throw IllegalStateException(s"omni: message missing [$mustcontain]: ${err.text}")
+        return
+
+    throw IllegalStateException(s"omni: expected OmniError containing: $mustcontain")
+
+  // Strict (version-1) entry validation must name the entry's mistake.
+  def expectrunsetfail(spec: Json, setname: String, subject: Subject, mustcontain: String): Unit =
+    val r = Runner.makeRunner(spec).runner("fib")
+
+    try r.runset(r.set(setname), Some(subject))
+    catch
+      case err: OmniError =>
+        if !err.text.contains(mustcontain) then
+          throw IllegalStateException(s"omni: message missing [$mustcontain]: ${err.text}")
+        return
+
+    throw IllegalStateException(s"omni: expected OmniError containing: $mustcontain")
+
   def checkmessage(): Unit =
     val spec = Json.map(
       "fib" -> Json.map(
@@ -187,6 +230,7 @@ object Main:
     testcase("match") { R.runset(R.set("match"), Some(FIB)) }
     testcase("matchinfo") { R.runset(R.set("matchinfo"), Some(FIBINFO)) }
     testcase("client") { R.runset(R.set("client"), Some(FIB)) }
+    testcase("context") { R.runset(R.set("context"), Some(FIBCTX)) }
 
     testcase("detects wrong result") { expectfail("wrongout", FIB) }
     testcase("detects missing error") { expectfail("wrongerr", FIB) }
@@ -197,6 +241,143 @@ object Main:
     testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
+
+    testcase("rejects an unsupported spec version") {
+      expectmakerunnerfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.num(99)),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list())),
+        ),
+        "unsupported spec version",
+      )
+    }
+
+    testcase("rejects an unknown required capability") {
+      expectmakerunnerfail(
+        Json.map(
+          "OMNI" -> Json.map(
+            "version" -> Json.num(1),
+            "requires" -> Json.list(Json.str("nosuchfeature")),
+          ),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list())),
+        ),
+        "unsupported capability",
+      )
+    }
+
+    testcase("rejects a malformed version block") {
+      expectmakerunnerfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.str("one")),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list())),
+        ),
+        "malformed OMNI",
+      )
+    }
+
+    // A present-but-null block is malformed; only a genuinely absent OMNI
+    // key is legacy. Ports that test definedness rather than presence
+    // silently skip strict mode here, so both cases are pinned.
+    testcase("rejects a null OMNI block, but accepts an absent one") {
+      expectmakerunnerfail(
+        Json.map(
+          "OMNI" -> Json.Null,
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+            Json.map("in" -> Json.num(1), "out" -> Json.num(1)),
+          ))),
+        ),
+        "malformed OMNI",
+      )
+      expectmakerunnerfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.num(1), "requires" -> Json.Null),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+            Json.map("in" -> Json.num(1), "out" -> Json.num(1)),
+          ))),
+        ),
+        "malformed OMNI requires list",
+      )
+      Runner.makeRunner(
+        Json.map("fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+          Json.map("in" -> Json.num(1), "out" -> Json.num(1)),
+        )))),
+      )
+    }
+
+    testcase("strict: an unknown entry field fails instead of passing vacuously") {
+      expectrunsetfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.num(1)),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+            Json.map("in" -> Json.num(6), "matches" -> Json.map("out" -> Json.num(999))),
+          ))),
+        ),
+        "g", FIBINFO, "unknown entry field: matches",
+      )
+    }
+
+    testcase("strict: more than one of in, args, ctx fails") {
+      expectrunsetfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.num(1)),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+            Json.map("in" -> Json.num(5), "args" -> Json.list(Json.num(5)), "out" -> Json.num(5)),
+          ))),
+        ),
+        "g", FIB, "more than one of in, args, ctx",
+      )
+    }
+
+    testcase("strict: err together with out fails") {
+      expectrunsetfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.num(1)),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+            Json.map("in" -> Json.num(-1), "err" -> Json.Bool(true), "out" -> Json.num(5)),
+          ))),
+        ),
+        "g", FIB, "both err and out",
+      )
+    }
+
+    testcase("strict: a null id fails even under null-normalisation") {
+      expectrunsetfail(
+        Json.map(
+          "OMNI" -> Json.map("version" -> Json.num(1)),
+          "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+            Json.map("in" -> Json.num(1), "out" -> Json.num(1), "id" -> Json.Null),
+          ))),
+        ),
+        "g", FIB, "entry id is not a string",
+      )
+    }
+
+    testcase("strict: an empty set fails unless marked empty") {
+      val spec = Json.map(
+        "OMNI" -> Json.map("version" -> Json.num(1)),
+        "fib" -> Json.map(
+          "g" -> Json.map("set" -> Json.list()),
+          "h" -> Json.map("set" -> Json.list(), "empty" -> Json.Bool(true)),
+        ),
+      )
+      expectrunsetfail(spec, "g", FIB, "empty test set")
+      val r = Runner.makeRunner(spec).runner("fib")
+      r.runset(r.set("h"), Some(FIB))
+    }
+
+    testcase("a legacy spec (no OMNI block) stays lenient") {
+      val spec = Json.map(
+        "fib" -> Json.map("g" -> Json.map("set" -> Json.list(
+          Json.map(
+            "in" -> Json.num(6),
+            "matches" -> Json.map("out" -> Json.num(999)),
+            "out" -> Json.num(8),
+          ),
+        ))),
+      )
+      val r = Runner.makeRunner(spec).runner("fib")
+      r.runset(r.set("g"), Some(FIB))
+    }
 
     println(s"\n$passcount passed, $failcount failed")
 

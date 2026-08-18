@@ -264,6 +264,10 @@ jobs:
             echo "Run 'make spec' and commit the result."
             exit 1
           fi
+      # A well-formed artifact, not just a fresh one: validate the committed
+      # spec JSON against the version-1 format schema.
+      - name: Validate spec JSON against the format schema
+        run: cd tools && npm run --silent check-spec-schema
 
   # The two properties that make 23 ports one library rather than 23
   # lookalikes.

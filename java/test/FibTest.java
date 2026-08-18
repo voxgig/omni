@@ -48,10 +48,25 @@ public final class FibTest {
   static final Subject FIBRANGE = args -> Fib.fibrange(args[0], args[1]);
   static final Subject FIBINFO = args -> Fib.fibinfo(args[0]);
 
+  // The context-group subject: reports what the runner delivered - the
+  // contextify mark and the attached client - as plain data, so the spec
+  // can pin both with an ordinary `out` comparison in every port.
+  static final Subject FIBCTX =
+      args -> {
+        Map<?, ?> ctx = (Map<?, ?>) args[0];
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("n", ctx.get("n"));
+        out.put("val", Fib.fib(ctx.get("n")));
+        out.put("mark", ctx.get("mark"));
+        out.put("hasclient", null != ctx.get("client"));
+        return out;
+      };
+
   /**
    * The provider hosts the system under test. `shift` offsets the
    * Fibonacci index, so that a client-specific subject is observably
-   * different.
+   * different. `contextify` marks the map, so the context group can prove
+   * the hook ran.
    */
   static Provider fibprovider(final double shift) {
     Map<String, Subject> subjects = new LinkedHashMap<>();
@@ -79,6 +94,17 @@ public final class FibTest {
             }
           }
           return fibprovider(clientshift);
+        };
+    provider.contextify =
+        val -> {
+          if (!Util.ismap(val)) {
+            return val;
+          }
+          @SuppressWarnings("unchecked")
+          Map<String, Object> base = (Map<String, Object>) val;
+          Map<String, Object> out = new LinkedHashMap<>(base);
+          out.put("mark", "CTX");
+          return out;
         };
 
     return provider;
@@ -121,6 +147,7 @@ public final class FibTest {
     testcase("match", () -> R.runset(R.set("match"), FIB));
     testcase("matchinfo", () -> R.runset(R.set("matchinfo"), FIBINFO));
     testcase("client", () -> R.runset(R.set("client"), FIB));
+    testcase("context", () -> R.runset(R.set("context"), FIBCTX));
 
     // The runner must fail when the subject is wrong - otherwise a green
     // suite means nothing.
@@ -134,6 +161,23 @@ public final class FibTest {
     testcase("__NULL__ does not match absent key", () -> expectfail("nullonabsent", FIBINFO));
     testcase(
         "an empty-string match leaf is not a wildcard", () -> expectfail("emptystr", FIBINFO));
+
+    testcase("rejects an unsupported spec version", FibTest::rejectsUnsupportedVersion);
+    testcase("rejects an unknown required capability", FibTest::rejectsUnknownCapability);
+    testcase("rejects a malformed version block", FibTest::rejectsMalformedVersion);
+    testcase(
+        "rejects a null OMNI block, but accepts an absent one",
+        FibTest::rejectsNullOmniAcceptsAbsent);
+    testcase(
+        "strict: an unknown entry field fails instead of passing vacuously",
+        FibTest::strictUnknownField);
+    testcase("strict: more than one of in, args, ctx fails", FibTest::strictMultipleArgSources);
+    testcase("strict: err together with out fails", FibTest::strictErrWithOut);
+    testcase(
+        "strict: a null id fails even under null-normalisation", FibTest::strictNullId);
+    testcase("strict: an empty set fails unless marked empty", FibTest::strictEmptySet);
+    testcase("a legacy spec (no OMNI block) stays lenient", FibTest::legacyLenient);
+
     testcase("reports entry index and id", FibTest::checkmessage);
 
     System.out.println("\n" + passcount + " passed, " + failcount + " failed");
@@ -193,6 +237,185 @@ public final class FibTest {
     }
 
     throw new IllegalStateException("omni: expected OmniError for set: " + setname);
+  }
+
+  static void requirecontains(String message, String want) {
+    if (!message.contains(want)) {
+      throw new IllegalStateException("omni: message missing [" + want + "]: " + message);
+    }
+  }
+
+  static void rejectsUnsupportedVersion() {
+    Object spec = map("OMNI", map("version", 99.0), "fib", map("g", map("set", list())));
+    try {
+      Runner.makeRunner(spec, null);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "unsupported spec version");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for unsupported spec version");
+  }
+
+  static void rejectsUnknownCapability() {
+    Object spec =
+        map(
+            "OMNI",
+            map("version", 1.0, "requires", list("nosuchfeature")),
+            "fib",
+            map("g", map("set", list())));
+    try {
+      Runner.makeRunner(spec, null);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "unsupported capability");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for unknown capability");
+  }
+
+  static void rejectsMalformedVersion() {
+    Object spec = map("OMNI", map("version", "one"), "fib", map("g", map("set", list())));
+    try {
+      Runner.makeRunner(spec, null);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "malformed OMNI");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for malformed version block");
+  }
+
+  static void requireRejectsWith(Object spec, String want) {
+    try {
+      Runner.makeRunner(spec, null);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), want);
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError containing [" + want + "]");
+  }
+
+  // A present-but-null block is malformed; only a genuinely absent OMNI
+  // key is legacy. Ports that test definedness rather than presence
+  // silently skip strict mode here, so both cases are pinned.
+  static void rejectsNullOmniAcceptsAbsent() {
+    requireRejectsWith(
+        map("OMNI", null, "fib", map("g", map("set", list(map("in", 1.0, "out", 1.0))))),
+        "malformed OMNI");
+
+    requireRejectsWith(
+        map(
+            "OMNI",
+            map("version", 1.0, "requires", null),
+            "fib",
+            map("g", map("set", list(map("in", 1.0, "out", 1.0))))),
+        "malformed OMNI requires list");
+
+    // A spec with no OMNI key at all is legacy, and must load fine.
+    Runner.makeRunner(map("fib", map("g", map("set", list(map("in", 1.0, "out", 1.0))))), null);
+  }
+
+  static void strictUnknownField() {
+    Object spec =
+        map(
+            "OMNI",
+            map("version", 1.0),
+            "fib",
+            map("g", map("set", list(map("in", 6.0, "matches", map("out", 999.0))))));
+    RunPack R = Runner.makeRunner(spec, null).runner("fib");
+    try {
+      R.runset(R.set("g"), FIBINFO);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "unknown entry field: matches");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for unknown entry field");
+  }
+
+  static void strictMultipleArgSources() {
+    Object spec =
+        map(
+            "OMNI",
+            map("version", 1.0),
+            "fib",
+            map("g", map("set", list(map("in", 5.0, "args", list(5.0), "out", 5.0)))));
+    RunPack R = Runner.makeRunner(spec, null).runner("fib");
+    try {
+      R.runset(R.set("g"), FIB);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "more than one of in, args, ctx");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for multiple arg sources");
+  }
+
+  static void strictErrWithOut() {
+    Object spec =
+        map(
+            "OMNI",
+            map("version", 1.0),
+            "fib",
+            map("g", map("set", list(map("in", -1.0, "err", true, "out", 5.0)))));
+    RunPack R = Runner.makeRunner(spec, null).runner("fib");
+    try {
+      R.runset(R.set("g"), FIB);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "both err and out");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for err with out");
+  }
+
+  // This is the case Fix 1 and the id half of Fix 2 both guard: without
+  // checkset() validating the AUTHORED entries, null-normalisation would
+  // rewrite `id: null` into the NULLMARK sentinel string before this rule
+  // ever saw it, and a malformed strict entry would be accepted.
+  static void strictNullId() {
+    Object spec =
+        map(
+            "OMNI",
+            map("version", 1.0),
+            "fib",
+            map("g", map("set", list(map("in", 1.0, "out", 1.0, "id", null)))));
+    RunPack R = Runner.makeRunner(spec, null).runner("fib");
+    try {
+      R.runset(R.set("g"), FIB);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "entry id is not a string");
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for a null id");
+  }
+
+  static void strictEmptySet() {
+    Object spec =
+        map(
+            "OMNI",
+            map("version", 1.0),
+            "fib",
+            map(
+                "g", map("set", list()),
+                "h", map("set", list(), "empty", true)));
+    RunPack R = Runner.makeRunner(spec, null).runner("fib");
+    try {
+      R.runset(R.set("g"), FIB);
+    } catch (OmniError err) {
+      requirecontains(err.getMessage(), "empty test set");
+      R.runset(R.set("h"), FIB);
+      return;
+    }
+    throw new IllegalStateException("omni: expected OmniError for empty set");
+  }
+
+  static void legacyLenient() {
+    Object spec =
+        map(
+            "fib",
+            map(
+                "g",
+                map(
+                    "set",
+                    list(map("in", 6.0, "matches", map("out", 999.0), "out", 8.0)))));
+    RunPack R = Runner.makeRunner(spec, null).runner("fib");
+    R.runset(R.set("g"), FIB);
   }
 
   static void checkmessage() {

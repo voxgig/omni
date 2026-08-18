@@ -13,12 +13,32 @@ use Scalar::Util qw(blessed reftype);
 
 use Voxgig::Omni::Util qw(
   ABSENT NULLMARK UNDEFMARK EXISTSMARK
-  clone deepequal getpath isabsent islist ismap isnode
+  clone deepequal getpath isabsent isbool islist ismap isnode isnum
   jsonstr pathify stringify walk
 );
 
 use Exporter 'import';
-our @EXPORT_OK = qw(makeRunner loadspec resolvespec matchval match fixjson errify nullmodifier);
+our @EXPORT_OK = qw(
+  makeRunner loadspec resolvespec matchval match fixjson errify nullmodifier
+  SPECVERSION CAPABILITIES
+);
+
+# The newest spec format version this runner understands. A spec with no
+# OMNI block is version 0: the original, lenient format, frozen forever.
+# Version 1 turns on strict entry validation (see checkentry).
+use constant SPECVERSION => 1;
+
+# Capability strings this runner supports beyond the version baseline. A
+# spec's OMNI.requires list is checked against this: an unknown capability
+# refuses the spec loudly at load time, instead of a lagging port silently
+# mis-running it. (Empty today; future format features mint a string here.)
+use constant CAPABILITIES => [];
+
+# The complete set of fields an entry may carry. Under version 1 anything
+# else is an error: an unrecognised key is almost always a typo'd
+# assertion, and a typo'd assertion is a test that silently stopped
+# testing.
+use constant ENTRYFIELDS => [qw(in args ctx out err match client id doc)];
 
 # A test failure (or a malformed spec). Distinct from errors thrown by the
 # subject under test, which are candidates for an `err` expectation.
@@ -54,6 +74,99 @@ sub loadspec {
     }
 
     return $specref;
+}
+
+# Read the spec's format version from its optional top-level OMNI block,
+# and refuse a spec this runner cannot faithfully run: a version newer
+# than SPECVERSION, or a required capability not in CAPABILITIES.
+sub resolveversion {
+    my ($alltests) = @_;
+
+    # JSON null decodes to undef, so `defined` cannot tell a null OMNI
+    # block from an absent one - only `exists` can. A present-but-null
+    # block is malformed, exactly as in canonical.
+    return 0 if !ismap($alltests) || !exists $alltests->{OMNI};
+    my $meta = $alltests->{OMNI};
+
+    # Perl scalars are untyped: a JSON number is told apart from anything
+    # else with isnum, and "integer" is int()-equality rather than typeof.
+    if ( !ismap($meta)
+        || !isnum( $meta->{version} )
+        || 0 != ( $meta->{version} - int( $meta->{version} ) ) )
+    {
+        die Voxgig::Omni::OmniError->new('omni: malformed OMNI version block');
+    }
+
+    my $version = $meta->{version};
+
+    if ( $version < 0 || SPECVERSION() < $version ) {
+        die Voxgig::Omni::OmniError->new( 'omni: unsupported spec version: ' . $version );
+    }
+
+    if ( exists $meta->{requires} ) {
+        my $requires = $meta->{requires};
+        die Voxgig::Omni::OmniError->new('omni: malformed OMNI requires list')
+          if !islist($requires);
+
+        for my $cap (@$requires) {
+            my $isstring = !ref($cap) && !isbool($cap);
+            die Voxgig::Omni::OmniError->new(
+                'omni: spec requires unsupported capability: ' . stringify($cap) )
+              if !$isstring || !grep { $_ eq $cap } @{ CAPABILITIES() };
+        }
+    }
+
+    return $version;
+}
+
+# Strict entry validation, applied when the spec declares version 1 or
+# later. The lenient format converts each of these mistakes into a silent
+# pass or a dead field; here they fail with the entry named.
+sub checkentry {
+    my ( $flags, $index, $entry ) = @_;
+
+    die fail( $flags, $index, $entry, 'entry is not a map' ) if !ismap($entry);
+
+    for my $key ( keys %$entry ) {
+        die fail( $flags, $index, $entry, 'unknown entry field: ' . $key )
+          if !grep { $_ eq $key } @{ ENTRYFIELDS() };
+    }
+
+    my $argsources = grep { exists $entry->{$_} } qw(in args ctx);
+    die fail( $flags, $index, $entry, 'entry has more than one of in, args, ctx' )
+      if 1 < $argsources;
+
+    die fail( $flags, $index, $entry, 'entry has both err and out' )
+      if defined $entry->{err} && exists $entry->{out};
+
+    die fail( $flags, $index, $entry, 'entry id is not a string' )
+      if exists $entry->{id}
+      && ( !defined $entry->{id} || ref( $entry->{id} ) || isbool( $entry->{id} ) );
+
+    return;
+}
+
+# Validate a version-1 group up front, against the AUTHORED entries -
+# null-normalisation would otherwise rewrite an authored null (e.g.
+# id: null) into a sentinel string and hide it from validation. A
+# malformed spec is a spec error, not a test result, so it fails before
+# any subject runs.
+sub checkset {
+    my ( $flags, $testspec, $normalset ) = @_;
+
+    my $origset =
+      ( ismap($testspec) && islist( $testspec->{set} ) ) ? $testspec->{set} : $normalset;
+
+    my $empty = ismap($testspec) ? $testspec->{empty} : undef;
+    my $isemptyok = ( isbool($empty) && $empty ) ? 1 : 0;
+    die Voxgig::Omni::OmniError->new( 'omni: empty test set: ' . $flags->{name} )
+      if 0 == scalar(@$origset) && !$isemptyok;
+
+    for my $index ( 0 .. $#$origset ) {
+        checkentry( $flags, $index, $origset->[$index] );
+    }
+
+    return;
 }
 
 # Find `primary.<name>`, then `<name>`, then the whole spec.
@@ -420,6 +533,7 @@ sub nullmodifier {
 sub makeRunner {
     my ( $specref, $provider ) = @_;
     my $alltests    = loadspec($specref);
+    my $specversion = resolveversion($alltests);
     my $useprovider = $provider || {};
 
     return sub {
@@ -445,6 +559,8 @@ sub makeRunner {
               if !ismap($testspecmap) || !islist( $testspecmap->{set} );
 
             my $testset = $testspecmap->{set};
+
+            checkset( $useflags, $testspec, $testset ) if 1 <= $specversion;
 
             for my $index ( 0 .. $#$testset ) {
                 my $entry = $testset->[$index];

@@ -44,13 +44,31 @@ fibrangesub args = fibrange (head args) (args !! 1)
 fibinfosub :: Subject
 fibinfosub args = fibinfo (head args)
 
+-- The context-group subject: reports what the runner delivered - the
+-- contextify mark and the attached client - as plain data, so the spec
+-- can pin both with an ordinary `out` comparison.
+fibctxsub :: Subject
+fibctxsub args = do
+  let ctx = head args
+  val <- fib (jget ctx "n")
+  pure
+    ( JMap
+        [ ("n", jget ctx "n"),
+          ("val", val),
+          ("mark", jget ctx "mark"),
+          ("hasclient", Bool (not (isnone (jget ctx "client"))))
+        ]
+    )
+
 -- The provider hosts the system under test. `shift` offsets the Fibonacci
 -- index, so that a client-specific subject is observably different.
+-- `contextify` marks the map, so the context group can prove the hook ran.
 fibprovider :: Double -> Provider
 fibprovider shift =
   emptyProvider
     { providerSubject = Just resolve,
-      providerClient = Just client
+      providerClient = Just client,
+      providerContextify = Just (\val -> jset val "mark" (Str "CTX"))
     }
   where
     resolve name = case name of
@@ -220,6 +238,165 @@ checkmessage = do
         )
         ["fib[1] (x#2)", "expected: 42", "actual:   1"]
 
+-- ---- version-1 validation (negative tests) ----------------------------
+--
+-- Version-1 validation raises either at load time (resolveversion, before
+-- any group runs) or before any subject runs (checkset/checkentry) - both
+-- paths raise an OmniError whose message names the reason.
+
+requiretext :: String -> String -> IO ()
+requiretext want message =
+  if want `isInfixOf` message
+    then pure ()
+    else throwIO (OmniError ("omni: message missing [" ++ want ++ "]: " ++ message))
+
+-- Expect makeRunnerSpec itself to refuse a malformed spec.
+expectloadfail :: String -> Json -> IO ()
+expectloadfail want spec = do
+  outcome <- try (makeRunnerSpec spec emptyProvider "fib") :: IO (Either SomeException RunPack)
+  case outcome of
+    Right _ -> throwIO (OmniError ("omni: expected makeRunnerSpec to reject: " ++ want))
+    Left err -> requiretext want (errmessage err)
+
+-- Expect running group `setname` of `spec` to fail with a message
+-- containing `want`.
+expectrunfail :: String -> Json -> String -> Subject -> IO ()
+expectrunfail want spec setname subject = do
+  pack <- makeRunnerSpec spec emptyProvider "fib"
+  outcome <- try (runset pack (packSet pack setname) (Just subject)) :: IO (Either SomeException ())
+  case outcome of
+    Right () -> throwIO (OmniError ("omni: expected a failure for set: " ++ setname))
+    Left err -> requiretext want (errmessage err)
+
+-- A version-1 spec whose fib.g group is the given entry set - the shape
+-- every strict-validation negative test shares.
+strictspec :: [Json] -> Json
+strictspec entries =
+  JMap
+    [ ("OMNI", JMap [("version", Num 1)]),
+      ("fib", JMap [("g", JMap [("set", JList entries)])])
+    ]
+
+rejectsUnsupportedVersion :: IO ()
+rejectsUnsupportedVersion =
+  expectloadfail
+    "unsupported spec version"
+    (JMap [("OMNI", JMap [("version", Num 99)]), ("fib", JMap [("g", JMap [("set", JList [])])])])
+
+rejectsUnknownCapability :: IO ()
+rejectsUnknownCapability =
+  expectloadfail
+    "unsupported capability"
+    ( JMap
+        [ ("OMNI", JMap [("version", Num 1), ("requires", JList [Str "nosuchfeature"])]),
+          ("fib", JMap [("g", JMap [("set", JList [])])])
+        ]
+    )
+
+rejectsMalformedVersionBlock :: IO ()
+rejectsMalformedVersionBlock =
+  expectloadfail
+    "malformed OMNI"
+    (JMap [("OMNI", JMap [("version", Str "one")]), ("fib", JMap [("g", JMap [("set", JList [])])])])
+
+-- A present-but-null OMNI block is malformed; only a genuinely absent key
+-- is legacy. Ports that test definedness rather than presence silently
+-- skip strict mode here, so both cases are pinned.
+rejectsNullOmniAcceptsAbsent :: IO ()
+rejectsNullOmniAcceptsAbsent = do
+  expectloadfail
+    "malformed OMNI"
+    ( JMap
+        [ ("OMNI", Null),
+          ("fib", JMap [("g", JMap [("set", JList [JMap [("in", Num 1), ("out", Num 1)]])])])
+        ]
+    )
+  expectloadfail
+    "malformed OMNI requires list"
+    ( JMap
+        [ ("OMNI", JMap [("version", Num 1), ("requires", Null)]),
+          ("fib", JMap [("g", JMap [("set", JList [JMap [("in", Num 1), ("out", Num 1)]])])])
+        ]
+    )
+  _ <-
+    makeRunnerSpec
+      (JMap [("fib", JMap [("g", JMap [("set", JList [JMap [("in", Num 1), ("out", Num 1)]])])])])
+      emptyProvider
+      "fib"
+  pure ()
+
+strictUnknownEntryField :: IO ()
+strictUnknownEntryField =
+  expectrunfail
+    "unknown entry field: matches"
+    (strictspec [JMap [("in", Num 6), ("matches", JMap [("out", Num 999)])]])
+    "g"
+    fibinfosub
+
+strictMultipleArgSources :: IO ()
+strictMultipleArgSources =
+  expectrunfail
+    "more than one of in, args, ctx"
+    (strictspec [JMap [("in", Num 5), ("args", JList [Num 5]), ("out", Num 5)]])
+    "g"
+    fibsub
+
+strictErrWithOut :: IO ()
+strictErrWithOut =
+  expectrunfail
+    "both err and out"
+    (strictspec [JMap [("in", Num (-1)), ("err", Bool True), ("out", Num 5)]])
+    "g"
+    fibsub
+
+-- Catches Fix 1 (validation on the AUTHORED group, not the
+-- null-normalised copy) and the id half of Fix 2 (presence, not
+-- definedness) together: under default flags, a normalised `id: null`
+-- becomes the string "__NULL__" and would otherwise slip past.
+strictNullId :: IO ()
+strictNullId =
+  expectrunfail
+    "entry id is not a string"
+    (strictspec [JMap [("in", Num 1), ("out", Num 1), ("id", Null)]])
+    "g"
+    fibsub
+
+strictEmptySet :: IO ()
+strictEmptySet = do
+  let spec =
+        JMap
+          [ ("OMNI", JMap [("version", Num 1)]),
+            ( "fib",
+              JMap
+                [ ("g", JMap [("set", JList [])]),
+                  ("h", JMap [("set", JList []), ("empty", Bool True)])
+                ]
+            )
+          ]
+  expectrunfail "empty test set" spec "g" fibsub
+  pack <- makeRunnerSpec spec emptyProvider "fib"
+  runset pack (packSet pack "h") (Just fibsub)
+
+legacySpecStaysLenient :: IO ()
+legacySpecStaysLenient = do
+  let spec =
+        JMap
+          [ ( "fib",
+              JMap
+                [ ( "g",
+                    JMap
+                      [ ( "set",
+                          JList
+                            [JMap [("in", Num 6), ("matches", JMap [("out", Num 999)]), ("out", Num 8)]]
+                        )
+                      ]
+                  )
+                ]
+            )
+          ]
+  pack <- makeRunnerSpec spec emptyProvider "fib"
+  runset pack (packSet pack "g") (Just fibsub)
+
 main :: IO ()
 main = do
   args <- getArgs
@@ -244,6 +421,7 @@ main = do
   run "match" (runset pack (packSet pack "match") (Just fibsub))
   run "matchinfo" (runset pack (packSet pack "matchinfo") (Just fibinfosub))
   run "client" (runset pack (packSet pack "client") (Just fibsub))
+  run "context" (runset pack (packSet pack "context") (Just fibctxsub))
 
   run "detects wrong result" (expectfail "wrongout" fibsub)
   run "detects missing error" (expectfail "wrongerr" fibsub)
@@ -253,6 +431,18 @@ main = do
   run "__UNDEF__ does not match a present null" (expectfail "undefonnull" fibinfosub)
   run "__NULL__ does not match an absent key" (expectfail "nullonabsent" fibinfosub)
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" fibinfosub)
+
+  run "rejects an unsupported spec version" rejectsUnsupportedVersion
+  run "rejects an unknown required capability" rejectsUnknownCapability
+  run "rejects a malformed version block" rejectsMalformedVersionBlock
+  run "rejects a null OMNI block, but accepts an absent one" rejectsNullOmniAcceptsAbsent
+  run "strict: an unknown entry field fails instead of passing vacuously" strictUnknownEntryField
+  run "strict: more than one of in, args, ctx fails" strictMultipleArgSources
+  run "strict: err together with out fails" strictErrWithOut
+  run "strict: a null id fails even under null-normalisation" strictNullId
+  run "strict: an empty set fails unless marked empty" strictEmptySet
+  run "a legacy spec (no OMNI block) stays lenient" legacySpecStaysLenient
+
   run "reports entry index and id" checkmessage
 
   passed <- readIORef passcount

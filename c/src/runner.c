@@ -5,6 +5,7 @@
  */
 
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@ struct omni_runner {
   omni_pool *pool;
   omni_json *alltests;
   omni_provider *provider;
+  int specversion;
 };
 
 struct omni_runpack {
@@ -23,6 +25,7 @@ struct omni_runpack {
   char *name;
   omni_provider *provider;
   omni_subject *subject;
+  int specversion;
 
   char **clientnames;
   omni_provider **clients;
@@ -128,6 +131,184 @@ static char *omni_fail(omni_pool *pool, omni_flags flags, size_t index, const om
                   omni_stringify(pool, omni_entrysummary(pool, entry)), NULL);
 
   return msg;
+}
+
+/* ---- format version (DOCS.md 2.7) ----------------------------------- */
+
+const char *const OMNI_CAPABILITIES[] = {NULL};
+
+static int omni_capability_known(const char *cap) {
+  size_t index;
+  for (index = 0; NULL != OMNI_CAPABILITIES[index]; index++) {
+    if (0 == strcmp(OMNI_CAPABILITIES[index], cap)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* Read the spec's format version from its optional top-level OMNI block,
+ * and refuse a spec this runner cannot faithfully run: a version newer
+ * than OMNI_SPECVERSION, or a required capability not in
+ * OMNI_CAPABILITIES. Returns the version (0 with no OMNI block) on
+ * success; returns -1 and sets *errout on failure. */
+static int omni_resolveversion(omni_pool *pool, const omni_json *alltests, char **errout) {
+  omni_json *meta = omni_map_get(alltests, "OMNI");
+  omni_json *versionval;
+  omni_json *requires;
+  double rawversion;
+  size_t index;
+
+  if (omni_isabsent(meta)) {
+    return 0;
+  }
+
+  if (!omni_ismap(meta)) {
+    *errout = omni_pool_strdup(pool, "omni: malformed OMNI version block");
+    return -1;
+  }
+
+  versionval = omni_map_get(meta, "version");
+  if (!omni_isnum(versionval)) {
+    *errout = omni_pool_strdup(pool, "omni: malformed OMNI version block");
+    return -1;
+  }
+
+  rawversion = omni_numval(versionval);
+  if (rawversion != floor(rawversion)) {
+    *errout = omni_pool_strdup(pool, "omni: malformed OMNI version block");
+    return -1;
+  }
+
+  if (0 > rawversion || OMNI_SPECVERSION < rawversion) {
+    *errout = omni_join(pool, "omni: unsupported spec version: ", omni_numstr(pool, rawversion),
+                        NULL, NULL);
+    return -1;
+  }
+
+  requires = omni_map_get(meta, "requires");
+  if (!omni_isabsent(requires)) {
+    if (!omni_islist(requires)) {
+      *errout = omni_pool_strdup(pool, "omni: malformed OMNI requires list");
+      return -1;
+    }
+
+    for (index = 0; index < requires->listlen; index++) {
+      omni_json *cap = requires->list[index];
+      const char *capstr = omni_strval(cap);
+
+      if (NULL == capstr || !omni_capability_known(capstr)) {
+        *errout = omni_join(pool, "omni: spec requires unsupported capability: ",
+                            omni_stringify(pool, cap), NULL, NULL);
+        return -1;
+      }
+    }
+  }
+
+  return (int)rawversion;
+}
+
+/* The complete set of fields an entry may carry. Under version 1 anything
+ * else is an error: an unrecognised key is almost always a typo'd
+ * assertion, and a typo'd assertion is a test that silently stopped
+ * testing. */
+static const char *const omni_entryfields[] = {
+    "in", "args", "ctx", "out", "err", "match", "client", "id", "doc", NULL};
+
+static int omni_entryfield_known(const char *key) {
+  size_t index;
+  for (index = 0; NULL != omni_entryfields[index]; index++) {
+    if (0 == strcmp(omni_entryfields[index], key)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* Strict entry validation, applied when the spec declares version 1 or
+ * later. The lenient format converts each of these mistakes into a
+ * silent pass or a dead field; here they fail with the entry named. */
+static int omni_checkentry(omni_pool *pool, omni_flags flags, size_t index, const omni_json *entry,
+                           char **errout) {
+  size_t at;
+  int argsources = 0;
+  omni_json *entryerr;
+  omni_json *entryid;
+
+  if (!omni_ismap(entry)) {
+    *errout = omni_fail(pool, flags, index, entry, "entry is not a map", NULL, NULL);
+    return 1;
+  }
+
+  for (at = 0; at < entry->maplen; at++) {
+    if (!omni_entryfield_known(entry->keys[at])) {
+      *errout = omni_fail(
+          pool, flags, index, entry,
+          omni_join(pool, "unknown entry field: ", entry->keys[at], NULL, NULL), NULL, NULL);
+      return 1;
+    }
+  }
+
+  if (omni_map_has(entry, "in")) {
+    argsources++;
+  }
+  if (omni_map_has(entry, "args")) {
+    argsources++;
+  }
+  if (omni_map_has(entry, "ctx")) {
+    argsources++;
+  }
+  if (1 < argsources) {
+    *errout = omni_fail(pool, flags, index, entry, "entry has more than one of in, args, ctx",
+                        NULL, NULL);
+    return 1;
+  }
+
+  entryerr = omni_map_get(entry, "err");
+  if (!omni_isnone(entryerr) && omni_map_has(entry, "out")) {
+    *errout = omni_fail(pool, flags, index, entry, "entry has both err and out", NULL, NULL);
+    return 1;
+  }
+
+  /* Presence, not definedness: a genuinely absent id is fine (the runner
+   * assigns none), but a present `id: null` is malformed - it must fail
+   * here rather than being silently accepted as "no id". */
+  entryid = omni_map_get(entry, "id");
+  if (!omni_isabsent(entryid) && !omni_isstr(entryid)) {
+    *errout = omni_fail(pool, flags, index, entry, "entry id is not a string", NULL, NULL);
+    return 1;
+  }
+
+  return 0;
+}
+
+/* Validate a version-1 group up front, against the AUTHORED entries (the
+ * un-normalised `testspec`, not the fixjson-normalised `normalset`) -
+ * otherwise null-normalisation would rewrite an authored null (e.g.
+ * id: null) into the NULLMARK sentinel string and hide it from
+ * validation entirely. A malformed spec is a spec error, not a test
+ * result, so it is checked in full before any subject runs. Absorbs the
+ * empty-set check too, since that also belongs to the authored group. */
+static int omni_checkset(omni_pool *pool, omni_flags flags, const omni_json *testspec,
+                         omni_json *normalset, char **errout) {
+  omni_json *origsetraw = omni_map_get(testspec, "set");
+  omni_json *origset = omni_islist(origsetraw) ? origsetraw : normalset;
+  omni_json *emptyflag = omni_map_get(testspec, "empty");
+  int marked = !omni_isabsent(emptyflag) && OMNI_BOOL == emptyflag->type && emptyflag->boolval;
+  size_t index;
+
+  if (0 == origset->listlen && !marked) {
+    *errout = omni_join(pool, "omni: empty test set: ", flags.name, NULL, NULL);
+    return 1;
+  }
+
+  for (index = 0; index < origset->listlen; index++) {
+    if (0 != omni_checkentry(pool, flags, index, origset->list[index], errout)) {
+      return 1;
+    }
+  }
+
+  return 0;
 }
 
 /* ---- spec resolution ----------------------------------------------- */
@@ -506,6 +687,7 @@ omni_runner *omni_make_runner(omni_pool *pool, const char *path, omni_json *spec
                               omni_provider *provider, char **errout) {
   omni_runner *runner;
   omni_json *alltests = spec;
+  int specversion;
 
   if (NULL != errout) {
     *errout = NULL;
@@ -525,10 +707,18 @@ omni_runner *omni_make_runner(omni_pool *pool, const char *path, omni_json *spec
     }
   }
 
+  /* Fail fast: a spec this runner cannot faithfully run is refused before
+   * any test group runs, not partway through the first one. */
+  specversion = omni_resolveversion(pool, alltests, errout);
+  if (0 > specversion) {
+    return NULL;
+  }
+
   runner = (omni_runner *)omni_pool_alloc(pool, sizeof(omni_runner));
   runner->pool = pool;
   runner->alltests = alltests;
   runner->provider = provider;
+  runner->specversion = specversion;
 
   return runner;
 }
@@ -550,6 +740,7 @@ omni_runpack *omni_runner_run(omni_runner *runner, const char *name, omni_json *
   pack->spec = omni_resolvespec(name, runner->alltests);
   pack->provider = runner->provider;
   pack->subject = omni_resolvesubject(name, runner->provider);
+  pack->specversion = runner->specversion;
 
   /* Build the named clients declared by the spec's DEF.client block. A
    * spec may define clients that a given test run never references. */
@@ -618,21 +809,25 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
     return 1;
   }
 
+  /* Validate the AUTHORED group up front, against testspec (pre-fixjson),
+   * not testset (post-fixjson) - see omni_checkset. Absorbs the
+   * empty-set check: a vacuously green group proves nothing, so version
+   * 1 makes an empty set an error unless the group is marked empty. */
+  if (1 <= pack->specversion) {
+    if (0 != omni_checkset(pool, flags, testspec, testset, errout)) {
+      return 1;
+    }
+  }
+
   for (index = 0; index < testset->listlen; index++) {
     omni_json *entry = testset->list[index];
     omni_json *args = omni_list(pool);
     omni_subject *entrysubject = usesubject;
+    omni_provider *entryprovider = pack->provider;
     omni_json *clientname;
     omni_json *rawargs;
     omni_result result;
     size_t at;
-
-    if (!omni_ismap(entry)) {
-      char head[64];
-      snprintf(head, sizeof(head), "[%lu]: entry is not a map", (unsigned long)index);
-      *errout = omni_join(pool, "omni: ", flags.name, head, NULL);
-      return 1;
-    }
 
     /* An entry with no `out` expects a null (or absent) result. */
     if (flags.null && omni_isnone(omni_map_get(entry, "out"))) {
@@ -654,6 +849,7 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
         return 1;
       }
 
+      entryprovider = client;
       {
         omni_subject *clientsubject = omni_resolvesubject(pack->name, client);
         if (NULL != clientsubject) {
@@ -682,6 +878,11 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
       }
       args->list[0] = first;
       omni_map_set(entry, "ctx", first);
+
+      /* So a subject can reach the client it was invoked through. */
+      if (omni_ismap(first)) {
+        first->client = entryprovider;
+      }
     }
 
     result = entrysubject->call(entrysubject, args->list, args->listlen);

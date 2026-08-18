@@ -36,6 +36,24 @@ case class Provider(
     inject: Option[(Json, Json) => Json] = None,
 )
 
+// The newest spec format version this runner understands. A spec with no
+// OMNI block is version 0: the original, lenient format, frozen forever.
+// Version 1 turns on strict entry validation (see checkentry).
+val SPECVERSION: Int = 1
+
+// Capability strings this runner supports beyond the version baseline. A
+// spec's OMNI.requires list is checked against this: an unknown capability
+// refuses the spec loudly at load time, instead of a lagging port silently
+// mis-running it. (Empty today; future format features mint a string here.)
+val CAPABILITIES: List[String] = List.empty[String]
+
+// The complete set of fields an entry may carry. Under version 1 anything
+// else is an error: an unrecognised key is almost always a typo'd
+// assertion, and a typo'd assertion is a test that silently stopped
+// testing.
+private val ENTRYFIELDS =
+  List("in", "args", "ctx", "out", "err", "match", "client", "id", "doc")
+
 object Runner:
 
   /** Load a spec: a path to a JSON file. */
@@ -43,6 +61,37 @@ object Runner:
     val file = Paths.get(path)
     if !Files.exists(file) then throw OmniError(s"omni: cannot read spec: $path")
     Json.parse(Files.readString(file))
+
+  // Read the spec's format version from its optional top-level OMNI block,
+  // and refuse a spec this runner cannot faithfully run: a version newer
+  // than SPECVERSION, or a required capability not in CAPABILITIES. A
+  // present-but-null OMNI block is malformed - only a genuinely absent key
+  // means legacy version 0.
+  def resolveversion(alltests: Json): Int =
+    if !alltests.has("OMNI") then return 0
+
+    val meta = alltests.get("OMNI")
+    val version = meta.get("version").asnum
+
+    if !meta.ismap || version.isEmpty || version.get != math.floor(version.get) then
+      throw OmniError("omni: malformed OMNI version block")
+
+    val versionval = version.get
+
+    if versionval < 0 || SPECVERSION < versionval then
+      throw OmniError(s"omni: unsupported spec version: ${numstr(versionval)}")
+
+    if meta.has("requires") then
+      val requires = meta.get("requires").aslist.getOrElse {
+        throw OmniError("omni: malformed OMNI requires list")
+      }
+      for cap <- requires do
+        cap.asstr match
+          case Some(text) if CAPABILITIES.contains(text) => ()
+          case _ =>
+            throw OmniError(s"omni: spec requires unsupported capability: ${stringify(cap)}")
+
+    versionval.toInt
 
   /** Find `primary.<name>`, then `<name>`, then the whole spec. */
   def resolvespec(name: String, alltests: Json): Json =
@@ -108,6 +157,10 @@ object Runner:
 /** A loaded spec plus its provider. */
 class RunnerPack(alltests: Json, provider: Provider):
 
+  // Resolved once, at construction (i.e. inside makeRunner) - fail fast on
+  // a spec version this runner cannot faithfully run, before any set runs.
+  private val specversion: Int = Runner.resolveversion(alltests)
+
   /** Resolve one named section of the spec. */
   def runner(name: String, store: Json = Json.Absent): RunPack =
     val spec = Runner.resolvespec(name, alltests)
@@ -129,7 +182,7 @@ class RunnerPack(alltests: Json, provider: Provider):
 
     val subject = if name.isEmpty then None else provider.subject.flatMap(_(name))
 
-    RunPack(spec, subject, provider, clients, name)
+    RunPack(spec, subject, provider, clients, name, specversion)
 
 /** What a runner returns for one named spec section. */
 class RunPack(
@@ -138,6 +191,7 @@ class RunPack(
     val client: Provider,
     clients: Map[String, Provider],
     name: String,
+    specversion: Int,
 ):
 
   /** A named group of the resolved spec. */
@@ -160,6 +214,12 @@ class RunPack(
       throw OmniError(s"omni: test spec has no set: $label")
     }
 
+    // Validated against the AUTHORED group (testspec, not testspecmap) -
+    // null-normalisation above would otherwise hide an authored null from
+    // checkentry. A malformed spec fails here, before any subject runs.
+    if 1 <= specversion then
+      checkset(label, testspec, testset)
+
     for (rawentry, index) <- testset.zipWithIndex do
       if !rawentry.ismap then
         throw OmniError(s"omni: $label[$index]: entry is not a map")
@@ -171,18 +231,20 @@ class RunPack(
         entry = entry.set("out", Json.str(NULLMARK))
 
       var entrysubject = usesubject
+      var entryclient = client
 
       entry.get("client").asstr.foreach { clientname =>
         val found = clients.getOrElse(
           clientname,
           throw OmniError(s"omni: unknown client: $clientname", entry),
         )
+        entryclient = found
         found.subject.flatMap(_(name)).foreach { clientsubject =>
           entrysubject = clientsubject
         }
       }
 
-      val (args, withctx) = resolveargs(entry)
+      val (args, withctx) = resolveargs(entry, entryclient)
       entry = withctx
 
       try
@@ -193,8 +255,10 @@ class RunPack(
         case omnierr: OmniError => throw omnierr
         case NonFatal(err)      => handleerror(label, index, entry, err)
 
-  // Build the argument list: `ctx`, `args`, or `in`.
-  private def resolveargs(entry: Json): (List[Json], Json) =
+  // Build the argument list: `ctx`, `args`, or `in`. `entryclient` is the
+  // provider resolved for this entry (the root provider, or its own
+  // `client:` override) - always set by the time this runs.
+  private def resolveargs(entry: Json, entryclient: Provider): (List[Json], Json) =
     val hasctx = entry.has("ctx")
     val hasargs = entry.has("args")
 
@@ -208,10 +272,58 @@ class RunPack(
     if (hasctx || hasargs) && args.nonEmpty && args.head.ismap then
       var first = args.head
       client.contextify.foreach { contextify => first = contextify(first) }
+
+      // The resolved client is a live Provider (closures over the system
+      // under test), and this port's Json is a closed value model with no
+      // host-object variant to hold one - so canonical's
+      // `first.client = testpack.client` becomes presence, not identity:
+      // enough for a subject to prove the runner attached a client at
+      // all. `entryclient` is always set by the caller, so the marker is
+      // unconditional once we get here.
+      if first.ismap then first = first.set("client", Json.Bool(true))
+
       args = first :: args.tail
       out = out.set("ctx", first)
 
     (args, out)
+
+  // Validate a version-1 group up front, against the AUTHORED entries -
+  // null-normalisation would otherwise rewrite an authored null (e.g.
+  // id: null) into a sentinel string and hide it from validation. A
+  // malformed spec is a spec error, not a test result, so it fails before
+  // any subject runs.
+  private def checkset(label: String, testspec: Json, normalset: List[Json]): Unit =
+    val origset = testspec.get("set").aslist.getOrElse(normalset)
+
+    val markedempty = testspec.get("empty") match
+      case Json.Bool(true) => true
+      case _               => false
+
+    if origset.isEmpty && !markedempty then
+      throw OmniError(s"omni: empty test set: $label")
+
+    for (entry, index) <- origset.zipWithIndex do
+      checkentry(label, index, entry)
+
+  // Strict entry validation, applied when the spec declares version 1 or
+  // later. The lenient format converts each of these mistakes into a
+  // silent pass or a dead field; here they fail with the entry named.
+  private def checkentry(label: String, index: Int, entry: Json): Unit =
+    if !entry.ismap then throw fail(label, index, entry, "entry is not a map")
+
+    for key <- entry.asmap.get.keys do
+      if !ENTRYFIELDS.contains(key) then
+        throw fail(label, index, entry, s"unknown entry field: $key")
+
+    val argsources = List("in", "args", "ctx").count(entry.has)
+    if 1 < argsources then
+      throw fail(label, index, entry, "entry has more than one of in, args, ctx")
+
+    if !entry.get("err").isnone && entry.has("out") then
+      throw fail(label, index, entry, "entry has both err and out")
+
+    if entry.has("id") && entry.get("id").asstr.isEmpty then
+      throw fail(label, index, entry, "entry id is not a string")
 
   private def checkresult(
       label: String,

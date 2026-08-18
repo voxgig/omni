@@ -112,7 +112,8 @@ def deepequal(a: Any, b: Any) -> bool:
         return a is b
 
     if isnum(a) and isnum(b):
-        return a == b
+        # NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+        return a == b or (a != a and b != b)
 
     if a is None or b is None or a is ABSENT or b is ABSENT:
         return a is b

@@ -17,6 +17,13 @@ public indirect enum Json {
   case str(String)
   case list([Json])
   case map([String: Json])
+  // A live Provider reference, attached to a contextified map argument by
+  // the runner (see RunPack.resolveargs) so a subject can reach the
+  // client that owns it - the Swift analogue of canonical's
+  // `first.client = testpack.client`. The JSON parser never produces this
+  // case: it exists only for values the runner injects at call time, and
+  // is never part of a spec file.
+  case provider(Provider)
 
   public var ismap: Bool {
     if case .map = self { return true }
@@ -69,6 +76,13 @@ public indirect enum Json {
 
   public var asmap: [String: Json]? {
     if case .map(let val) = self { return val }
+    return nil
+  }
+
+  /// The attached Provider, for a value set by `resolveargs`. `nil` for
+  /// every value a spec can actually author.
+  public var asprovider: Provider? {
+    if case .provider(let val) = self { return val }
     return nil
   }
 

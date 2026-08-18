@@ -10,6 +10,23 @@
   (:import [java.io File]
            [java.util.regex Pattern PatternSyntaxException]))
 
+;; The newest spec format version this runner understands. A spec with no
+;; OMNI block is version 0: the original, lenient format, frozen forever.
+;; Version 1 turns on strict entry validation (see checkentry).
+(def SPECVERSION 1)
+
+;; Capability strings this runner supports beyond the version baseline. A
+;; spec's OMNI.requires list is checked against this: an unknown capability
+;; refuses the spec loudly at load time, instead of a lagging port silently
+;; mis-running it. (Empty today; future format features mint a string here.)
+(def CAPABILITIES [])
+
+;; The complete set of fields an entry may carry. Under version 1 anything
+;; else is an error: an unrecognised key is almost always a typo'd
+;; assertion, and a typo'd assertion is a test that silently stopped
+;; testing.
+(def ^:private ENTRYFIELDS #{"in" "args" "ctx" "out" "err" "match" "client" "id" "doc"})
+
 ;; A test failure (or a malformed spec). Distinct from errors thrown by the
 ;; subject under test, which are candidates for an `err` expectation.
 (defn omni-error
@@ -25,6 +42,33 @@
   (when-not (.exists (File. ^String path))
     (throw (omni-error (str "omni: cannot read spec: " path))))
   (json/parse (slurp path)))
+
+;; Read the spec's format version from its optional top-level OMNI block,
+;; and refuse a spec this runner cannot faithfully run: a version newer
+;; than SPECVERSION, or a required capability not in CAPABILITIES. A
+;; genuinely absent OMNI key is legacy (version 0); a present-but-null
+;; block is malformed - presence, not nil-ness, decides.
+(defn- resolveversion [alltests]
+  (if-not (and (u/ismap alltests) (contains? alltests "OMNI"))
+    0
+    (let [meta (get alltests "OMNI")
+          version (when (u/ismap meta) (get meta "version"))]
+
+      (when-not (and (u/ismap meta) (u/isnum version) (== version (Math/rint (double version))))
+        (throw (omni-error "omni: malformed OMNI version block")))
+
+      (when (or (< version 0) (< SPECVERSION version))
+        (throw (omni-error (str "omni: unsupported spec version: " (u/numstr version)))))
+
+      (when (contains? meta "requires")
+        (let [requires (get meta "requires")]
+          (when-not (u/islist requires)
+            (throw (omni-error "omni: malformed OMNI requires list")))
+          (doseq [cap requires]
+            (when-not (and (string? cap) (contains? (set CAPABILITIES) cap))
+              (throw (omni-error (str "omni: spec requires unsupported capability: " (u/stringify cap))))))))
+
+      (long version))))
 
 ;; Find `primary.<name>`, then `<name>`, then the whole spec.
 (defn resolvespec [name alltests]
@@ -82,12 +126,16 @@
     (string? val) (string/replace val u/NULLMARK "null")
     :else val))
 
-;; The spec-defined part of an entry (drop runner bookkeeping).
+;; The spec-defined part of an entry (drop runner bookkeeping). A non-map
+;; entry (e.g. checkentry's "entry is not a map" failure) has nothing to
+;; strip, so it passes through unchanged.
 (defn- entrysummary [entry]
-  (reduce-kv (fn [out key value]
-               (if (contains? #{"res" "thrown" "ctx"} key) out (assoc out key value)))
-             (array-map)
-             entry))
+  (if-not (u/ismap entry)
+    entry
+    (reduce-kv (fn [out key value]
+                 (if (contains? #{"res" "thrown" "ctx"} key) out (assoc out key value)))
+               (array-map)
+               entry)))
 
 ;; The label of one entry, for failure messages.
 (defn- entryref [label index entry]
@@ -102,6 +150,44 @@
                   (if (some? actual) (str "\n  actual:   " actual) "")
                   "\n  entry:    " (u/stringify (entrysummary entry)))]
      (omni-error msg entry))))
+
+;; Strict entry validation, applied when the spec declares version 1 or
+;; later. The lenient format converts each of these mistakes into a silent
+;; pass or a dead field; here they fail with the entry named.
+(defn- checkentry [label index entry]
+  (when-not (u/ismap entry)
+    (throw (fail label index entry "entry is not a map")))
+
+  (doseq [key (keys entry)]
+    (when-not (contains? ENTRYFIELDS key)
+      (throw (fail label index entry (str "unknown entry field: " key)))))
+
+  (let [argsources (count (filter #(contains? entry %) ["in" "args" "ctx"]))]
+    (when (< 1 argsources)
+      (throw (fail label index entry "entry has more than one of in, args, ctx"))))
+
+  (when (and (some? (get entry "err")) (contains? entry "out"))
+    (throw (fail label index entry "entry has both err and out")))
+
+  (when (and (contains? entry "id") (not (string? (get entry "id"))))
+    (throw (fail label index entry "entry id is not a string"))))
+
+;; Validate a version-1 group up front, against the AUTHORED entries -
+;; null-normalisation would otherwise rewrite an authored null (e.g.
+;; id: null) into a sentinel string and hide it from validation. A
+;; malformed spec is a spec error, not a test result, so it fails before
+;; any subject runs.
+(defn- checkset [label testspec normalset]
+  (let [origset (if (and (u/ismap testspec) (u/islist (get testspec "set")))
+                  (get testspec "set")
+                  normalset)]
+
+    (when (and (zero? (count origset))
+               (not (true? (when (u/ismap testspec) (get testspec "empty")))))
+      (throw (omni-error (str "omni: empty test set: " label))))
+
+    (doseq [[index entry] (map-indexed vector origset)]
+      (checkentry label index entry))))
 
 ;; Check that every leaf of `check` is present, and matches, in `base`.
 (defn match
@@ -192,8 +278,10 @@
                      (u/stringify entryerr) (errmessage err))))
       (throw (fail label index entry "unexpected error" nil (errmessage err))))))
 
-;; Build the argument list: `ctx`, `args`, or `in`.
-(defn- resolveargs [entry provider]
+;; Build the argument list: `ctx`, `args`, or `in`. A leading map argument
+;; is passed through `provider.contextify` and has the active client
+;; attached under `client`, mirroring canonical resolveargs.
+(defn- resolveargs [entry provider client]
   (let [hasctx (contains? entry "ctx")
         hasargs (contains? entry "args")
         args (cond
@@ -203,12 +291,16 @@
 
     (if (and (or hasctx hasargs) (seq args) (u/ismap (first args)))
       (let [contextify (:contextify provider)
-            first-arg (if contextify (contextify (first args)) (first args))]
+            first-arg (if contextify (contextify (first args)) (first args))
+            ;; contextify may hand back something other than a map; only a
+            ;; map gets the client attached, mirroring canonical's second
+            ;; ismap(first) guard.
+            first-arg (if (u/ismap first-arg) (assoc first-arg "client" client) first-arg)]
         [(assoc args 0 first-arg) (assoc entry "ctx" first-arg)])
       [args entry])))
 
 (defn- run-set-flags [runpack testspec flags testsubject]
-  (let [{:keys [spec subject provider clients name]} runpack
+  (let [{:keys [spec subject provider clients name specversion]} runpack
         donull (if (contains? flags :null) (boolean (:null flags)) true)
         label (or (:name flags) (if (string/blank? name) "set" name))
         usesubject (or testsubject subject)]
@@ -221,6 +313,9 @@
 
       (when-not (u/islist testset)
         (throw (omni-error (str "omni: test spec has no set: " label))))
+
+      (when (<= 1 specversion)
+        (checkset label testspec testset))
 
       (doseq [[index rawentry] (map-indexed vector testset)]
         (when-not (u/ismap rawentry)
@@ -239,7 +334,7 @@
               entrysubject (or (when client ((or (:subject client) (constantly nil)) name))
                                usesubject)
 
-              [args withctx] (resolveargs entry provider)]
+              [args withctx] (resolveargs entry provider (or client provider))]
 
           (try
             (let [res (fixjson (entrysubject args) donull)
@@ -251,9 +346,9 @@
                 (handleerror label index withctx err)))))))))
 
 ;; What a runner returns for one named spec section.
-(defn- make-runpack [spec subject provider clients name]
+(defn- make-runpack [spec subject provider clients name specversion]
   (let [runpack {:spec spec :subject subject :provider provider
-                 :clients clients :name name :client provider}]
+                 :clients clients :name name :client provider :specversion specversion}]
     (assoc runpack
            :set (fn [setname] (get spec setname))
            :runsetflags (fn [testspec flags testsubject]
@@ -265,7 +360,11 @@
 (defn make-runner
   ([specref] (make-runner specref {}))
   ([specref provider]
-   (let [alltests (if (string? specref) (loadspec specref) specref)]
+   ;; Resolved once, right after the spec is loaded, so a bad version or an
+   ;; unsupported capability fails fast - before any runner name is even
+   ;; resolved, let alone any test run.
+   (let [alltests (if (string? specref) (loadspec specref) specref)
+         specversion (resolveversion alltests)]
      (fn runner
        ([name] (runner name nil))
        ([name store]
@@ -289,4 +388,4 @@
 
               subject (when-let [resolve-subject (:subject provider)] (resolve-subject name))]
 
-          (make-runpack spec subject provider clients name)))))))
+          (make-runpack spec subject provider clients name specversion)))))))

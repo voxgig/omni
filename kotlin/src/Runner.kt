@@ -8,6 +8,7 @@ package voxgig.omni
 import java.io.File
 import java.util.regex.Pattern
 import java.util.regex.PatternSyntaxException
+import kotlin.math.truncate
 
 /** The function under test. Arguments arrive as JSON values. */
 typealias Subject = (List<Json>) -> Json
@@ -32,6 +33,23 @@ class Provider(
     val contextify: ((Json) -> Json)? = null,
     val inject: ((Json, Json) -> Json)? = null,
 )
+
+// The newest spec format version this runner understands. A spec with no
+// OMNI block is version 0: the original, lenient format, frozen forever.
+// Version 1 turns on strict entry validation (see checkentry).
+const val SPECVERSION = 1
+
+// Capability strings this runner supports beyond the version baseline. A
+// spec's OMNI.requires list is checked against this: an unknown capability
+// refuses the spec loudly at load time, instead of a lagging port silently
+// mis-running it. (Empty today; future format features mint a string here.)
+val CAPABILITIES: List<String> = emptyList()
+
+// The complete set of fields an entry may carry. Under version 1 anything
+// else is an error: an unrecognised key is almost always a typo'd
+// assertion, and a typo'd assertion is a test that silently stopped
+// testing.
+private val ENTRYFIELDS = listOf("in", "args", "ctx", "out", "err", "match", "client", "id", "doc")
 
 /** Load a spec: a path to a JSON file. */
 fun loadspec(path: String): Json {
@@ -59,6 +77,43 @@ fun resolvespec(name: String, alltests: Json): Json {
     }
 
     return alltests
+}
+
+// Read the spec's format version from its optional top-level OMNI block,
+// and refuse a spec this runner cannot faithfully run: a version newer
+// than SPECVERSION, or a required capability not in CAPABILITIES. A
+// present-but-null OMNI block is malformed - only a genuinely absent key
+// means legacy version 0.
+fun resolveversion(alltests: Json): Int {
+    if (!alltests.has("OMNI")) {
+        return 0
+    }
+
+    val meta = alltests.get("OMNI")
+    val version = meta.get("version").asnum
+
+    if (!meta.ismap || null == version || version != truncate(version)) {
+        throw OmniError("omni: malformed OMNI version block")
+    }
+
+    if (0 > version || SPECVERSION.toDouble() < version) {
+        throw OmniError("omni: unsupported spec version: " + numstr(version))
+    }
+
+    if (meta.has("requires")) {
+        val requires = meta.get("requires")
+        if (!requires.islist) {
+            throw OmniError("omni: malformed OMNI requires list")
+        }
+        for (cap in requires.aslist!!) {
+            val capstr = cap.asstr
+            if (null == capstr || !CAPABILITIES.contains(capstr)) {
+                throw OmniError("omni: spec requires unsupported capability: " + stringify(cap))
+            }
+        }
+    }
+
+    return version.toInt()
 }
 
 /** Nulls (and absent values) become NULLMARK. Always a fresh copy. */
@@ -133,6 +188,7 @@ class RunPack(
     val client: Provider,
     private val clients: Map<String, Provider>,
     private val name: String,
+    private val specversion: Int,
 ) {
     /** A named group of the resolved spec. */
     fun set(setname: String): Json = spec.get(setname)
@@ -152,6 +208,10 @@ class RunPack(
         val testspecmap = fixjson(testspec, flags.nulls)
         val testset = testspecmap.get("set").aslist
             ?: throw OmniError("omni: test spec has no set: $label")
+
+        if (1 <= specversion) {
+            checkset(label, testspec, testset)
+        }
 
         for ((index, entry) in testset.withIndex()) {
             if (!entry.ismap) {
@@ -215,9 +275,78 @@ class RunPack(
             }
             args[0] = first
             entry.set("ctx", first)
+
+            if (first.ismap) {
+                // The resolved client is a live Provider (closures over the
+                // system under test), and this port's Json carries no
+                // host-object variant to hold one - so canonical's
+                // `first.client = testpack.client` becomes presence, not
+                // identity: enough for a subject to prove the runner
+                // attached a client at all. `entryclient` is always set
+                // (root provider, or the entry's own `client:`), so the
+                // marker is unconditional once we get here.
+                first.set("client", Json.Bool(true))
+            }
         }
 
         return args
+    }
+
+    // Validate a version-1 group up front, against the AUTHORED entries -
+    // null-normalisation would otherwise rewrite an authored null (e.g.
+    // id: null) into a sentinel string and hide it from validation. A
+    // malformed spec is a spec error, not a test result, so it fails before
+    // any subject runs.
+    private fun checkset(label: String, testspec: Json, normalset: List<Json>) {
+        val origset = if (testspec.ismap && testspec.get("set").islist) {
+            testspec.get("set").aslist!!
+        } else {
+            normalset
+        }
+
+        val emptyflag = testspec.get("empty")
+        val markedempty = emptyflag is Json.Bool && emptyflag.value
+
+        if (origset.isEmpty() && !markedempty) {
+            throw OmniError("omni: empty test set: $label")
+        }
+
+        for ((index, entry) in origset.withIndex()) {
+            checkentry(label, index, entry)
+        }
+    }
+
+    // Strict entry validation, applied when the spec declares version 1 or
+    // later. The lenient format converts each of these mistakes into a
+    // silent pass or a dead field; here they fail with the entry named.
+    private fun checkentry(label: String, index: Int, entry: Json) {
+        if (!entry.ismap) {
+            throw fail(label, index, entry, "entry is not a map")
+        }
+
+        for (key in entry.asmap!!.keys) {
+            if (key !in ENTRYFIELDS) {
+                throw fail(label, index, entry, "unknown entry field: $key")
+            }
+        }
+
+        var argsources = 0
+        for (key in listOf("in", "args", "ctx")) {
+            if (entry.has(key)) {
+                argsources++
+            }
+        }
+        if (1 < argsources) {
+            throw fail(label, index, entry, "entry has more than one of in, args, ctx")
+        }
+
+        if (!entry.get("err").isnone && entry.has("out")) {
+            throw fail(label, index, entry, "entry has both err and out")
+        }
+
+        if (entry.has("id") && null == entry.get("id").asstr) {
+            throw fail(label, index, entry, "entry id is not a string")
+        }
     }
 
     private fun checkresult(label: String, index: Int, entry: Json, args: List<Json>, res: Json) {
@@ -391,20 +520,35 @@ class RunPack(
             msg.append("\n  actual:   $actual")
         }
 
+        msg.append("\n  entry:    ${stringify(entrysummary(entry))}")
+
+        return OmniError(msg.toString(), entry)
+    }
+
+    // The spec-defined part of an entry (drop runner bookkeeping). A
+    // strict-mode "entry is not a map" failure (checkentry) reaches this
+    // with a non-map entry - dumped as-is, same as canonical.
+    private fun entrysummary(entry: Json): Json {
+        if (!entry.ismap) {
+            return entry
+        }
+
         val summary = LinkedHashMap<String, Json>()
-        entry.asmap?.forEach { (key, value) ->
+        entry.asmap!!.forEach { (key, value) ->
             if ("res" != key && "thrown" != key && "ctx" != key) {
                 summary[key] = value
             }
         }
-        msg.append("\n  entry:    ${stringify(Json.JMap(summary))}")
-
-        return OmniError(msg.toString(), entry)
+        return Json.JMap(summary)
     }
 }
 
 /** A loaded spec plus its provider. */
 class Runner(private val alltests: Json, private val provider: Provider) {
+    // Resolved once, at construction (i.e. inside makeRunner) - fail fast on
+    // a spec version this runner cannot faithfully run, before any set runs.
+    private val specversion: Int = resolveversion(alltests)
+
     /** Resolve one named section of the spec. */
     fun runner(name: String, store: Json = Json.Absent): RunPack {
         val spec = resolvespec(name, alltests)
@@ -430,7 +574,7 @@ class Runner(private val alltests: Json, private val provider: Provider) {
 
         val subject = if (name.isEmpty()) null else provider.subject?.invoke(name)
 
-        return RunPack(spec, subject, provider, clients, name)
+        return RunPack(spec, subject, provider, clients, name, specversion)
     }
 }
 

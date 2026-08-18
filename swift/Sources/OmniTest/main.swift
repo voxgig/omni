@@ -39,8 +39,22 @@ let FIBSEQ: Subject = { args in try Fib.fibseq(args[0]) }
 let FIBRANGE: Subject = { args in try Fib.fibrange(args[0], args[1]) }
 let FIBINFO: Subject = { args in try Fib.fibinfo(args[0]) }
 
+// The context-group subject: reports what the runner delivered - the
+// contextify mark and the attached client - as plain data, so the spec
+// can pin both with an ordinary `out` comparison.
+let FIBCTX: Subject = { args in
+  let ctx = args[0]
+  return Json.mapOf([
+    ("n", ctx.get("n")),
+    ("val", try Fib.fib(ctx.get("n"))),
+    ("mark", ctx.get("mark")),
+    ("hasclient", .bool(!ctx.get("client").isnone)),
+  ])
+}
+
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
+// `contextify` marks the map, so the context group can prove the hook ran.
 func fibprovider(_ shift: Double) -> Provider {
   return Provider(
     subject: { name in
@@ -60,6 +74,11 @@ func fibprovider(_ shift: Double) -> Provider {
     },
     client: { options in
       return fibprovider(options.get("shift").asnum ?? 0)
+    },
+    contextify: { val in
+      var out = val
+      out.set("mark", .str("CTX"))
+      return out
     }
   )
 }
@@ -217,7 +236,7 @@ func badspec() -> Json {
 }
 
 func expectfail(_ setname: String, _ subject: @escaping Subject) throws {
-  let pack = makeRunner(badspec()).runner("fib")
+  let pack = try makeRunner(badspec()).runner("fib")
 
   do {
     try pack.runset(pack.set(setname), subject)
@@ -226,6 +245,51 @@ func expectfail(_ setname: String, _ subject: @escaping Subject) throws {
   }
 
   throw OmniError("omni: expected OmniError for set: " + setname)
+}
+
+// makeRunner itself must refuse a spec version-1 flags loudly, at load
+// time - before any group runs.
+func expectmakefail(_ spec: Json, _ want: String) throws {
+  do {
+    _ = try makeRunner(spec)
+  } catch let err as OmniError {
+    if !err.message.contains(want) {
+      throw OmniError("omni: message missing [\(want)]: \(err.message)")
+    }
+    return
+  }
+  throw OmniError("omni: expected OmniError containing [\(want)]")
+}
+
+// Strict (version-1) entry validation must name the reason in the message.
+func expectrunfail(_ spec: Json, _ setname: String, _ subject: @escaping Subject, _ want: String)
+  throws
+{
+  let pack = try makeRunner(spec).runner("fib")
+
+  do {
+    try pack.runset(pack.set(setname), subject)
+  } catch let err as OmniError {
+    if !err.message.contains(want) {
+      throw OmniError("omni: message missing [\(want)]: \(err.message)")
+    }
+    return
+  }
+
+  throw OmniError("omni: expected OmniError containing [\(want)] for set: " + setname)
+}
+
+// A version-1 spec with one group's `set` list, and OMNI.version already
+// filled in - the shared shape behind every strict negative test below.
+func strictspec(_ setname: String, _ entries: [Json], _ empty: Bool = false) -> Json {
+  var group: [(String, Json)] = [("set", .list(entries))]
+  if empty {
+    group.append(("empty", .bool(true)))
+  }
+  return Json.mapOf([
+    ("OMNI", Json.mapOf([("version", .num(1))])),
+    ("fib", Json.mapOf([(setname, Json.mapOf(group))])),
+  ])
 }
 
 func checkmessage() throws {
@@ -249,7 +313,7 @@ func checkmessage() throws {
     )
   ])
 
-  let pack = makeRunner(spec).runner("fib")
+  let pack = try makeRunner(spec).runner("fib")
 
   do {
     try pack.runset(pack.set("g"), FIB)
@@ -281,6 +345,7 @@ testcase("error") { try R.runset(R.set("error"), FIB) }
 testcase("match") { try R.runset(R.set("match"), FIB) }
 testcase("matchinfo") { try R.runset(R.set("matchinfo"), FIBINFO) }
 testcase("client") { try R.runset(R.set("client"), FIB) }
+testcase("context") { try R.runset(R.set("context"), FIBCTX) }
 
 testcase("detects wrong result") { try expectfail("wrongout", FIB) }
 testcase("detects missing error") { try expectfail("wrongerr", FIB) }
@@ -292,6 +357,119 @@ testcase("a concrete match leaf does not match a missing key") {
 testcase("__UNDEF__ does not match a present null") { try expectfail("undefonnull", FIBINFO) }
 testcase("__NULL__ does not match an absent key") { try expectfail("nullonabsent", FIBINFO) }
 testcase("an empty-string match leaf is not a wildcard") { try expectfail("emptystr", FIBINFO) }
+
+testcase("rejects an unsupported spec version") {
+  try expectmakefail(
+    Json.mapOf([
+      ("OMNI", Json.mapOf([("version", .num(99))])),
+      ("fib", Json.mapOf([("g", Json.mapOf([("set", .list([]))]))])),
+    ]),
+    "unsupported spec version")
+}
+
+testcase("rejects an unknown required capability") {
+  try expectmakefail(
+    Json.mapOf([
+      (
+        "OMNI",
+        Json.mapOf([("version", .num(1)), ("requires", .list([.str("nosuchfeature")]))])
+      ),
+      ("fib", Json.mapOf([("g", Json.mapOf([("set", .list([]))]))])),
+    ]),
+    "unsupported capability")
+}
+
+testcase("rejects a malformed version block") {
+  try expectmakefail(
+    Json.mapOf([
+      ("OMNI", Json.mapOf([("version", .str("one"))])),
+      ("fib", Json.mapOf([("g", Json.mapOf([("set", .list([]))]))])),
+    ]),
+    "malformed OMNI")
+}
+
+// A present-but-null block is malformed; only a genuinely absent OMNI key
+// is legacy. Testing definedness rather than presence would silently
+// skip strict mode here, so both cases are pinned.
+testcase("rejects a null OMNI block, but accepts an absent one") {
+  // No OMNI key at all - the baseline this test mutates a copy of, so the
+  // third assertion below (an absent OMNI) is exactly this, untouched.
+  let fibgroup = Json.mapOf([
+    (
+      "fib",
+      Json.mapOf([
+        ("g", Json.mapOf([("set", .list([Json.mapOf([("in", .num(1)), ("out", .num(1))])]))]))
+      ])
+    )
+  ])
+
+  var withnullomni = fibgroup
+  withnullomni.set("OMNI", .null)
+  try expectmakefail(withnullomni, "malformed OMNI")
+
+  var withnullrequires = fibgroup
+  withnullrequires.set("OMNI", Json.mapOf([("version", .num(1)), ("requires", .null)]))
+  try expectmakefail(withnullrequires, "malformed OMNI requires list")
+
+  _ = try makeRunner(fibgroup)
+}
+
+testcase("strict: an unknown entry field fails instead of passing vacuously") {
+  try expectrunfail(
+    strictspec("g", [Json.mapOf([("in", .num(6)), ("matches", Json.mapOf([("out", .num(999))]))])]),
+    "g", FIBINFO, "unknown entry field: matches")
+}
+
+testcase("strict: more than one of in, args, ctx fails") {
+  try expectrunfail(
+    strictspec("g", [Json.mapOf([("in", .num(5)), ("args", .list([.num(5)])), ("out", .num(5))])]),
+    "g", FIB, "more than one of in, args, ctx")
+}
+
+testcase("strict: err together with out fails") {
+  try expectrunfail(
+    strictspec("g", [Json.mapOf([("in", .num(-1)), ("err", .bool(true)), ("out", .num(5))])]),
+    "g", FIB, "both err and out")
+}
+
+testcase("strict: a null id fails even under null-normalisation") {
+  try expectrunfail(
+    strictspec("g", [Json.mapOf([("in", .num(1)), ("out", .num(1)), ("id", .null)])]),
+    "g", FIB, "entry id is not a string")
+}
+
+testcase("strict: an empty set fails unless marked empty") {
+  try expectrunfail(strictspec("g", []), "g", FIB, "empty test set")
+
+  let pack = try makeRunner(strictspec("h", [], true)).runner("fib")
+  try pack.runset(pack.set("h"), FIB)
+}
+
+testcase("a legacy spec (no OMNI block) stays lenient") {
+  let spec = Json.mapOf([
+    (
+      "fib",
+      Json.mapOf([
+        (
+          "g",
+          Json.mapOf([
+            (
+              "set",
+              .list([
+                Json.mapOf([
+                  ("in", .num(6)), ("matches", Json.mapOf([("out", .num(999))])), ("out", .num(8)),
+                ])
+              ])
+            )
+          ])
+        )
+      ])
+    )
+  ])
+  let pack = try makeRunner(spec).runner("fib")
+  try pack.runset(pack.set("g"), FIB)
+}
+
 testcase("reports entry index and id") { try checkmessage() }
 
 print("\n\(passcount) passed, \(failcount) failed")
