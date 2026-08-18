@@ -100,7 +100,7 @@ function buildOne(entry) {
 function findOrphans(specDir, entries) {
   const sources = new Set(entries.map((e) => Path.basename(e, '.aontu')))
   return Fs.readdirSync(specDir)
-    .filter((n) => n.endsWith('.json') && !n.endsWith('.schema.json'))
+    .filter((n) => n.endsWith('.json'))
     .filter((n) => !sources.has(Path.basename(n, '.json')))
     .sort()
     .map((n) => Path.join(specDir, n))

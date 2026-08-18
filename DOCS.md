@@ -275,10 +275,20 @@ runner's `CAPABILITIES` registry; the registry is currently empty.
 
 A `version` newer than the runner's `SPECVERSION` is refused at load.
 
-[`spec/omni-spec.schema.json`](spec/omni-spec.schema.json) encodes the
-version-1 shape as a JSON Schema, for editor completion and CI validation
-of committed spec artifacts (`make spec-check` runs it). The runner
-remains the authority on semantics.
+[`spec/def/omni-spec.aontu`](spec/def/omni-spec.aontu) expresses the
+version-1 entry shape **in aontu**, the language the corpus is written in,
+so checking a spec is unifying it with the shape rather than consulting a
+separate description that can drift. `make spec-check` runs it (and
+proves it can still go red); a violation is an ordinary aontu conflict,
+reported with an error code, the exact spec path and the source file.
+
+It covers what a unifier can decide from the shape alone: the nine
+permitted entry fields (the typo class — `matches:` quietly replacing
+`match:`) and the field types, including rejecting `id: null`. The
+cross-field rules — at most one of `in`/`args`/`ctx`, `err` never beside
+`out`, and a non-empty `set` — need `must()` and `length()`, which aontu
+0.48.2 does not yet implement; the runner enforces those at run time and
+remains the authority on spec semantics either way.
 
 
 ## 3. Runner semantics
