@@ -20,10 +20,13 @@ reason).
 
 Wire local checkout → provider adapter → import swap → delete
 `<lang>/test/runner.*` → full suite green. One port per commit.
+**1 of 24 migrated.** The struct-compat gate rewrites both
+`require('./runner')` (not yet migrated) and `require('./omni')`
+(migrated), so it holds either side of each port's swap.
 
 | Port | Status | Notes |
 |---|---|---|
-| javascript | IN PROGRESS | Swap done and green (95/95 through the shim); voxgig/struct#84 open, awaiting merge. |
+| javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
 | typescript | NOT STARTED | Resolve `makeContext`/`contextify` drift + `ctx.utility`; coordinate with @voxgig/sdkgen first. |
 | python | NOT STARTED | |
 | go | NOT STARTED | |
