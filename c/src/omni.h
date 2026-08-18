@@ -36,6 +36,7 @@ typedef enum {
 
 typedef struct omni_pool omni_pool;
 typedef struct omni_json omni_json;
+typedef struct omni_provider omni_provider;
 
 struct omni_json {
   omni_type type;
@@ -54,6 +55,13 @@ struct omni_json {
   size_t mapcap;
 
   omni_pool *pool;
+
+  /* The provider that owns a contextified ctx/args[0] map argument,
+   * attached by the runner (see omni_runsetflags in runner.c) so a
+   * subject can reach the client it was invoked through. NULL except on
+   * that one map value; not part of the JSON value itself, so clone,
+   * deepequal and stringify all ignore it. */
+  omni_provider *client;
 };
 
 /* ---- pool ---- */
@@ -133,6 +141,19 @@ omni_json *omni_nullmodifier(void *data, omni_pool *pool, const omni_json *val, 
 int omni_regex_find(const char *pattern, const char *text);
 
 /* ---- runner ---- */
+
+/* A spec may declare its format version in a top-level OMNI block. No
+ * block means version 0: the original, lenient format, frozen forever.
+ * Version 1 turns on strict entry validation (see omni_checkentry in
+ * runner.c). SPECVERSION is the newest version this runner understands. */
+#define OMNI_SPECVERSION 1
+
+/* Capability strings this runner supports beyond the version baseline. A
+ * spec's OMNI.requires list is checked against this: an unknown
+ * capability refuses the spec loudly at load time, instead of a lagging
+ * port silently mis-running it. NULL-terminated; empty today - future
+ * format features mint a string here. */
+extern const char *const OMNI_CAPABILITIES[];
 
 typedef struct omni_result {
   omni_json *val;  /* the subject's return value */

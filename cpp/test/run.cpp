@@ -53,8 +53,22 @@ const omni::Subject FIBINFO = [](const std::vector<omni::Json>& args) {
   return fib::fibinfo(args[0]);
 };
 
+// The context-group subject: reports what the runner delivered - the
+// contextify mark and the attached client - as plain data, so the spec can
+// pin both with an ordinary `out` comparison.
+const omni::Subject FIBCTX = [](const std::vector<omni::Json>& args) {
+  const omni::Json& ctx = args[0];
+  omni::Json out = omni::Json::map();
+  out.set("n", ctx.get("n"));
+  out.set("val", fib::fib(ctx.get("n")));
+  out.set("mark", ctx.get("mark"));
+  out.set("hasclient", omni::Json::boolean(!ctx.get("client").isnone()));
+  return out;
+};
+
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
+// `contextify` marks the map, so the context group can prove the hook ran.
 std::shared_ptr<omni::Provider> fibprovider(double shift) {
   auto provider = std::make_shared<omni::Provider>();
 
@@ -82,6 +96,12 @@ std::shared_ptr<omni::Provider> fibprovider(double shift) {
   provider->client = [](const omni::Json& options) {
     omni::Json shiftval = options.get("shift");
     return fibprovider(shiftval.isnum() ? shiftval.numval : 0);
+  };
+
+  provider->contextify = [](const omni::Json& val) {
+    omni::Json out = val;
+    out.set("mark", omni::Json::str("CTX"));
+    return out;
   };
 
   return provider;
@@ -204,6 +224,184 @@ void checkmessage() {
   throw std::runtime_error("omni: expected OmniError");
 }
 
+// Run `body`, and require it to throw an OmniError whose message contains
+// `want`.
+void expectmessage(const std::function<void()>& body, const std::string& want) {
+  try {
+    body();
+  } catch (const omni::OmniError& err) {
+    std::string msg = err.what();
+    if (std::string::npos == msg.find(want)) {
+      throw std::runtime_error("omni: message missing [" + want + "]: " + msg);
+    }
+    return;
+  }
+
+  throw std::runtime_error("omni: expected OmniError containing [" + want + "]");
+}
+
+void rejectsunsupportedversion() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(99)}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({})}})}})},
+  });
+
+  expectmessage([&] { omni::makeRunner(spec); }, "unsupported spec version");
+}
+
+void rejectsunknowncapability() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)},
+                          {"requires", Json::list({Json::str("nosuchfeature")})}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({})}})}})},
+  });
+
+  expectmessage([&] { omni::makeRunner(spec); }, "unsupported capability");
+}
+
+void rejectsmalformedversion() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::str("one")}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({})}})}})},
+  });
+
+  expectmessage([&] { omni::makeRunner(spec); }, "malformed OMNI");
+}
+
+// A present-but-null block is malformed; only a genuinely absent OMNI key
+// is legacy. Ports that test definedness rather than presence silently
+// skip strict mode here, so both cases are pinned.
+void rejectsnullomni() {
+  using omni::Json;
+
+  Json specnull = Json::map({
+      {"OMNI", Json::null()},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(1)}, {"out", Json::num(1)}}),
+                              })}})}})},
+  });
+  expectmessage([&] { omni::makeRunner(specnull); }, "malformed OMNI");
+
+  Json specnullreq = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)}, {"requires", Json::null()}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(1)}, {"out", Json::num(1)}}),
+                              })}})}})},
+  });
+  expectmessage([&] { omni::makeRunner(specnullreq); }, "malformed OMNI requires list");
+
+  Json specabsent = Json::map({
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(1)}, {"out", Json::num(1)}}),
+                              })}})}})},
+  });
+  omni::makeRunner(specabsent);
+}
+
+void strictunknownfield() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(6)},
+                                             {"matches", Json::map({{"out", Json::num(999)}})}}),
+                              })}})}})},
+  });
+
+  omni::RunPack pack = omni::makeRunner(spec).runner("fib");
+  expectmessage([&] { pack.runset(pack.set("g"), FIBINFO); }, "unknown entry field: matches");
+}
+
+void strictmultiplesources() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(5)},
+                                             {"args", Json::list({Json::num(5)})},
+                                             {"out", Json::num(5)}}),
+                              })}})}})},
+  });
+
+  omni::RunPack pack = omni::makeRunner(spec).runner("fib");
+  expectmessage([&] { pack.runset(pack.set("g"), FIB); }, "more than one of in, args, ctx");
+}
+
+void stricterrandout() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(-1)},
+                                             {"err", Json::boolean(true)},
+                                             {"out", Json::num(5)}}),
+                              })}})}})},
+  });
+
+  omni::RunPack pack = omni::makeRunner(spec).runner("fib");
+  expectmessage([&] { pack.runset(pack.set("g"), FIB); }, "both err and out");
+}
+
+// This catches Fix 1 (checkset must validate the AUTHORED entries) and the
+// id half of Fix 2 (presence, not null-normalisation) together: under
+// default flags an authored `id: null` becomes "__NULL__", so a check that
+// runs after normalisation, or on typed-null-only, never fires.
+void strictnullid() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)}})},
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(1)},
+                                             {"out", Json::num(1)},
+                                             {"id", Json::null()}}),
+                              })}})}})},
+  });
+
+  omni::RunPack pack = omni::makeRunner(spec).runner("fib");
+  expectmessage([&] { pack.runset(pack.set("g"), FIB); }, "entry id is not a string");
+}
+
+void strictemptyset() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"OMNI", Json::map({{"version", Json::num(1)}})},
+      {"fib", Json::map({
+                  {"g", Json::map({{"set", Json::list({})}})},
+                  {"h", Json::map({{"set", Json::list({})}, {"empty", Json::boolean(true)}})},
+              })},
+  });
+
+  omni::RunPack pack = omni::makeRunner(spec).runner("fib");
+  expectmessage([&] { pack.runset(pack.set("g"), FIB); }, "empty test set");
+  pack.runset(pack.set("h"), FIB);
+}
+
+void legacystayslenient() {
+  using omni::Json;
+
+  Json spec = Json::map({
+      {"fib", Json::map({{"g", Json::map({{"set", Json::list({
+                                  Json::map({{"in", Json::num(6)},
+                                             {"matches", Json::map({{"out", Json::num(999)}})},
+                                             {"out", Json::num(8)}}),
+                              })}})}})},
+  });
+
+  omni::RunPack pack = omni::makeRunner(spec).runner("fib");
+  pack.runset(pack.set("g"), FIB);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -223,6 +421,7 @@ int main(int argc, char** argv) {
   testcase("match", [&R] { R.runset(R.set("match"), FIB); });
   testcase("matchinfo", [&R] { R.runset(R.set("matchinfo"), FIBINFO); });
   testcase("client", [&R] { R.runset(R.set("client"), FIB); });
+  testcase("context", [&R] { R.runset(R.set("context"), FIBCTX); });
 
   testcase("detects wrong result", [] { expectfail("wrongout", FIB); });
   testcase("detects missing error", [] { expectfail("wrongerr", FIB); });
@@ -236,6 +435,19 @@ int main(int argc, char** argv) {
            [] { expectfail("nullonabsent", FIBINFO); });
   testcase("an empty-string match leaf is not a wildcard",
            [] { expectfail("emptystr", FIBINFO); });
+
+  testcase("rejects an unsupported spec version", rejectsunsupportedversion);
+  testcase("rejects an unknown required capability", rejectsunknowncapability);
+  testcase("rejects a malformed version block", rejectsmalformedversion);
+  testcase("rejects a null OMNI block, but accepts an absent one", rejectsnullomni);
+  testcase("strict: an unknown entry field fails instead of passing vacuously",
+           strictunknownfield);
+  testcase("strict: more than one of in, args, ctx fails", strictmultiplesources);
+  testcase("strict: err together with out fails", stricterrandout);
+  testcase("strict: a null id fails even under null-normalisation", strictnullid);
+  testcase("strict: an empty set fails unless marked empty", strictemptyset);
+  testcase("a legacy spec (no OMNI block) stays lenient", legacystayslenient);
+
   testcase("reports entry index and id", checkmessage);
 
   std::cout << "\n" << PASSCOUNT << " passed, " << FAILCOUNT << " failed\n";

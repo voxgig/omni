@@ -62,6 +62,24 @@ pub struct Provider {
     pub inject: Option<Rc<dyn Fn(&Json, &Json) -> Json>>,
 }
 
+/// The newest spec format version this runner understands. A spec with no
+/// OMNI block is version 0: the original, lenient format, frozen forever.
+/// Version 1 turns on strict entry validation (see checkentry).
+pub const SPECVERSION: f64 = 1.0;
+
+/// Capability strings this runner supports beyond the version baseline. A
+/// spec's OMNI.requires list is checked against this: an unknown
+/// capability refuses the spec loudly at load time, instead of a lagging
+/// port silently mis-running it. (Empty today; future format features
+/// mint a string here.)
+pub const CAPABILITIES: &[&str] = &[];
+
+/// The complete set of fields an entry may carry. Under version 1 anything
+/// else is an error: an unrecognised key is almost always a typo'd
+/// assertion, and a typo'd assertion is a test that silently stopped
+/// testing.
+const ENTRYFIELDS: &[&str] = &["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"];
+
 /// A test failure (or a malformed spec). Distinct from an error returned
 /// by the subject under test, which is a candidate for an `err`
 /// expectation.
@@ -125,6 +143,146 @@ pub fn loadspec(specref: SpecRef) -> Result<Json, OmniError> {
     }
 }
 
+/// Read the spec's format version from its optional top-level OMNI block,
+/// and refuse a spec this runner cannot faithfully run: a version newer
+/// than SPECVERSION, or a required capability not in CAPABILITIES.
+fn resolveversion(alltests: &Json) -> Result<f64, OmniError> {
+    let meta = alltests.get("OMNI");
+
+    if meta.isabsent() {
+        return Ok(0.0);
+    }
+
+    let versionnum = meta.get("version").asnum();
+    let isinteger = versionnum.map(|num| num == num.trunc()).unwrap_or(false);
+    if !meta.ismap() || !isinteger {
+        return Err(OmniError::new(
+            "omni: malformed OMNI version block".to_string(),
+        ));
+    }
+    let version = versionnum.unwrap();
+
+    if version < 0.0 || SPECVERSION < version {
+        return Err(OmniError::new(format!(
+            "omni: unsupported spec version: {}",
+            numstr(version)
+        )));
+    }
+
+    let requires = meta.get("requires");
+    if !requires.isabsent() {
+        let list = match requires.aslist() {
+            Some(list) => list,
+            None => {
+                return Err(OmniError::new(
+                    "omni: malformed OMNI requires list".to_string(),
+                ))
+            }
+        };
+
+        for cap in list {
+            let capstr = cap.asstr();
+            if capstr.is_none() || !CAPABILITIES.contains(&capstr.unwrap()) {
+                return Err(OmniError::new(format!(
+                    "omni: spec requires unsupported capability: {}",
+                    stringify(cap)
+                )));
+            }
+        }
+    }
+
+    Ok(version)
+}
+
+/// Strict entry validation, applied when the spec declares version 1 or
+/// later. The lenient format converts each of these mistakes into a
+/// silent pass or a dead field; here they fail with the entry named.
+fn checkentry(flags: &Flags, index: usize, entry: &Json) -> Result<(), OmniError> {
+    let map = match entry.asmap() {
+        Some(map) => map,
+        None => return Err(fail(flags, index, entry, "entry is not a map", None, None)),
+    };
+
+    for key in map.keys() {
+        if !ENTRYFIELDS.contains(&key.as_str()) {
+            return Err(fail(
+                flags,
+                index,
+                entry,
+                &format!("unknown entry field: {}", key),
+                None,
+                None,
+            ));
+        }
+    }
+
+    let mut argsources = 0;
+    for key in ["in", "args", "ctx"] {
+        if entry.has(key) {
+            argsources += 1;
+        }
+    }
+    if 1 < argsources {
+        return Err(fail(
+            flags,
+            index,
+            entry,
+            "entry has more than one of in, args, ctx",
+            None,
+            None,
+        ));
+    }
+
+    if !entry.get("err").isnone() && !entry.get("out").isabsent() {
+        return Err(fail(
+            flags,
+            index,
+            entry,
+            "entry has both err and out",
+            None,
+            None,
+        ));
+    }
+
+    let id = entry.get("id");
+    if !id.isabsent() && id.asstr().is_none() {
+        return Err(fail(
+            flags,
+            index,
+            entry,
+            "entry id is not a string",
+            None,
+            None,
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate a version-1 group up front, against the AUTHORED entries -
+/// null-normalisation would otherwise rewrite an authored null (e.g.
+/// id: null) into a sentinel string and hide it from validation. A
+/// malformed spec is a spec error, not a test result, so it fails before
+/// any subject runs.
+fn checkset(flags: &Flags, testspec: &Json, normalset: &[Json]) -> Result<(), OmniError> {
+    let origset: Vec<Json> = match testspec.get("set") {
+        Json::List(list) => list,
+        _ => normalset.to_vec(),
+    };
+
+    let label = flags.name.clone().unwrap_or_else(|| "set".to_string());
+
+    if origset.is_empty() && !matches!(testspec.get("empty"), Json::Bool(true)) {
+        return Err(OmniError::new(format!("omni: empty test set: {}", label)));
+    }
+
+    for (index, entry) in origset.iter().enumerate() {
+        checkentry(flags, index, entry)?;
+    }
+
+    Ok(())
+}
+
 /// Find `primary.<name>`, then `<name>`, then the whole spec.
 pub fn resolvespec(name: &str, alltests: &Json) -> Json {
     if name.is_empty() {
@@ -153,6 +311,7 @@ pub struct RunPack {
     name: String,
     provider: Provider,
     clients: BTreeMap<String, Provider>,
+    specversion: f64,
 }
 
 impl RunPack {
@@ -204,6 +363,10 @@ impl RunPack {
                 )))
             }
         };
+
+        if 1.0 <= self.specversion {
+            checkset(&useflags, testspec, &testset)?;
+        }
 
         for (index, rawentry) in testset.iter().enumerate() {
             let mut entry = resolveentry(rawentry.clone(), &useflags);
@@ -268,6 +431,15 @@ impl RunPack {
             let mut first = args[0].clone();
             if let Some(contextify) = &self.provider.contextify {
                 first = contextify(first);
+            }
+            // The resolved client is a live Provider (closures over the
+            // system under test), and this port's Json carries no
+            // host-object variant to hold one - so canonical's
+            // `first.client = testpack.client` becomes presence, not
+            // identity: enough for a subject to prove the runner attached
+            // a client at all.
+            if let Json::Map(map) = &mut first {
+                map.insert("client".to_string(), Json::Bool(true));
             }
             args[0] = first.clone();
             jset(entry, "ctx", first);
@@ -654,6 +826,7 @@ pub fn nullmodifier(val: &Json) -> Json {
 pub struct Runner {
     alltests: Json,
     provider: Provider,
+    specversion: f64,
 }
 
 impl Runner {
@@ -670,6 +843,7 @@ impl Runner {
             name: name.to_string(),
             provider: self.provider.clone(),
             clients,
+            specversion: self.specversion,
         })
     }
 
@@ -709,10 +883,17 @@ impl Runner {
     }
 }
 
-/// Make a runner for a spec file (or spec value) and a provider.
+/// Make a runner for a spec file (or spec value) and a provider. Resolves
+/// the spec's format version immediately - fail fast, before any group
+/// runs, rather than mid-suite.
 pub fn make_runner<S: Into<SpecRef>>(specref: S, provider: Provider) -> Result<Runner, OmniError> {
     let alltests = loadspec(specref.into())?;
-    Ok(Runner { alltests, provider })
+    let specversion = resolveversion(&alltests)?;
+    Ok(Runner {
+        alltests,
+        provider,
+        specversion,
+    })
 }
 
 /// Render a number the same way in every port (re-exported for subjects).

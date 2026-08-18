@@ -41,6 +41,7 @@ fn subjects() -> (Subject, Subject, Subject, Subject) {
 
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
+// `contextify` marks the map, so the context group can prove the hook ran.
 fn fibprovider(shift: f64) -> Provider {
     Provider {
         subject: Some(Rc::new(move |name: &str| -> Option<Subject> {
@@ -65,8 +66,27 @@ fn fibprovider(shift: f64) -> Provider {
         client: Some(Rc::new(|options: &Json| {
             fibprovider(options.get("shift").asnum().unwrap_or(0.0))
         })),
+        contextify: Some(Rc::new(|val: Json| match val {
+            Json::Map(mut map) => {
+                map.insert("mark".to_string(), Json::str("CTX"));
+                Json::Map(map)
+            }
+            other => other,
+        })),
         ..Provider::default()
     }
+}
+
+// The context-group subject: reports what the runner delivered - the
+// contextify mark and the attached client - as plain data, so the spec can
+// pin both with an ordinary `out` comparison.
+fn fibctx(ctx: &Json) -> Result<Json, String> {
+    Ok(Json::map(vec![
+        ("n", ctx.get("n")),
+        ("val", fib(&ctx.get("n"))?),
+        ("mark", ctx.get("mark")),
+        ("hasclient", Json::Bool(!ctx.get("client").isnone())),
+    ]))
 }
 
 fn runpack() -> RunPack {
@@ -78,6 +98,7 @@ fn runpack() -> RunPack {
 fn fib_conformance() {
     let pack = runpack();
     let (fibsub, seqsub, rangesub, infosub) = subjects();
+    let ctxsub: Subject = Rc::new(|args: &[Json]| fibctx(&args[0]));
 
     let groups: Vec<(&str, &Subject, Flags)> = vec![
         ("basic", &fibsub, Flags::default()),
@@ -89,6 +110,7 @@ fn fib_conformance() {
         ("match", &fibsub, Flags::default()),
         ("matchinfo", &infosub, Flags::default()),
         ("client", &fibsub, Flags::default()),
+        ("context", &ctxsub, Flags::default()),
     ];
 
     for (name, subject, flags) in groups {
@@ -297,6 +319,342 @@ fn runner_reports_entry_index_and_id() {
             }
         }
     }
+}
+
+#[test]
+fn rejects_an_unsupported_spec_version() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::Num(99.0))])),
+        (
+            "fib",
+            Json::map(vec![("g", Json::map(vec![("set", Json::list(vec![]))]))]),
+        ),
+    ]);
+
+    match make_runner(spec, Provider::default()) {
+        Ok(_) => panic!("omni: expected refusal"),
+        Err(err) => assert!(
+            err.message.contains("unsupported spec version"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+#[test]
+fn rejects_an_unknown_required_capability() {
+    let spec = Json::map(vec![
+        (
+            "OMNI",
+            Json::map(vec![
+                ("version", Json::Num(1.0)),
+                ("requires", Json::list(vec![Json::str("nosuchfeature")])),
+            ]),
+        ),
+        (
+            "fib",
+            Json::map(vec![("g", Json::map(vec![("set", Json::list(vec![]))]))]),
+        ),
+    ]);
+
+    match make_runner(spec, Provider::default()) {
+        Ok(_) => panic!("omni: expected refusal"),
+        Err(err) => assert!(
+            err.message.contains("unsupported capability"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+#[test]
+fn rejects_a_malformed_version_block() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::str("one"))])),
+        (
+            "fib",
+            Json::map(vec![("g", Json::map(vec![("set", Json::list(vec![]))]))]),
+        ),
+    ]);
+
+    match make_runner(spec, Provider::default()) {
+        Ok(_) => panic!("omni: expected refusal"),
+        Err(err) => assert!(
+            err.message.contains("malformed OMNI"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+#[test]
+fn strict_unknown_entry_field_fails_instead_of_passing_vacuously() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::Num(1.0))])),
+        (
+            "fib",
+            Json::map(vec![(
+                "g",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(6.0)),
+                        ("matches", Json::map(vec![("out", Json::Num(999.0))])),
+                    ])]),
+                )]),
+            )]),
+        ),
+    ]);
+
+    let runner = make_runner(spec, Provider::default()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (_fibsub, _seqsub, _rangesub, infosub) = subjects();
+
+    match pack.runset(&pack.set("g"), Some(&infosub)) {
+        Ok(()) => panic!("omni: expected failure"),
+        Err(err) => assert!(
+            err.message.contains("unknown entry field: matches"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+#[test]
+fn strict_more_than_one_of_in_args_ctx_fails() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::Num(1.0))])),
+        (
+            "fib",
+            Json::map(vec![(
+                "g",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(5.0)),
+                        ("args", Json::list(vec![Json::Num(5.0)])),
+                        ("out", Json::Num(5.0)),
+                    ])]),
+                )]),
+            )]),
+        ),
+    ]);
+
+    let runner = make_runner(spec, Provider::default()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (fibsub, _, _, _) = subjects();
+
+    match pack.runset(&pack.set("g"), Some(&fibsub)) {
+        Ok(()) => panic!("omni: expected failure"),
+        Err(err) => assert!(
+            err.message.contains("more than one of in, args, ctx"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+#[test]
+fn strict_err_together_with_out_fails() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::Num(1.0))])),
+        (
+            "fib",
+            Json::map(vec![(
+                "g",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(-1.0)),
+                        ("err", Json::Bool(true)),
+                        ("out", Json::Num(5.0)),
+                    ])]),
+                )]),
+            )]),
+        ),
+    ]);
+
+    let runner = make_runner(spec, Provider::default()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (fibsub, _, _, _) = subjects();
+
+    match pack.runset(&pack.set("g"), Some(&fibsub)) {
+        Ok(()) => panic!("omni: expected failure"),
+        Err(err) => assert!(
+            err.message.contains("both err and out"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+#[test]
+fn strict_a_null_id_fails_even_under_null_normalisation() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::Num(1.0))])),
+        (
+            "fib",
+            Json::map(vec![(
+                "g",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(1.0)),
+                        ("out", Json::Num(1.0)),
+                        ("id", Json::Null),
+                    ])]),
+                )]),
+            )]),
+        ),
+    ]);
+
+    let runner = make_runner(spec, Provider::default()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (fibsub, _, _, _) = subjects();
+
+    match pack.runset(&pack.set("g"), Some(&fibsub)) {
+        Ok(()) => panic!("omni: expected failure"),
+        Err(err) => assert!(
+            err.message.contains("entry id is not a string"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+}
+
+// A present-but-null OMNI block is malformed; only a genuinely absent
+// OMNI key is legacy. A port that tests definedness rather than presence
+// silently skips strict mode here, so both cases are pinned.
+#[test]
+fn rejects_a_null_omni_block_but_accepts_an_absent_one() {
+    let nullblock = Json::map(vec![
+        ("OMNI", Json::Null),
+        (
+            "fib",
+            Json::map(vec![(
+                "g",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(1.0)),
+                        ("out", Json::Num(1.0)),
+                    ])]),
+                )]),
+            )]),
+        ),
+    ]);
+    match make_runner(nullblock, Provider::default()) {
+        Ok(_) => panic!("omni: expected refusal"),
+        Err(err) => assert!(
+            err.message.contains("malformed OMNI"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+
+    let nullrequires = Json::map(vec![
+        (
+            "OMNI",
+            Json::map(vec![("version", Json::Num(1.0)), ("requires", Json::Null)]),
+        ),
+        (
+            "fib",
+            Json::map(vec![(
+                "g",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(1.0)),
+                        ("out", Json::Num(1.0)),
+                    ])]),
+                )]),
+            )]),
+        ),
+    ]);
+    match make_runner(nullrequires, Provider::default()) {
+        Ok(_) => panic!("omni: expected refusal"),
+        Err(err) => assert!(
+            err.message.contains("malformed OMNI requires list"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+
+    let noomni = Json::map(vec![(
+        "fib",
+        Json::map(vec![(
+            "g",
+            Json::map(vec![(
+                "set",
+                Json::list(vec![Json::map(vec![
+                    ("in", Json::Num(1.0)),
+                    ("out", Json::Num(1.0)),
+                ])]),
+            )]),
+        )]),
+    )]);
+    make_runner(noomni, Provider::default()).expect("legacy spec without OMNI must load fine");
+}
+
+#[test]
+fn strict_empty_set_fails_unless_marked_empty() {
+    let spec = Json::map(vec![
+        ("OMNI", Json::map(vec![("version", Json::Num(1.0))])),
+        (
+            "fib",
+            Json::map(vec![
+                ("g", Json::map(vec![("set", Json::list(vec![]))])),
+                (
+                    "h",
+                    Json::map(vec![
+                        ("set", Json::list(vec![])),
+                        ("empty", Json::Bool(true)),
+                    ]),
+                ),
+            ]),
+        ),
+    ]);
+
+    let runner = make_runner(spec, Provider::default()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (fibsub, _, _, _) = subjects();
+
+    match pack.runset(&pack.set("g"), Some(&fibsub)) {
+        Ok(()) => panic!("omni: expected failure"),
+        Err(err) => assert!(
+            err.message.contains("empty test set"),
+            "omni: unexpected message: {}",
+            err.message
+        ),
+    }
+
+    pack.runset(&pack.set("h"), Some(&fibsub))
+        .expect("empty: true must pass");
+}
+
+#[test]
+fn legacy_spec_without_omni_block_stays_lenient() {
+    let spec = Json::map(vec![(
+        "fib",
+        Json::map(vec![(
+            "g",
+            Json::map(vec![(
+                "set",
+                Json::list(vec![Json::map(vec![
+                    ("in", Json::Num(6.0)),
+                    ("matches", Json::map(vec![("out", Json::Num(999.0))])),
+                    ("out", Json::Num(8.0)),
+                ])]),
+            )]),
+        )]),
+    )]);
+
+    let runner = make_runner(spec, Provider::default()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (fibsub, _, _, _) = subjects();
+
+    pack.runset(&pack.set("g"), Some(&fibsub))
+        .expect("legacy spec must stay lenient");
 }
 
 #[test]

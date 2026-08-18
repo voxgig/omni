@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,6 +25,26 @@ public final class Runner {
   public static final String NULLMARK = Util.NULLMARK;
   public static final String UNDEFMARK = Util.UNDEFMARK;
   public static final String EXISTSMARK = Util.EXISTSMARK;
+
+  // The newest spec format version this runner understands. A spec with no
+  // OMNI block is version 0: the original, lenient format, frozen forever.
+  // Version 1 turns on strict entry validation (see checkentry).
+  public static final int SPECVERSION = 1;
+
+  // Capability strings this runner supports beyond the version baseline. A
+  // spec's OMNI.requires list is checked against this: an unknown
+  // capability refuses the spec loudly at load time, instead of a lagging
+  // port silently mis-running it. (Empty today; future format features
+  // mint a string here.)
+  public static final List<String> CAPABILITIES = Collections.emptyList();
+
+  // The complete set of fields an entry may carry. Under version 1
+  // anything else is an error: an unrecognised key is almost always a
+  // typo'd assertion, and a typo'd assertion is a test that silently
+  // stopped testing.
+  private static final List<String> ENTRYFIELDS =
+      Collections.unmodifiableList(
+          Arrays.asList("in", "args", "ctx", "out", "err", "match", "client", "id", "doc"));
 
   private Runner() {}
 
@@ -80,19 +102,22 @@ public final class Runner {
     private final String name;
     private final Provider provider;
     private final Map<String, Provider> clients;
+    private final int specversion;
 
     RunPack(
         Object spec,
         Subject subject,
         Provider provider,
         Map<String, Provider> clients,
-        String name) {
+        String name,
+        int specversion) {
       this.spec = spec;
       this.subject = subject;
       this.client = provider;
       this.provider = provider;
       this.clients = clients;
       this.name = name;
+      this.specversion = specversion;
     }
 
     /** A named group of the resolved spec. */
@@ -130,9 +155,18 @@ public final class Runner {
 
       List<Object> testset = (List<Object>) ((Map<String, Object>) testspecmap).get("set");
 
+      // Validate the AUTHORED group up front (before null-normalisation),
+      // and before any entry runs. Absorbs the empty-set check: a
+      // vacuously green group proves nothing, so version 1 makes an empty
+      // set an error unless the group is deliberately marked empty.
+      if (1 <= specversion) {
+        checkset(flags, testspec, testset);
+      }
+
       for (int index = 0; index < testset.size(); index++) {
         Object rawentry = testset.get(index);
-        if (!Util.ismap(rawentry)) {
+
+        if (specversion < 1 && !Util.ismap(rawentry)) {
           throw new OmniError("omni: " + flags.get("name") + "[" + index + "]: entry is not a map");
         }
 
@@ -178,10 +212,12 @@ public final class Runner {
   public static final class RunnerPack {
     private final Object alltests;
     private final Provider provider;
+    private final int specversion;
 
-    RunnerPack(Object alltests, Provider provider) {
+    RunnerPack(Object alltests, Provider provider, int specversion) {
       this.alltests = alltests;
       this.provider = provider;
+      this.specversion = specversion;
     }
 
     public RunPack runner(String name) {
@@ -192,14 +228,17 @@ public final class Runner {
       Object spec = resolvespec(name, alltests);
       Map<String, Provider> clients = resolveclients(provider, spec, store);
       Subject subject = resolvesubject(name, provider);
-      return new RunPack(spec, subject, provider, clients, name);
+      return new RunPack(spec, subject, provider, clients, name, specversion);
     }
   }
 
   /** Make a runner for a spec file path (or spec value) and a provider. */
   public static RunnerPack makeRunner(Object specref, Provider provider) {
     Object alltests = loadspec(specref);
-    return new RunnerPack(alltests, null == provider ? new Provider() : provider);
+    // Fail fast: refuse a spec this runner cannot faithfully run before any
+    // entry in it gets a chance to run.
+    int specversion = resolveversion(alltests);
+    return new RunnerPack(alltests, null == provider ? new Provider() : provider, specversion);
   }
 
   /** Load a spec: a path to a JSON file, or an already-parsed value. */
@@ -213,6 +252,117 @@ public final class Runner {
       }
     }
     return specref;
+  }
+
+  /**
+   * Read the spec's format version from its optional top-level OMNI block,
+   * and refuse a spec this runner cannot faithfully run: a version newer
+   * than SPECVERSION, or a required capability not in CAPABILITIES.
+   */
+  @SuppressWarnings("unchecked")
+  static int resolveversion(Object alltests) {
+    // A genuinely absent OMNI key is legacy (version 0). A *present* OMNI
+    // that is null (or otherwise not a map) is malformed, not legacy - so
+    // this must be a presence check (containsKey), never a null check.
+    if (!Util.ismap(alltests) || !((Map<String, Object>) alltests).containsKey("OMNI")) {
+      return 0;
+    }
+    Object meta = ((Map<String, Object>) alltests).get("OMNI");
+
+    Object rawversion = Util.ismap(meta) ? ((Map<String, Object>) meta).get("version") : null;
+    if (!Util.ismap(meta)
+        || !Util.isnum(rawversion)
+        || ((Number) rawversion).doubleValue() != Math.rint(((Number) rawversion).doubleValue())) {
+      throw new OmniError("omni: malformed OMNI version block");
+    }
+
+    double version = ((Number) rawversion).doubleValue();
+    if (version < 0 || SPECVERSION < version) {
+      throw new OmniError("omni: unsupported spec version: " + Util.numstr(version));
+    }
+
+    // A present-but-null `requires` is malformed, not "skip"; only a
+    // genuinely absent key means no requirement was declared.
+    if (((Map<String, Object>) meta).containsKey("requires")) {
+      Object requires = ((Map<String, Object>) meta).get("requires");
+      if (!Util.islist(requires)) {
+        throw new OmniError("omni: malformed OMNI requires list");
+      }
+      for (Object cap : (List<Object>) requires) {
+        if (!(cap instanceof String) || !CAPABILITIES.contains(cap)) {
+          throw new OmniError("omni: spec requires unsupported capability: " + Util.stringify(cap));
+        }
+      }
+    }
+
+    return (int) version;
+  }
+
+  /**
+   * Strict entry validation, applied when the spec declares version 1 or
+   * later. The lenient format converts each of these mistakes into a
+   * silent pass or a dead field; here they fail with the entry named.
+   */
+  @SuppressWarnings("unchecked")
+  static void checkentry(Map<String, Object> flags, int index, Object rawentry) {
+    if (!Util.ismap(rawentry)) {
+      throw fail(flags, index, rawentry, "entry is not a map", null, null);
+    }
+
+    Map<String, Object> entry = (Map<String, Object>) rawentry;
+
+    for (String key : entry.keySet()) {
+      if (!ENTRYFIELDS.contains(key)) {
+        throw fail(flags, index, entry, "unknown entry field: " + key, null, null);
+      }
+    }
+
+    int argsources = 0;
+    for (String key : new String[] {"in", "args", "ctx"}) {
+      if (entry.containsKey(key)) {
+        argsources++;
+      }
+    }
+    if (1 < argsources) {
+      throw fail(flags, index, entry, "entry has more than one of in, args, ctx", null, null);
+    }
+
+    if (null != entry.get("err") && entry.containsKey("out")) {
+      throw fail(flags, index, entry, "entry has both err and out", null, null);
+    }
+
+    // Presence, not definedness: a present `id: null` must fail, not be
+    // treated as though no id were given at all.
+    if (entry.containsKey("id") && !(entry.get("id") instanceof String)) {
+      throw fail(flags, index, entry, "entry id is not a string", null, null);
+    }
+  }
+
+  /**
+   * Validate a version-1 group up front, against the AUTHORED entries -
+   * null-normalisation would otherwise rewrite an authored null (e.g.
+   * id: null) into a sentinel string and hide it from validation. A
+   * malformed spec is a spec error, not a test result, so it fails before
+   * any subject runs.
+   */
+  @SuppressWarnings("unchecked")
+  static void checkset(Map<String, Object> flags, Object testspec, List<Object> normalset) {
+    List<Object> origset = normalset;
+    if (Util.ismap(testspec)) {
+      Object rawset = ((Map<String, Object>) testspec).get("set");
+      if (Util.islist(rawset)) {
+        origset = (List<Object>) rawset;
+      }
+    }
+
+    Object emptyflag = Util.ismap(testspec) ? ((Map<String, Object>) testspec).get("empty") : null;
+    if (origset.isEmpty() && !Boolean.TRUE.equals(emptyflag)) {
+      throw new OmniError("omni: empty test set: " + flags.get("name"));
+    }
+
+    for (int index = 0; index < origset.size(); index++) {
+      checkentry(flags, index, origset.get(index));
+    }
   }
 
   /** Find `primary.<name>`, then `<name>`, then the whole spec. */
@@ -410,9 +560,10 @@ public final class Runner {
   }
 
   /** The label of one entry, for failure messages. */
-  static String entryref(Map<String, Object> flags, int index, Map<String, Object> entry) {
+  @SuppressWarnings("unchecked")
+  static String entryref(Map<String, Object> flags, int index, Object entry) {
     Object label = flags.get("name");
-    Object id = null == entry ? null : entry.get("id");
+    Object id = Util.ismap(entry) ? ((Map<String, Object>) entry).get("id") : null;
     String idpart = null == id ? "" : " (" + Util.stringify(id) + ")";
     return (null == label ? "set" : String.valueOf(label)) + "[" + index + "]" + idpart;
   }
@@ -420,7 +571,7 @@ public final class Runner {
   static OmniError fail(
       Map<String, Object> flags,
       int index,
-      Map<String, Object> entry,
+      Object entry,
       String reason,
       String expected,
       String actual) {
@@ -439,7 +590,12 @@ public final class Runner {
   }
 
   /** The spec-defined part of an entry (drop runner bookkeeping). */
-  static Object entrysummary(Map<String, Object> entry) {
+  @SuppressWarnings("unchecked")
+  static Object entrysummary(Object rawentry) {
+    if (!Util.ismap(rawentry)) {
+      return rawentry;
+    }
+    Map<String, Object> entry = (Map<String, Object>) rawentry;
     Map<String, Object> out = new LinkedHashMap<>();
     for (Map.Entry<String, Object> field : entry.entrySet()) {
       String key = field.getKey();
