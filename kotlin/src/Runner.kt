@@ -520,15 +520,26 @@ class RunPack(
             msg.append("\n  actual:   $actual")
         }
 
+        msg.append("\n  entry:    ${stringify(entrysummary(entry))}")
+
+        return OmniError(msg.toString(), entry)
+    }
+
+    // The spec-defined part of an entry (drop runner bookkeeping). A
+    // strict-mode "entry is not a map" failure (checkentry) reaches this
+    // with a non-map entry - dumped as-is, same as canonical.
+    private fun entrysummary(entry: Json): Json {
+        if (!entry.ismap) {
+            return entry
+        }
+
         val summary = LinkedHashMap<String, Json>()
-        entry.asmap?.forEach { (key, value) ->
+        entry.asmap!!.forEach { (key, value) ->
             if ("res" != key && "thrown" != key && "ctx" != key) {
                 summary[key] = value
             }
         }
-        msg.append("\n  entry:    ${stringify(Json.JMap(summary))}")
-
-        return OmniError(msg.toString(), entry)
+        return Json.JMap(summary)
     }
 }
 

@@ -133,6 +133,9 @@ public func jsonstr(_ val: Json) -> String {
   case .map(let entries):
     let keys = entries.keys.sorted()
     return "{" + keys.map { quote($0) + ":" + jsonstr(entries[$0]!) }.joined(separator: ",") + "}"
+  // Never authored in a spec (see Json.provider) - rendered only if a
+  // failure message happens to reach into it.
+  case .provider: return quote("<provider>")
   }
 }
 

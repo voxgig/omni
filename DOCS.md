@@ -735,7 +735,7 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | Rust | Maps are `BTreeMap`, so key order is sorted rather than insertion order. The regex engine supports the common subset: literals, classes, groups, alternation, `* + ? {m,n}`, `\d \w \s`, anchors. |
 | Java, C++, C#, Kotlin, Swift | Numbers are all doubles, matching JSON. |
 | Lua | Tables cannot hold `nil`, and an empty list and an empty map are the same table, so the port uses explicit `NULL`/`ABSENT` sentinels and tags every container with a metatable. |
-| Zig | Error values carry no payload, so failures are returned as messages - there is no `OmniError`. |
+| Zig | Error values carry no payload, so failures are returned as messages - there is no `OmniError`. For the same reason, spec-load refusals ([2.7](#27-format-versions)) surface as distinct typed errors (`error.MalformedOmniVersion`, `error.UnsupportedSpecVersion`, `error.MalformedOmniRequires`, `error.UnsupportedCapability`) rather than the canonical message strings. The failure modes are one-for-one; only the rendering differs. |
 | Lean | Checks are pure: failures are returned as `Except String`, so there is no `OmniError`. The regex matcher is a `partial def`. |
 | Clojure, Elixir, Scala, Lean | Map key order is not preserved (or is sorted). Order is never significant for equality. |
 | OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |

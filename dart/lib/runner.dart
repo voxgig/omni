@@ -45,6 +45,25 @@ class Provider {
   const Provider({this.subject, this.client, this.contextify, this.inject});
 }
 
+/// The newest spec format version this runner understands. A spec with no
+/// OMNI block is version 0: the original, lenient format, frozen forever.
+/// Version 1 turns on strict entry validation (see _checkentry).
+const int SPECVERSION = 1;
+
+/// Capability strings this runner supports beyond the version baseline. A
+/// spec's OMNI.requires list is checked against this: an unknown capability
+/// refuses the spec loudly at load time, instead of a lagging port silently
+/// mis-running it. (Empty today; future format features mint a string here.)
+const List<String> CAPABILITIES = [];
+
+/// The complete set of fields an entry may carry. Under version 1 anything
+/// else is an error: an unrecognised key is almost always a typo'd
+/// assertion, and a typo'd assertion is a test that silently stopped
+/// testing.
+const List<String> _entryfields = [
+  'in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc',
+];
+
 /// Load a spec: a path to a JSON file.
 dynamic loadspec(String path) {
   final file = File(path);
@@ -52,6 +71,51 @@ dynamic loadspec(String path) {
     throw OmniError('omni: cannot read spec: $path');
   }
   return jsonDecode(file.readAsStringSync());
+}
+
+/// Read the spec's format version from its optional top-level OMNI block,
+/// and refuse a spec this runner cannot faithfully run: a version newer
+/// than SPECVERSION, or a required capability not in CAPABILITIES. Only a
+/// genuinely absent OMNI key is legacy - a present `OMNI: null` is
+/// malformed, not version 0.
+int _resolveversion(dynamic alltests) {
+  if (alltests is! Map || !alltests.containsKey('OMNI')) {
+    return 0;
+  }
+
+  final meta = alltests['OMNI'];
+  final version = meta is Map ? meta['version'] : null;
+
+  var versionisint = false;
+  if (isnum(version)) {
+    final asnum = version as num;
+    versionisint = asnum.toDouble() == asnum.toDouble().truncateToDouble();
+  }
+
+  if (meta is! Map || !versionisint) {
+    throw OmniError('omni: malformed OMNI version block');
+  }
+
+  final versionval = (version as num).toInt();
+  if (0 > versionval || SPECVERSION < versionval) {
+    throw OmniError('omni: unsupported spec version: $versionval');
+  }
+
+  // A present `requires: null` is malformed, same as the OMNI block itself -
+  // only a genuinely absent key skips the check.
+  if (meta.containsKey('requires')) {
+    final requires = meta['requires'];
+    if (requires is! List) {
+      throw OmniError('omni: malformed OMNI requires list');
+    }
+    for (final cap in requires) {
+      if (cap is! String || !CAPABILITIES.contains(cap)) {
+        throw OmniError('omni: spec requires unsupported capability: ${stringify(cap)}');
+      }
+    }
+  }
+
+  return versionval;
 }
 
 /// Find `primary.<name>`, then `<name>`, then the whole spec.
@@ -170,8 +234,10 @@ class RunPack {
   final Provider _provider;
   final Map<String, Provider> _clients;
   final String _name;
+  final int _specversion;
 
-  RunPack(this.spec, this.subject, this._provider, this._clients, this._name)
+  RunPack(this.spec, this.subject, this._provider, this._clients, this._name,
+      this._specversion)
       : client = _provider;
 
   /// A named group of the resolved spec.
@@ -197,6 +263,15 @@ class RunPack {
     }
 
     final testset = testspecmap['set'] as List;
+
+    // Validate the AUTHORED group up front, against the un-normalised
+    // entries: null-normalisation above would otherwise rewrite an
+    // authored null (e.g. id: null) into a sentinel string and hide it
+    // from validation. A malformed spec is a spec error, not a test
+    // result, so it fails before any subject runs.
+    if (1 <= _specversion) {
+      _checkset(label, testspec, testset);
+    }
 
     for (var index = 0; index < testset.length; index++) {
       final entry = testset[index];
@@ -242,6 +317,60 @@ class RunPack {
       entry['res'] = res;
 
       _checkresult(label, index, entry, args, res);
+    }
+  }
+
+  // Validate a version-1 group up front, against the AUTHORED entries -
+  // `normalset` (post-fixjson) is only the fallback for a group whose
+  // original has no usable set.
+  void _checkset(String label, dynamic testspec, List normalset) {
+    final origset = (testspec is Map && testspec['set'] is List)
+        ? testspec['set'] as List
+        : normalset;
+
+    final markedempty = testspec is Map && true == testspec['empty'];
+    if (origset.isEmpty && !markedempty) {
+      throw OmniError('omni: empty test set: $label');
+    }
+
+    for (var index = 0; index < origset.length; index++) {
+      _checkentry(label, index, origset[index]);
+    }
+  }
+
+  // Strict entry validation, applied when the spec declares version 1 or
+  // later. The lenient format converts each of these mistakes into a
+  // silent pass or a dead field; here they fail with the entry named.
+  void _checkentry(String label, int index, dynamic entry) {
+    if (entry is! Map) {
+      throw _fail(label, index, entry, 'entry is not a map');
+    }
+
+    for (final key in entry.keys) {
+      final keystr = '$key';
+      if (!_entryfields.contains(keystr)) {
+        throw _fail(label, index, entry, 'unknown entry field: $keystr');
+      }
+    }
+
+    var argsources = 0;
+    for (final key in ['in', 'args', 'ctx']) {
+      if (entry.containsKey(key)) {
+        argsources++;
+      }
+    }
+    if (1 < argsources) {
+      throw _fail(label, index, entry, 'entry has more than one of in, args, ctx');
+    }
+
+    if (null != entry['err'] && entry.containsKey('out')) {
+      throw _fail(label, index, entry, 'entry has both err and out');
+    }
+
+    // Presence, not definedness: an authored `id: null` must fail, while
+    // an absent id is simply unset.
+    if (entry.containsKey('id') && entry['id'] is! String) {
+      throw _fail(label, index, entry, 'entry id is not a string');
     }
   }
 
@@ -401,13 +530,16 @@ class RunPack {
   String _at(List<String> path) => path.isEmpty ? '<root>' : pathify(path);
 
   // The label of one entry, for failure messages.
-  String _entryref(String label, int index, Map entry) {
-    final id = entry['id'];
+  String _entryref(String label, int index, dynamic entry) {
+    final id = entry is Map ? entry['id'] : null;
     final idpart = null == id ? '' : ' (${stringify(id)})';
     return '$label[$index]$idpart';
   }
 
-  OmniError _fail(String label, int index, Map entry, String reason,
+  // `entry` may not be a map - checkentry calls this for an entry that
+  // failed exactly that check - so the summary below degrades to the raw
+  // value instead of assuming map access.
+  OmniError _fail(String label, int index, dynamic entry, String reason,
       [String? expected, String? actual]) {
     var msg = 'omni: ${_entryref(label, index, entry)}: $reason';
 
@@ -418,12 +550,16 @@ class RunPack {
       msg += '\n  actual:   $actual';
     }
 
-    final summary = <String, dynamic>{};
-    entry.forEach((key, val) {
-      if ('res' != key && 'thrown' != key && 'ctx' != key) {
-        summary['$key'] = val;
-      }
-    });
+    dynamic summary = entry;
+    if (entry is Map) {
+      final out = <String, dynamic>{};
+      entry.forEach((key, val) {
+        if ('res' != key && 'thrown' != key && 'ctx' != key) {
+          out['$key'] = val;
+        }
+      });
+      summary = out;
+    }
     msg += '\n  entry:    ${stringify(summary)}';
 
     return OmniError(msg, entry);
@@ -434,8 +570,9 @@ class RunPack {
 class Runner {
   final dynamic _alltests;
   final Provider _provider;
+  final int _specversion;
 
-  Runner(this._alltests, this._provider);
+  Runner(this._alltests, this._provider, this._specversion);
 
   /// Resolve one named section of the spec.
   RunPack runner(String name, [dynamic store]) {
@@ -460,12 +597,16 @@ class Runner {
 
     final subject = _provider.subject?.call(name);
 
-    return RunPack(spec, subject, _provider, clients, name);
+    return RunPack(spec, subject, _provider, clients, name, _specversion);
   }
 }
 
 /// Make a runner for a spec file path (or spec value) and a provider.
+/// The spec's format version is resolved immediately - a version the
+/// runner cannot faithfully run fails here, at load time, not on the
+/// first `runset` call.
 Runner makeRunner(dynamic specref, [Provider provider = const Provider()]) {
   final alltests = specref is String ? loadspec(specref) : specref;
-  return Runner(alltests, provider);
+  final specversion = _resolveversion(alltests);
+  return Runner(alltests, provider, specversion);
 }

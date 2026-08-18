@@ -23,6 +23,24 @@ public struct OmniError: Error, CustomStringConvertible {
   public var description: String { return message }
 }
 
+/// The newest spec format version this runner understands. A spec with no
+/// OMNI block is version 0: the original, lenient format, frozen forever.
+/// Version 1 turns on strict entry validation (see checkentry).
+public let SPECVERSION = 1
+
+/// Capability strings this runner supports beyond the version baseline. A
+/// spec's OMNI.requires list is checked against this: an unknown
+/// capability refuses the spec loudly at load time, instead of a lagging
+/// port silently mis-running it. (Empty today; future format features
+/// mint a string here.)
+public let CAPABILITIES: [String] = []
+
+/// The complete set of fields an entry may carry. Under version 1 anything
+/// else is an error: an unrecognised key is almost always a typo'd
+/// assertion, and a typo'd assertion is a test that silently stopped
+/// testing.
+private let ENTRYFIELDS = ["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"]
+
 /// Run-time options for a set of test entries.
 public struct Flags {
   public var null: Bool
@@ -59,6 +77,42 @@ public final class Provider {
 /// Load a spec: a path to a JSON file.
 public func loadspec(_ path: String) throws -> Json {
   return try Json.parsefile(path)
+}
+
+/// Read the spec's format version from its optional top-level OMNI block,
+/// and refuse a spec this runner cannot faithfully run: a version newer
+/// than SPECVERSION, or a required capability not in CAPABILITIES. A
+/// present-but-null OMNI (or OMNI.requires) is malformed - only a
+/// genuinely absent key is legacy.
+public func resolveversion(_ alltests: Json) throws -> Int {
+  guard alltests.has("OMNI") else {
+    return 0
+  }
+
+  let meta = alltests.get("OMNI")
+
+  guard meta.ismap, let version = meta.get("version").asnum,
+    version == version.rounded(.towardZero)
+  else {
+    throw OmniError("omni: malformed OMNI version block")
+  }
+
+  if 0 > version || Double(SPECVERSION) < version {
+    throw OmniError("omni: unsupported spec version: " + numstr(version))
+  }
+
+  if meta.has("requires") {
+    guard let requireslist = meta.get("requires").aslist else {
+      throw OmniError("omni: malformed OMNI requires list")
+    }
+    for cap in requireslist {
+      guard let capstr = cap.asstr, CAPABILITIES.contains(capstr) else {
+        throw OmniError("omni: spec requires unsupported capability: " + stringify(cap))
+      }
+    }
+  }
+
+  return Int(version)
 }
 
 /// Find `primary.<name>`, then `<name>`, then the whole spec.
@@ -179,14 +233,19 @@ public final class RunPack {
   private let provider: Provider
   private let clients: [String: Provider]
   private let name: String
+  private let specversion: Int
 
-  init(spec: Json, subject: Subject?, provider: Provider, clients: [String: Provider], name: String) {
+  init(
+    spec: Json, subject: Subject?, provider: Provider, clients: [String: Provider], name: String,
+    specversion: Int
+  ) {
     self.spec = spec
     self.subject = subject
     self.client = provider
     self.provider = provider
     self.clients = clients
     self.name = name
+    self.specversion = specversion
   }
 
   /// A named group of the resolved spec.
@@ -214,6 +273,13 @@ public final class RunPack {
     let testspecmap = fixjson(testspec, useflags.null)
     guard let testset = testspecmap.get("set").aslist else {
       throw OmniError("omni: test spec has no set: \(label)")
+    }
+
+    // Validate the AUTHORED group (testspec, not testspecmap) - null
+    // normalisation above would otherwise rewrite an authored null (e.g.
+    // id: null) into a sentinel string and hide it from checkentry.
+    if 1 <= specversion {
+      try checkset(useflags, testspec, testset)
     }
 
     for (index, rawentry) in testset.enumerated() {
@@ -280,17 +346,80 @@ public final class RunPack {
       if let contextify = provider.contextify {
         first = contextify(first)
       }
-      // KNOWN LIMITATION: the canonical runner attaches the per-entry
-      // client to the context here (`first.client = testpack.client`).
-      // The Swift Json enum can only hold JSON values, not a Provider
-      // object, so the context passed to the subject cannot carry the
-      // client. A Swift subject that needs the per-entry client must be
-      // resolved through that client's own `subject` hook instead.
+      // Attach the entry's resolved client (canonical:
+      // `first.client = testpack.client`), before first is copied into
+      // args[0]/entry.ctx - Json has value semantics, unlike the JS
+      // object canonical mutates in place, so the attach must happen
+      // before both copies are taken, not after.
+      if first.ismap {
+        first.set("client", .provider(client))
+      }
       args[0] = first
       entry.set("ctx", first)
     }
 
     return args
+  }
+
+  // Validate a version-1 group up front, against the AUTHORED entries
+  // (testspec, not the null-normalised testset) - see the call site in
+  // runsetflags. Absorbs the empty-set check: a group with no entries
+  // must say so explicitly (`empty: true`), or it is a mistake, not a
+  // deliberate no-op.
+  private func checkset(_ flags: Flags, _ testspec: Json, _ normalset: [Json]) throws {
+    let origset: [Json]
+    if testspec.ismap, let set = testspec.get("set").aslist {
+      origset = set
+    } else {
+      origset = normalset
+    }
+
+    var markedempty = false
+    if case .bool(true) = testspec.get("empty") {
+      markedempty = true
+    }
+
+    if origset.isEmpty && !markedempty {
+      throw OmniError("omni: empty test set: \(flags.name ?? "set")")
+    }
+
+    for (index, entry) in origset.enumerated() {
+      try checkentry(flags, index, entry)
+    }
+  }
+
+  // Strict entry validation, applied when the spec declares version 1 or
+  // later. The lenient format converts each of these mistakes into a
+  // silent pass or a dead field; here they fail with the entry named.
+  private func checkentry(_ flags: Flags, _ index: Int, _ entry: Json) throws {
+    guard case .map(let fields) = entry else {
+      throw fail(flags, index, entry, "entry is not a map")
+    }
+
+    for key in fields.keys.sorted() {
+      if !ENTRYFIELDS.contains(key) {
+        throw fail(flags, index, entry, "unknown entry field: " + key)
+      }
+    }
+
+    var argsources = 0
+    for key in ["in", "args", "ctx"] where entry.has(key) {
+      argsources += 1
+    }
+    if 1 < argsources {
+      throw fail(flags, index, entry, "entry has more than one of in, args, ctx")
+    }
+
+    if !entry.get("err").isnone && entry.has("out") {
+      throw fail(flags, index, entry, "entry has both err and out")
+    }
+
+    // Presence, not definedness: `id: null` must fail here too, so a
+    // strict spec cannot smuggle a non-string id past this check under
+    // null-normalisation (checkset validates before fixjson runs).
+    if entry.has("id") && !entry.get("id").isstr {
+      throw fail(flags, index, entry, "entry id is not a string")
+    }
   }
 
   private func checkresult(_ flags: Flags, _ index: Int, _ entry: Json, _ args: [Json], _ res: Json)
@@ -475,10 +604,14 @@ public final class RunPack {
 public final class Runner {
   private let alltests: Json
   private let provider: Provider
+  private let specversion: Int
 
-  public init(_ alltests: Json, _ provider: Provider) {
+  /// Resolves the spec's format version immediately - fail fast, before
+  /// any group runs, on a version this runner cannot faithfully run.
+  public init(_ alltests: Json, _ provider: Provider) throws {
     self.alltests = alltests
     self.provider = provider
+    self.specversion = try resolveversion(alltests)
   }
 
   /// Resolve one named section of the spec.
@@ -504,16 +637,18 @@ public final class Runner {
 
     let subject = name.isEmpty ? nil : provider.subject?(name)
 
-    return RunPack(spec: spec, subject: subject, provider: provider, clients: clients, name: name)
+    return RunPack(
+      spec: spec, subject: subject, provider: provider, clients: clients, name: name,
+      specversion: specversion)
   }
 }
 
 /// Make a runner for a spec file path and a provider.
 public func makeRunner(_ path: String, _ provider: Provider = Provider()) throws -> Runner {
-  return Runner(try loadspec(path), provider)
+  return try Runner(try loadspec(path), provider)
 }
 
 /// Make a runner for an in-memory spec and a provider.
-public func makeRunner(_ spec: Json, _ provider: Provider = Provider()) -> Runner {
-  return Runner(spec, provider)
+public func makeRunner(_ spec: Json, _ provider: Provider = Provider()) throws -> Runner {
+  return try Runner(spec, provider)
 }

@@ -40,9 +40,24 @@ dynamic FIB(List<dynamic> args) => fib(args[0]);
 dynamic FIBSEQ(List<dynamic> args) => fibseq(args[0]);
 dynamic FIBRANGE(List<dynamic> args) => fibrange(args[0], args[1]);
 dynamic FIBINFO(List<dynamic> args) => fibinfo(args[0]);
+dynamic FIBCTX(List<dynamic> args) => fibctx(args[0]);
+
+// The context-group subject: reports what the runner delivered - the
+// contextify mark and the attached client - as plain data, so the spec can
+// pin both with an ordinary `out` comparison in every port.
+Map<String, dynamic> fibctx(dynamic ctx) {
+  final ctxmap = ctx as Map;
+  return {
+    'n': ctxmap['n'],
+    'val': fib(ctxmap['n']),
+    'mark': ctxmap['mark'],
+    'hasclient': null != ctxmap['client'],
+  };
+}
 
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
+// `contextify` marks the map, so the context group can prove the hook ran.
 Provider fibprovider(num shift) {
   final subjects = <String, Subject>{
     'fib': (args) => isnum(args[0]) ? fib((args[0] as num) + shift) : fib(args[0]),
@@ -56,6 +71,11 @@ Provider fibprovider(num shift) {
     client: (options) {
       final shiftval = ismap(options) ? options['shift'] : null;
       return fibprovider(isnum(shiftval) ? shiftval as num : 0);
+    },
+    contextify: (val) {
+      final out = Map<String, dynamic>.from(val as Map);
+      out['mark'] = 'CTX';
+      return out;
     },
   );
 }
@@ -169,6 +189,164 @@ void expectfail(String setname, Subject subject) {
   throw StateError('omni: expected OmniError for set: $setname');
 }
 
+// A spec-level failure: makeRunner itself must refuse to load the spec.
+void expectmakefail(dynamic spec, String contains) {
+  try {
+    makeRunner(spec);
+  } on OmniError catch (err) {
+    if (!err.message.contains(contains)) {
+      throw StateError('omni: message missing [$contains]: ${err.message}');
+    }
+    return;
+  }
+
+  throw StateError('omni: expected OmniError containing [$contains]');
+}
+
+// A strict (version-1) entry failure: the spec loads, but the named group
+// fails validation before the subject ever runs.
+void expectstrictfail(Map<String, dynamic> group, String contains) {
+  final spec = {
+    'OMNI': {'version': 1},
+    'fib': {'g': group},
+  };
+  final R = makeRunner(spec).runner('fib');
+
+  try {
+    R.runset(R.set('g'), FIB);
+  } on OmniError catch (err) {
+    if (!err.message.contains(contains)) {
+      throw StateError('omni: message missing [$contains]: ${err.message}');
+    }
+    return;
+  }
+
+  throw StateError('omni: expected OmniError containing [$contains]');
+}
+
+void checknullomniblock() {
+  // A present-but-null block is malformed; only a genuinely absent OMNI
+  // key is legacy.
+  expectmakefail({
+    'OMNI': null,
+    'fib': {
+      'g': {
+        'set': [
+          {'in': 1, 'out': 1},
+        ]
+      }
+    },
+  }, 'malformed OMNI');
+
+  expectmakefail({
+    'OMNI': {'version': 1, 'requires': null},
+    'fib': {
+      'g': {
+        'set': [
+          {'in': 1, 'out': 1},
+        ]
+      }
+    },
+  }, 'malformed OMNI requires list');
+
+  // Must not throw: no OMNI key at all is legacy.
+  makeRunner({
+    'fib': {
+      'g': {
+        'set': [
+          {'in': 1, 'out': 1},
+        ]
+      }
+    },
+  });
+}
+
+void checkstrictemptyset() {
+  final spec = {
+    'OMNI': {'version': 1},
+    'fib': {
+      'g': {'set': []},
+      'h': {
+        'set': [],
+        'empty': true,
+      },
+    },
+  };
+  final R = makeRunner(spec).runner('fib');
+
+  var threw = false;
+  try {
+    R.runset(R.set('g'), FIB);
+  } on OmniError catch (err) {
+    threw = true;
+    if (!err.message.contains('empty test set')) {
+      throw StateError('omni: message missing [empty test set]: ${err.message}');
+    }
+  }
+  if (!threw) {
+    throw StateError('omni: expected OmniError for empty set');
+  }
+
+  // Must not throw: `empty: true` states the emptiness as fact.
+  R.runset(R.set('h'), FIB);
+}
+
+void checklegacylenient() {
+  final spec = {
+    'fib': {
+      'g': {
+        'set': [
+          {'in': 6, 'matches': {'out': 999}, 'out': 8},
+        ]
+      }
+    },
+  };
+  final R = makeRunner(spec).runner('fib');
+  R.runset(R.set('g'), FIB); // must not throw: no OMNI block, so lenient
+}
+
+void checkunsupportedversion() => expectmakefail({
+      'OMNI': {'version': 99},
+      'fib': {'g': {'set': []}},
+    }, 'unsupported spec version');
+
+void checkunknowncapability() => expectmakefail({
+      'OMNI': {
+        'version': 1,
+        'requires': ['nosuchfeature'],
+      },
+      'fib': {'g': {'set': []}},
+    }, 'unsupported capability');
+
+void checkmalformedversion() => expectmakefail({
+      'OMNI': {'version': 'one'},
+      'fib': {'g': {'set': []}},
+    }, 'malformed OMNI');
+
+void checkunknownfield() => expectstrictfail({
+      'set': [
+        {'in': 6, 'matches': {'out': 999}},
+      ]
+    }, 'unknown entry field: matches');
+
+void checkmultisource() => expectstrictfail({
+      'set': [
+        {'in': 5, 'args': [5], 'out': 5},
+      ]
+    }, 'more than one of in, args, ctx');
+
+void checkerrandout() => expectstrictfail({
+      'set': [
+        {'in': -1, 'err': true, 'out': 5},
+      ]
+    }, 'both err and out');
+
+void checknullid() => expectstrictfail({
+      'set': [
+        {'in': 1, 'out': 1, 'id': null},
+      ]
+    }, 'entry id is not a string');
+
 void checkmessage() {
   final spec = {
     'fib': {
@@ -213,6 +391,7 @@ void main(List<String> args) {
   testcase('match', () => R.runset(R.set('match'), FIB));
   testcase('matchinfo', () => R.runset(R.set('matchinfo'), FIBINFO));
   testcase('client', () => R.runset(R.set('client'), FIB));
+  testcase('context', () => R.runset(R.set('context'), FIBCTX));
 
   testcase('detects wrong result', () => expectfail('wrongout', FIB));
   testcase('detects missing error', () => expectfail('wrongerr', FIB));
@@ -227,6 +406,18 @@ void main(List<String> args) {
   testcase('an empty-string match leaf is not a wildcard',
       () => expectfail('emptystr', FIBINFO));
   testcase('reports entry index and id', checkmessage);
+
+  testcase('rejects an unsupported spec version', checkunsupportedversion);
+  testcase('rejects an unknown required capability', checkunknowncapability);
+  testcase('rejects a malformed version block', checkmalformedversion);
+  testcase('rejects a null OMNI block, but accepts an absent one', checknullomniblock);
+  testcase(
+      'strict: an unknown entry field fails instead of passing vacuously', checkunknownfield);
+  testcase('strict: more than one of in, args, ctx fails', checkmultisource);
+  testcase('strict: err together with out fails', checkerrandout);
+  testcase('strict: a null id fails even under null-normalisation', checknullid);
+  testcase('strict: an empty set fails unless marked empty', checkstrictemptyset);
+  testcase('a legacy spec (no OMNI block) stays lenient', checklegacylenient);
 
   print('\n$passcount passed, $failcount failed');
 

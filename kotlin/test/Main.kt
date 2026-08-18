@@ -82,7 +82,8 @@ fun fibprovider(shift: Double): Provider =
         },
         client = { options -> fibprovider(options.get("shift").asnum ?: 0.0) },
         contextify = { val_ ->
-            val out = LinkedHashMap(val_.asmap ?: LinkedHashMap())
+            val out = LinkedHashMap<String, Json>()
+            val_.asmap?.forEach { (key, value) -> out[key] = value }
             out["mark"] = Json.str("CTX")
             Json.JMap(out)
         },

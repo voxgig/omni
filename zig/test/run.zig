@@ -92,6 +92,31 @@ const FIBSEQ = omni.Subject{ .call = callFibSeq };
 const FIBRANGE = omni.Subject{ .call = callFibRange };
 const FIBINFO = omni.Subject{ .call = callFibInfo };
 
+// The context-group subject: reports what the runner delivered - the
+// contextify mark and the attached client - as plain data, so the spec
+// can pin both with an ordinary `out` comparison.
+fn callFibCtx(_: *const omni.Subject, args: []const Json) omni.SubjectResult {
+    const ctx: omni.Maybe = if (0 < args.len) args[0] else null;
+    const n = omni.jget(ctx, "n");
+
+    const result = fib.fib(ALLOC, n) catch return .{ .err = "omni: out of memory" };
+    const val = switch (result) {
+        .ok => |value| value,
+        .err => |message| return .{ .err = message },
+    };
+
+    const out = omni.jmap(ALLOC, &.{
+        .{ "n", n orelse Json{ .null = {} } },
+        .{ "val", val },
+        .{ "mark", omni.jget(ctx, "mark") orelse Json{ .null = {} } },
+        .{ "hasclient", omni.jbool(!omni.isnone(omni.jget(ctx, "client"))) },
+    }) catch return .{ .err = "omni: out of memory" };
+
+    return .{ .ok = out };
+}
+
+const FIBCTX = omni.Subject{ .call = callFibCtx };
+
 // ---- provider --------------------------------------------------------
 
 // The provider hosts the system under test. `shift` offsets the Fibonacci
@@ -113,6 +138,20 @@ fn providerClient(_: *const omni.Provider, options: omni.Maybe) *const omni.Prov
     return fibprovider(shift);
 }
 
+// Marks the ctx map, so the context group can prove this hook ran.
+fn providerContextify(_: *const omni.Provider, val: Json) Json {
+    if (.object != val) return val;
+
+    var out: std.json.ObjectMap = .{};
+    var it = val.object.iterator();
+    while (it.next()) |field| {
+        out.put(ALLOC, field.key_ptr.*, field.value_ptr.*) catch unreachable;
+    }
+    out.put(ALLOC, "mark", omni.jstr("CTX")) catch unreachable;
+
+    return .{ .object = out };
+}
+
 fn fibprovider(shift: f64) *const omni.Provider {
     const data = ALLOC.create(ShiftData) catch unreachable;
     data.* = .{ .shift = shift };
@@ -121,6 +160,7 @@ fn fibprovider(shift: f64) *const omni.Provider {
     provider.* = .{
         .subject = providerSubject,
         .client = providerClient,
+        .contextify = providerContextify,
         .data = if (0 == shift) null else data,
     };
 
@@ -261,7 +301,7 @@ fn expectfail(label: []const u8, setname: []const u8, subject: *const omni.Subje
     const empty = try ALLOC.create(omni.Provider);
     empty.* = .{};
 
-    const runner = omni.makeRunnerSpec(ALLOC, try badspec(ALLOC), empty);
+    const runner = try omni.makeRunnerSpec(ALLOC, try badspec(ALLOC), empty);
     const pack = try runner.runner("fib", null);
 
     const failure = try pack.runset(pack.set(setname), subject);
@@ -296,7 +336,7 @@ fn checkmessage() !void {
     const empty = try ALLOC.create(omni.Provider);
     empty.* = .{};
 
-    const runner = omni.makeRunnerSpec(ALLOC, spec, empty);
+    const runner = try omni.makeRunnerSpec(ALLOC, spec, empty);
     const pack = try runner.runner("fib", null);
 
     const failure = try pack.runset(pack.set("g"), &FIB);
@@ -314,6 +354,270 @@ fn checkmessage() !void {
     }
 
     report(label, null);
+}
+
+// ---- version-1 negative tests -----------------------------------------
+
+// A spec whose OMNI block this runner must refuse at load time: expects
+// makeRunnerSpec to fail with exactly `wanterr`, never a Runner.
+fn expectloadfail(
+    label: []const u8,
+    build: *const fn (std.mem.Allocator) anyerror!Json,
+    wanterr: anyerror,
+) !void {
+    if (!wanted(label)) {
+        return;
+    }
+
+    const empty = try ALLOC.create(omni.Provider);
+    empty.* = .{};
+
+    const spec = try build(ALLOC);
+
+    if (omni.makeRunnerSpec(ALLOC, spec, empty)) |_| {
+        report(label, "omni: expected a load failure, got none");
+    } else |err| {
+        report(label, if (err == wanterr)
+            null
+        else
+            try std.fmt.allocPrint(ALLOC, "omni: expected {s}, got {s}", .{ @errorName(wanterr), @errorName(err) }));
+    }
+}
+
+// A group that must load, then fail at runset time with `want` in the
+// message - the strict entry/empty-set checks, which (unlike load-time
+// version refusal) carry byte-identical text.
+fn expectsetfail(
+    label: []const u8,
+    build: *const fn (std.mem.Allocator) anyerror!Json,
+    groupname: []const u8,
+    subject: *const omni.Subject,
+    want: []const u8,
+) !void {
+    if (!wanted(label)) {
+        return;
+    }
+
+    const empty = try ALLOC.create(omni.Provider);
+    empty.* = .{};
+
+    const runner = try omni.makeRunnerSpec(ALLOC, try build(ALLOC), empty);
+    const pack = try runner.runner("fib", null);
+
+    const failure = try pack.runset(pack.set(groupname), subject);
+
+    const message = failure orelse {
+        report(label, "omni: expected a failure, got none");
+        return;
+    };
+
+    report(label, if (null != std.mem.indexOf(u8, message, want)) null else message);
+}
+
+// A group that must load and pass outright.
+fn expectsetpass(
+    label: []const u8,
+    build: *const fn (std.mem.Allocator) anyerror!Json,
+    groupname: []const u8,
+    subject: *const omni.Subject,
+) !void {
+    if (!wanted(label)) {
+        return;
+    }
+
+    const empty = try ALLOC.create(omni.Provider);
+    empty.* = .{};
+
+    const runner = try omni.makeRunnerSpec(ALLOC, try build(ALLOC), empty);
+    const pack = try runner.runner("fib", null);
+
+    report(label, try pack.runset(pack.set(groupname), subject));
+}
+
+fn specversion99(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(99) }}) },
+        .{ "fib", try omni.jmap(alloc, &.{
+            .{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{}) }}) },
+        }) },
+    });
+}
+
+fn specrequiresunknown(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{
+            .{ "version", omni.jnum(1) },
+            .{ "requires", try omni.jlist(alloc, &.{omni.jstr("nosuchfeature")}) },
+        }) },
+        .{ "fib", try omni.jmap(alloc, &.{
+            .{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{}) }}) },
+        }) },
+    });
+}
+
+fn specversionmalformed(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jstr("one") }}) },
+        .{ "fib", try omni.jmap(alloc, &.{
+            .{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{}) }}) },
+        }) },
+    });
+}
+
+// Both halves of the presence-not-nullness rule for the OMNI block
+// itself: a present-but-null block (or requires list) is malformed, but a
+// genuinely absent OMNI key stays legacy.
+fn checknullomni() !void {
+    const label = "rejects a null OMNI block, but accepts an absent one";
+    if (!wanted(label)) {
+        return;
+    }
+
+    const empty = try ALLOC.create(omni.Provider);
+    empty.* = .{};
+
+    const nullblock = try omni.jmap(ALLOC, &.{
+        .{ "OMNI", Json{ .null = {} } },
+        .{ "fib", try omni.jmap(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{ .{ "set", try omni.jlist(ALLOC, &.{
+                try omni.jmap(ALLOC, &.{ .{ "in", omni.jnum(1) }, .{ "out", omni.jnum(1) } }),
+            }) } }) },
+        }) },
+    });
+
+    if (omni.makeRunnerSpec(ALLOC, nullblock, empty)) |_| {
+        report(label, "omni: expected OMNI: null to be refused");
+        return;
+    } else |err| {
+        if (err != error.MalformedOmniVersion) {
+            report(label, try std.fmt.allocPrint(
+                ALLOC,
+                "omni: expected MalformedOmniVersion for OMNI: null, got {s}",
+                .{@errorName(err)},
+            ));
+            return;
+        }
+    }
+
+    const nullrequires = try omni.jmap(ALLOC, &.{
+        .{ "OMNI", try omni.jmap(ALLOC, &.{
+            .{ "version", omni.jnum(1) },
+            .{ "requires", Json{ .null = {} } },
+        }) },
+        .{ "fib", try omni.jmap(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{ .{ "set", try omni.jlist(ALLOC, &.{
+                try omni.jmap(ALLOC, &.{ .{ "in", omni.jnum(1) }, .{ "out", omni.jnum(1) } }),
+            }) } }) },
+        }) },
+    });
+
+    if (omni.makeRunnerSpec(ALLOC, nullrequires, empty)) |_| {
+        report(label, "omni: expected requires: null to be refused");
+        return;
+    } else |err| {
+        if (err != error.MalformedOmniRequires) {
+            report(label, try std.fmt.allocPrint(
+                ALLOC,
+                "omni: expected MalformedOmniRequires for requires: null, got {s}",
+                .{@errorName(err)},
+            ));
+            return;
+        }
+    }
+
+    const absent = try omni.jmap(ALLOC, &.{
+        .{ "fib", try omni.jmap(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{ .{ "set", try omni.jlist(ALLOC, &.{
+                try omni.jmap(ALLOC, &.{ .{ "in", omni.jnum(1) }, .{ "out", omni.jnum(1) } }),
+            }) } }) },
+        }) },
+    });
+
+    if (omni.makeRunnerSpec(ALLOC, absent, empty)) |_| {
+        report(label, null);
+    } else |err| {
+        report(label, try std.fmt.allocPrint(
+            ALLOC,
+            "omni: expected an absent OMNI block to load, got {s}",
+            .{@errorName(err)},
+        ));
+    }
+}
+
+fn specunknownfield(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
+        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+            try omni.jmap(alloc, &.{
+                .{ "in", omni.jnum(6) },
+                .{ "matches", try omni.jmap(alloc, &.{.{ "out", omni.jnum(999) }}) },
+            }),
+        }) } }) } }) },
+    });
+}
+
+fn specmultiargsources(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
+        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+            try omni.jmap(alloc, &.{
+                .{ "in", omni.jnum(5) },
+                .{ "args", try omni.jlist(alloc, &.{omni.jnum(5)}) },
+                .{ "out", omni.jnum(5) },
+            }),
+        }) } }) } }) },
+    });
+}
+
+fn specerrandout(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
+        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+            try omni.jmap(alloc, &.{
+                .{ "in", omni.jnum(-1) },
+                .{ "err", omni.jbool(true) },
+                .{ "out", omni.jnum(5) },
+            }),
+        }) } }) } }) },
+    });
+}
+
+fn specnullid(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
+        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+            try omni.jmap(alloc, &.{
+                .{ "in", omni.jnum(1) },
+                .{ "out", omni.jnum(1) },
+                .{ "id", Json{ .null = {} } },
+            }),
+        }) } }) } }) },
+    });
+}
+
+fn specemptysets(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
+        .{ "fib", try omni.jmap(alloc, &.{
+            .{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{}) }}) },
+            .{ "h", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{}) },
+                .{ "empty", omni.jbool(true) },
+            }) },
+        }) },
+    });
+}
+
+fn speclegacyunknownfield(alloc: std.mem.Allocator) anyerror!Json {
+    return omni.jmap(alloc, &.{
+        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+            try omni.jmap(alloc, &.{
+                .{ "in", omni.jnum(6) },
+                .{ "matches", try omni.jmap(alloc, &.{.{ "out", omni.jnum(999) }}) },
+                .{ "out", omni.jnum(8) },
+            }),
+        }) } }) } }) },
+    });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -340,6 +644,7 @@ pub fn main(init: std.process.Init) !void {
     try rungroup(&pack, "match", &FIB, .{});
     try rungroup(&pack, "matchinfo", &FIBINFO, .{});
     try rungroup(&pack, "client", &FIB, .{});
+    try rungroup(&pack, "context", &FIBCTX, .{});
 
     try expectfail("detects wrong result", "wrongout", &FIB);
     try expectfail("detects missing error", "wrongerr", &FIB);
@@ -349,6 +654,38 @@ pub fn main(init: std.process.Init) !void {
     try expectfail("__UNDEF__ does not match a present null", "undefonnull", &FIBINFO);
     try expectfail("__NULL__ does not match an absent key", "nullonabsent", &FIBINFO);
     try expectfail("an empty-string match leaf is not a wildcard", "emptystr", &FIBINFO);
+
+    try expectloadfail("rejects an unsupported spec version", specversion99, error.UnsupportedSpecVersion);
+    try expectloadfail("rejects an unknown required capability", specrequiresunknown, error.UnsupportedCapability);
+    try expectloadfail("rejects a malformed version block", specversionmalformed, error.MalformedOmniVersion);
+    try checknullomni();
+
+    try expectsetfail(
+        "strict: an unknown entry field fails instead of passing vacuously",
+        specunknownfield,
+        "g",
+        &FIBINFO,
+        "unknown entry field: matches",
+    );
+    try expectsetfail(
+        "strict: more than one of in, args, ctx fails",
+        specmultiargsources,
+        "g",
+        &FIB,
+        "more than one of in, args, ctx",
+    );
+    try expectsetfail("strict: err together with out fails", specerrandout, "g", &FIB, "both err and out");
+    try expectsetfail(
+        "strict: a null id fails even under null-normalisation",
+        specnullid,
+        "g",
+        &FIB,
+        "entry id is not a string",
+    );
+    try expectsetfail("strict: an empty set fails unless marked empty", specemptysets, "g", &FIB, "empty test set");
+    try expectsetpass("strict: an empty set marked empty: true passes", specemptysets, "h", &FIB);
+    try expectsetpass("a legacy spec (no OMNI block) stays lenient", speclegacyunknownfield, "g", &FIB);
+
     try checkmessage();
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ PASSCOUNT, FAILCOUNT });
