@@ -88,6 +88,48 @@ doubles; integers |n| ≤ 2^53; ECMAScript shortest-round-trip naming) plus
 fib entries pinning the observable edges, with honest §9 variance rows
 where a port cannot comply.
 
+### A6 (high) — The model cannot express a zero-argument call, and invents one
+`resolveargs` falls through to `args = [clone(entry.in)]`, so an entry
+with none of `in`/`args`/`ctx` calls the subject with a single *absent*
+value (DOCS §2.2) rather than with no arguments at all. In JavaScript the
+two are indistinguishable — `f()` and `f(undefined)` bind identically —
+which is why twenty-three ports agreed and the gap went unseen. They are
+not indistinguishable in any language with default parameters. struct's
+Python `typify` carries a sentinel default precisely so that `typify()`
+and `typify(None)` differ, and struct's corpus pins both, as adjacent
+entries:
+
+```
+{"in": null, "out": 4194432}   # typify(None)
+{"out": 1073741824}            # typify()
+```
+
+The second means "call with no arguments" — which is what struct's
+in-situ runner does (`args = []`). Under omni it becomes `typify(None)`
+and the entry fails. This is the one failure mode where omni changes the
+meaning of a corpus it hosts instead of reporting on it: 17 of struct's
+1397 entries use the implicit form and omni reinterprets every one of
+them; `struct/minor/typify#10` is simply the only one whose subject can
+observe the difference today. (`struct/minor/slice` was the other, and
+turned out to be a genuine port bug — Python's `bool` is a subclass of
+`int`, so `slice(True, 1)` clamped to `1`. struct's own runner compares
+with `==`, under which `1 == True`, so its corpus cannot catch
+bool/number conflation in *any* port; omni's `deepequal` can, and did.)
+
+The blast radius in the other direction is nil: neither `spec/fib.aontu`
+(0 implicit entries of 68) nor sekreto's corpus (0 of 110) contains a
+single entry with no `in`/`args`/`ctx`, so no omni-authored spec depends
+on the current reading.
+
+**Fix (decision required — see plan 4.12):** either **(a)** make the
+implicit form mean a zero-argument call, keeping `in: null` and
+`args: [null]` for the one-null-argument case — canonical + 23 ports +
+DOCS, and no existing spec changes meaning; or **(b)** keep the current
+reading and require a downstream corpus to write `args: []` where it
+means zero. (a) is recommended: an entry that declares no input should
+not have one invented for it, and (b) fixes the one entry that fails
+today while leaving the other sixteen quietly reinterpreted.
+
 ## B — Category and naming coherence
 
 ### B1 (medium) — "client" names four concepts; the runner injects a live Provider under a plain data key

@@ -3,8 +3,12 @@
 Live status of [`adoption.md`](adoption.md). **A row changes in the same
 commit that changes its status** for work landing in this repo; rows
 tracking other repos are updated when the change merges there, citing the
-PR. Statuses: `NOT STARTED`, `IN PROGRESS`, `DONE`, `DECIDED-NO` (with a
-reason).
+PR. Statuses: `NOT STARTED`, `IN PROGRESS`, `DONE`, `DECISION NEEDED`
+(waiting on a call that is not the implementer's to make), `DECIDED-NO`
+(with a reason).
+
+Where the work stopped, and what a new session needs to resume it, is in
+[`handover.md`](handover.md).
 
 ## Phase 0 — make omni consumable and trustworthy
 
@@ -33,7 +37,7 @@ Whether to add per-port gates is open — see 1.1 below.
 |---|---|---|
 | javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
 | typescript | NOT STARTED | Resolve `makeContext`/`contextify` drift + `ctx.utility`; coordinate with @voxgig/sdkgen first. |
-| python | NOT STARTED | |
+| python | IN PROGRESS | Blocked on 4.12. Adapter written and working: 99 of 100 tests pass through omni. The single failure is `struct/minor/typify#10` — the corpus entry that means "call with no arguments", which omni calls with one absent argument (model review A6). The migration also exposed a real port bug in `slice` (Python `bool` is a subclass of `int`), fixed separately in voxgig/struct. Not pushed: struct's `test-python` CI job has no omni checkout or `OMNI_HOME`, so the swap must land together with that wiring. Details and the adapter source: [`handover.md`](handover.md). |
 | go | NOT STARTED | |
 | php | NOT STARTED | |
 | ruby | NOT STARTED | |
@@ -94,3 +98,4 @@ Findings and rationale:
 | 4.9 B-group naming coherence (aliases, strict section resolution, `options` short form) | NOT STARTED | |
 | 4.10 Shape check: cross-field rules once aontu supports them | NOT STARTED | `must()` and `length()` are absent in aontu 0.48.2 (Band B / sizing atoms). When they land, move one-of in/args/ctx, err-with-out and non-empty-set into `spec/def/omni-spec.aontu` so a malformed spec fails at build, not only at test. |
 | 4.11 Share the shape with downstream corpora | NOT STARTED | struct and sekreto author their own specs; decide how they import omni's shape across the local-checkout boundary (struct's corpus is legacy v0, so it needs a v0 variant or an opt-in). |
+| 4.12 Zero-argument calls (model review A6) | **DECISION NEEDED** | An entry with no `in`/`args`/`ctx` calls the subject with one absent value; struct's corpus uses that form to mean *no arguments*. Blocks the python migration. (a) change the rule — canonical + 23 ports + DOCS, zero effect on fib (0 implicit entries of 68) or sekreto (0 of 110); (b) require `args: []` downstream — one struct entry today, sixteen others left silently reinterpreted. (a) recommended. |

@@ -223,6 +223,9 @@ The cross-repo plan for omni becoming the shared test-spec utility of
 `voxgig/struct` and `voxgig/sekreto` (validated externally by
 `senecajs/Sekreto`) lives in [`doc/plan/adoption.md`](doc/plan/adoption.md),
 and its progress register in [`doc/plan/progress.md`](doc/plan/progress.md).
+[`doc/plan/handover.md`](doc/plan/handover.md) records where the work
+physically stopped - open decisions, half-finished migrations and what to
+pick up first. Read it before starting on the plan.
 
 **A work item's row in the register changes in the same commit that
 changes its status.** For work landing in *this* repo that is a hard rule;
