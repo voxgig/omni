@@ -18,12 +18,128 @@ defmodule Voxgig.Omni.Runner do
   alias Voxgig.Omni.Json
   alias Voxgig.Omni.Util, as: U
 
+  @doc """
+  The newest spec format version this runner understands. A spec with no
+  OMNI block is version 0: the original, lenient format, frozen forever.
+  Version 1 turns on strict entry validation (see checkentry/3).
+  """
+  def specversion, do: 1
+
+  @doc """
+  Capability strings this runner supports beyond the version baseline. A
+  spec's OMNI.requires list is checked against this: an unknown capability
+  refuses the spec loudly at load time, instead of a lagging port silently
+  mis-running it. (Empty today; future format features mint a string here.)
+  """
+  def capabilities, do: []
+
+  # The complete set of fields an entry may carry. Under version 1 anything
+  # else is an error: an unrecognised key is almost always a typo'd
+  # assertion, and a typo'd assertion is a test that silently stopped
+  # testing.
+  @entryfields ~w(in args ctx out err match client id doc)
+
   @doc "Load a spec: a path to a JSON file."
   def loadspec(path) do
     case File.read(path) do
       {:ok, text} -> Json.parse(text)
       {:error, _} -> raise OmniError, message: "omni: cannot read spec: #{path}"
     end
+  end
+
+  # Read the spec's format version from its optional top-level OMNI block,
+  # and refuse a spec this runner cannot faithfully run: a version newer
+  # than specversion/0, or a required capability not in capabilities/0.
+  defp resolveversion(alltests) do
+    hasomni = U.ismap(alltests) and Map.has_key?(alltests, "OMNI")
+
+    if not hasomni do
+      0
+    else
+      meta = Map.get(alltests, "OMNI")
+      version = U.get(meta, "version")
+      numversion = if U.isnum(version), do: version / 1, else: nil
+
+      if not U.ismap(meta) or is_nil(numversion) or Float.round(numversion) != numversion do
+        raise OmniError, message: "omni: malformed OMNI version block"
+      end
+
+      if version < 0 or specversion() < version do
+        raise OmniError, message: "omni: unsupported spec version: #{U.stringify(version)}"
+      end
+
+      if U.has(meta, "requires") do
+        requires = U.get(meta, "requires")
+
+        if not U.islist(requires) do
+          raise OmniError, message: "omni: malformed OMNI requires list"
+        end
+
+        Enum.each(requires, fn cap ->
+          if not (U.isstr(cap) and cap in capabilities()) do
+            raise OmniError,
+              message: "omni: spec requires unsupported capability: #{U.stringify(cap)}"
+          end
+        end)
+      end
+
+      version
+    end
+  end
+
+  # Strict entry validation, applied when the spec declares version 1 or
+  # later. The lenient format converts each of these mistakes into a
+  # silent pass or a dead field; here they fail with the entry named.
+  defp checkentry(label, index, entry) do
+    if not U.ismap(entry) do
+      raise fail(label, index, entry, "entry is not a map", nil, nil)
+    end
+
+    Enum.each(Map.keys(entry), fn key ->
+      if key not in @entryfields do
+        raise fail(label, index, entry, "unknown entry field: #{key}", nil, nil)
+      end
+    end)
+
+    argsources = Enum.count(["in", "args", "ctx"], &Map.has_key?(entry, &1))
+
+    if argsources > 1 do
+      raise fail(label, index, entry, "entry has more than one of in, args, ctx", nil, nil)
+    end
+
+    entryerr = U.get(entry, "err")
+
+    if not U.isnone(entryerr) and Map.has_key?(entry, "out") do
+      raise fail(label, index, entry, "entry has both err and out", nil, nil)
+    end
+
+    if Map.has_key?(entry, "id") and not U.isstr(U.get(entry, "id")) do
+      raise fail(label, index, entry, "entry id is not a string", nil, nil)
+    end
+  end
+
+  # Validate a version-1 group up front, against the AUTHORED entries -
+  # null-normalisation would otherwise rewrite an authored null (e.g.
+  # id: null) into a sentinel string and hide it from validation. A
+  # malformed spec is a spec error, not a test result, so it fails
+  # before any subject runs.
+  defp checkset(label, testspec, normalset) do
+    origset =
+      if U.ismap(testspec) and U.islist(U.get(testspec, "set")) do
+        U.get(testspec, "set")
+      else
+        normalset
+      end
+
+    emptyflag = if U.ismap(testspec), do: U.get(testspec, "empty"), else: U.absent()
+
+    if [] == origset and true != emptyflag do
+      raise OmniError, message: "omni: empty test set: #{label}"
+    end
+
+    origset
+    |> Enum.with_index()
+    |> Enum.each(fn {entry, index} -> checkentry(label, index, entry) end)
   end
 
   @doc "Find `primary.<name>`, then `<name>`, then the whole spec."
@@ -117,6 +233,7 @@ defmodule Voxgig.Omni.Runner do
   """
   def make_runner(specref, provider \\ %{}) do
     alltests = if is_binary(specref), do: loadspec(specref), else: specref
+    specversion = resolveversion(alltests)
 
     fn name, store ->
       spec = resolvespec(name, alltests)
@@ -130,7 +247,14 @@ defmodule Voxgig.Omni.Runner do
 
       runsetflags = fn testspec, flags, testsubject ->
         run_set_flags(
-          %{spec: spec, subject: subject, provider: provider, clients: clients, name: name},
+          %{
+            spec: spec,
+            subject: subject,
+            provider: provider,
+            clients: clients,
+            name: name,
+            specversion: specversion
+          },
           testspec,
           flags,
           testsubject
@@ -188,6 +312,10 @@ defmodule Voxgig.Omni.Runner do
       raise OmniError, message: "omni: test spec has no set: #{label}"
     end
 
+    if 1 <= runpack.specversion do
+      checkset(label, testspec, testset)
+    end
+
     testset
     |> Enum.with_index()
     |> Enum.each(fn {rawentry, index} ->
@@ -208,11 +336,11 @@ defmodule Voxgig.Omni.Runner do
         rawentry
       end
 
-    entrysubject = resolvesubject(runpack, entry, usesubject)
-    {args, entry} = resolveargs(runpack, entry)
+    testpack = resolvetestpack(runpack, entry, usesubject)
+    {args, entry} = resolveargs(runpack, entry, testpack)
 
     try do
-      {:ok, entrysubject.(args)}
+      {:ok, testpack.subject.(args)}
     rescue
       omnierr in OmniError -> reraise(omnierr, __STACKTRACE__)
       err -> {:error, err}
@@ -227,25 +355,34 @@ defmodule Voxgig.Omni.Runner do
     end
   end
 
-  defp resolvesubject(runpack, entry, usesubject) do
+  # Resolve the client and subject for one entry: the entry's own `client`
+  # override when present (looked up in the spec's DEF.client clients),
+  # else the root provider.
+  defp resolvetestpack(runpack, entry, usesubject) do
     case U.get(entry, "client") do
       clientname when is_binary(clientname) ->
         client =
           Map.get(runpack.clients, clientname) ||
             raise(OmniError, message: "omni: unknown client: #{clientname}", entry: entry)
 
-        case Map.get(client, :subject) do
-          nil -> usesubject
-          resolve -> resolve.(runpack.name) || usesubject
-        end
+        subject =
+          case Map.get(client, :subject) do
+            nil -> usesubject
+            resolve -> resolve.(runpack.name) || usesubject
+          end
+
+        %{client: client, subject: subject}
 
       _ ->
-        usesubject
+        %{client: runpack.provider, subject: usesubject}
     end
   end
 
-  # Build the argument list: `ctx`, `args`, or `in`.
-  defp resolveargs(runpack, entry) do
+  # Build the argument list: `ctx`, `args`, or `in`. A map `ctx`/`args[0]`
+  # is passed through the provider's contextify hook, then stamped with
+  # the resolved client (the one testpack.subject will actually run
+  # against), so a context-aware subject can see what served it.
+  defp resolveargs(runpack, entry, testpack) do
     hasctx = U.has(entry, "ctx")
     hasargs = U.has(entry, "args")
 
@@ -268,6 +405,8 @@ defmodule Voxgig.Omni.Runner do
           nil -> hd(args)
           contextify -> contextify.(hd(args))
         end
+
+      first = Map.put(first, "client", testpack.client)
 
       {[first | tl(args)], Map.put(entry, "ctx", first)}
     else
@@ -410,9 +549,11 @@ defmodule Voxgig.Omni.Runner do
     end
   end
 
-  # The spec-defined part of an entry (drop runner bookkeeping).
+  # The spec-defined part of an entry (drop runner bookkeeping). A
+  # checkentry failure can hand this a non-map entry (e.g. "entry is not
+  # a map" itself) - pass those through unchanged rather than crash.
   defp entrysummary(entry) do
-    Map.drop(entry, ["res", "thrown", "ctx"])
+    if U.ismap(entry), do: Map.drop(entry, ["res", "thrown", "ctx"]), else: entry
   end
 
   # The label of one entry, for failure messages.

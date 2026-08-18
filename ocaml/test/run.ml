@@ -28,9 +28,12 @@ let fibsub args = Fib.fib (List.nth args 0)
 let fibseqsub args = Fib.fibseq (List.nth args 0)
 let fibrangesub args = Fib.fibrange (List.nth args 0) (List.nth args 1)
 let fibinfosub args = Fib.fibinfo (List.nth args 0)
+let fibctxsub args = Fib.fibctx (List.nth args 0)
 
 (* The provider hosts the system under test. `shift` offsets the Fibonacci
-   index, so that a client-specific subject is observably different. *)
+   index, so that a client-specific subject is observably different.
+   `contextify` marks the map, so the context group can prove the hook
+   ran. *)
 let rec fibprovider shift =
   {
     empty_provider with
@@ -54,6 +57,7 @@ let rec fibprovider shift =
           match asnum (jget options "shift") with
           | Some num -> fibprovider num
           | None -> fibprovider 0.0);
+    contextify = Some (fun ctxval -> jset ctxval "mark" (Str "CTX"));
   }
 
 let testcase name body =
@@ -174,6 +178,146 @@ let expectfail setname subject =
   | () -> raise (Failure ("omni: expected a failure for set: " ^ setname))
   | exception Omni_error _ -> ()
 
+(* Is `needle` a substring of `haystack`? Used to pin the reason inside an
+   OmniError message, the same way checkmessage below pins one message in
+   full. *)
+let containsstr haystack needle =
+  let hlen = String.length haystack and nlen = String.length needle in
+  let rec search at = (at + nlen <= hlen) && (String.sub haystack at nlen = needle || search (at + 1)) in
+  search 0
+
+(* Assert that building a runner from `spec` fails at load time - before
+   any group is named - with a message containing `want`. *)
+let expectloadfail spec want =
+  match make_runner_spec spec empty_provider with
+  | _ -> raise (Failure ("omni: expected a load failure containing [" ^ want ^ "]"))
+  | exception Omni_error message ->
+    if not (containsstr message want) then
+      raise (Failure ("omni: message missing [" ^ want ^ "]: " ^ message))
+
+(* Assert that running `setname` out of `spec` fails with a message
+   containing `want` - the strict (version >= 1) entry-validation cases. *)
+let expectentryfail spec setname subject want =
+  let pack = (make_runner_spec spec empty_provider) "fib" None in
+  match pack.runset (pack.set setname) (Some subject) with
+  | () -> raise (Failure ("omni: expected a failure for set: " ^ setname))
+  | exception Omni_error message ->
+    if not (containsstr message want) then
+      raise (Failure ("omni: message missing [" ^ want ^ "]: " ^ message))
+
+(* Specs used only by the version/strict-validation negative tests below. *)
+let badversion =
+  JMap [ ("OMNI", JMap [ ("version", Num 99.0) ]); ("fib", JMap [ ("g", JMap [ ("set", JList []) ]) ]) ]
+
+let badcapability =
+  JMap
+    [
+      ("OMNI", JMap [ ("version", Num 1.0); ("requires", JList [ Str "nosuchfeature" ]) ]);
+      ("fib", JMap [ ("g", JMap [ ("set", JList []) ]) ]);
+    ]
+
+let badversiontype =
+  JMap [ ("OMNI", JMap [ ("version", Str "one") ]); ("fib", JMap [ ("g", JMap [ ("set", JList []) ]) ]) ]
+
+let strictunknownfield =
+  JMap
+    [
+      ("OMNI", JMap [ ("version", Num 1.0) ]);
+      ( "fib",
+        JMap
+          [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num 6.0); ("matches", JMap [ ("out", Num 999.0) ]) ] ]) ]) ] );
+    ]
+
+let strictmultisource =
+  JMap
+    [
+      ("OMNI", JMap [ ("version", Num 1.0) ]);
+      ( "fib",
+        JMap [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num 5.0); ("args", JList [ Num 5.0 ]); ("out", Num 5.0) ] ]) ]) ] );
+    ]
+
+let stricterrandout =
+  JMap
+    [
+      ("OMNI", JMap [ ("version", Num 1.0) ]);
+      ( "fib",
+        JMap
+          [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num (-1.0)); ("err", Bool true); ("out", Num 5.0) ] ]) ]) ] );
+    ]
+
+let strictnullid =
+  JMap
+    [
+      ("OMNI", JMap [ ("version", Num 1.0) ]);
+      ( "fib",
+        JMap
+          [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num 1.0); ("out", Num 1.0); ("id", Null) ] ]) ]) ] );
+    ]
+
+let strictemptyset =
+  JMap
+    [
+      ("OMNI", JMap [ ("version", Num 1.0) ]);
+      ( "fib",
+        JMap
+          [
+            ("g", JMap [ ("set", JList []) ]);
+            ("h", JMap [ ("set", JList []); ("empty", Bool true) ]);
+          ] );
+    ]
+
+let legacylenient =
+  JMap
+    [
+      ( "fib",
+        JMap
+          [
+            ( "g",
+              JMap
+                [
+                  ( "set",
+                    JList
+                      [ JMap [ ("in", Num 6.0); ("matches", JMap [ ("out", Num 999.0) ]); ("out", Num 8.0) ] ] );
+                ] );
+          ] );
+    ]
+
+(* Rejects a null OMNI block (malformed), but accepts one that is simply
+   absent (legacy) - the presence-vs-null distinction from Fix 2. *)
+let checknullomni () =
+  let nullomni =
+    JMap
+      [
+        ("OMNI", Null);
+        ("fib", JMap [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num 1.0); ("out", Num 1.0) ] ]) ]) ]);
+      ]
+  in
+  expectloadfail nullomni "malformed OMNI";
+
+  let nullrequires =
+    JMap
+      [
+        ("OMNI", JMap [ ("version", Num 1.0); ("requires", Null) ]);
+        ("fib", JMap [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num 1.0); ("out", Num 1.0) ] ]) ]) ]);
+      ]
+  in
+  expectloadfail nullrequires "malformed OMNI requires list";
+
+  let legacyabsent =
+    JMap [ ("fib", JMap [ ("g", JMap [ ("set", JList [ JMap [ ("in", Num 1.0); ("out", Num 1.0) ] ]) ]) ]) ]
+  in
+  ignore (make_runner_spec legacyabsent empty_provider)
+
+(* Strict: an empty set fails unless marked `empty: true`. *)
+let checkstrictemptyset () =
+  let pack = (make_runner_spec strictemptyset empty_provider) "fib" None in
+  (match pack.runset (pack.set "g") (Some fibsub) with
+  | () -> raise (Failure "omni: expected empty test set failure")
+  | exception Omni_error message ->
+    if not (containsstr message "empty test set") then
+      raise (Failure ("omni: message missing [empty test set]: " ^ message)));
+  pack.runset (pack.set "h") (Some fibsub)
+
 let checkmessage () =
   let spec =
     JMap
@@ -227,6 +371,7 @@ let () =
   testcase "match" (fun () -> pack.runset (pack.set "match") (Some fibsub));
   testcase "matchinfo" (fun () -> pack.runset (pack.set "matchinfo") (Some fibinfosub));
   testcase "client" (fun () -> pack.runset (pack.set "client") (Some fibsub));
+  testcase "context" (fun () -> pack.runset (pack.set "context") (Some fibctxsub));
 
   testcase "detects wrong result" (fun () -> expectfail "wrongout" fibsub);
   testcase "detects missing error" (fun () -> expectfail "wrongerr" fibsub);
@@ -239,6 +384,25 @@ let () =
   testcase "an empty-string match leaf is not a wildcard" (fun () ->
       expectfail "emptystr" fibinfosub);
   testcase "reports entry index and id" checkmessage;
+
+  testcase "rejects an unsupported spec version" (fun () ->
+      expectloadfail badversion "unsupported spec version");
+  testcase "rejects an unknown required capability" (fun () ->
+      expectloadfail badcapability "unsupported capability");
+  testcase "rejects a malformed version block" (fun () -> expectloadfail badversiontype "malformed OMNI");
+  testcase "rejects a null OMNI block, but accepts an absent one" checknullomni;
+  testcase "strict: an unknown entry field fails instead of passing vacuously" (fun () ->
+      expectentryfail strictunknownfield "g" fibinfosub "unknown entry field: matches");
+  testcase "strict: more than one of in, args, ctx fails" (fun () ->
+      expectentryfail strictmultisource "g" fibsub "more than one of in, args, ctx");
+  testcase "strict: err together with out fails" (fun () ->
+      expectentryfail stricterrandout "g" fibsub "both err and out");
+  testcase "strict: a null id fails even under null-normalisation" (fun () ->
+      expectentryfail strictnullid "g" fibsub "entry id is not a string");
+  testcase "strict: an empty set fails unless marked empty" checkstrictemptyset;
+  testcase "a legacy spec (no OMNI block) stays lenient" (fun () ->
+      let pack = (make_runner_spec legacylenient empty_provider) "fib" None in
+      pack.runset (pack.set "g") (Some fibsub));
 
   Printf.printf "\n%d passed, %d failed\n" !passcount !failcount;
 

@@ -68,3 +68,15 @@ let fibinfo value =
       ( "label",
         Str ("fib(" ^ numstr (float_of_int index) ^ ")=" ^ numstr (float_of_int num)) );
     ]
+
+(* The context-group subject: reports what the runner delivered - the
+   contextify mark and the attached client - as plain data, so the spec
+   can pin both with an ordinary `out` comparison in every port. *)
+let fibctx ctx =
+  JMap
+    [
+      ("n", jget ctx "n");
+      ("val", fib (jget ctx "n"));
+      ("mark", jget ctx "mark");
+      ("hasclient", Bool (not (isnone (jget ctx "client"))));
+    ]

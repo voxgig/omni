@@ -11,7 +11,7 @@ reason).
 | Item | Status | Notes |
 |---|---|---|
 | 0.1 Local-checkout consumption documented (DOCS §8.3) | DONE | No publishing for now, by decision; `$OMNI_HOME` + sibling paths + gitignored per-language wiring, as in sekreto. |
-| 0.2 Spec coverage: `context` group + `err.name` pin | IN PROGRESS | Canonical + spec landed; 13 of 23 ports propagated (voxgig/omni#5), 10 in flight. |
+| 0.2 Spec coverage: `context` group + `err.name` pin | DONE | All 23 ports run the `context` group (ctx + `contextify` + client-attach) and the `err.name` pin (voxgig/omni#5). Clojure's missing ctx-client attach and Python's NaN `deepequal`, both flagged by the 2026-08 review, surfaced and were fixed. |
 | 0.3 DOCS/code reconciliation | DONE | inject mutation contract, `__EXISTS__` incl. null, error-path match base, `nullmodifier` in-string rewrite, sentinel reservation. |
 | 0.4 Single-source `build-spec.js` (sekreto/struct call omni's) | NOT STARTED | sekreto's copy already needed synchronized fixes once. |
 | 0.5 Pin the struct-compat CI checkout to a struct ref | NOT STARTED | Gate currently floats on struct's default branch. |
@@ -71,7 +71,7 @@ Findings and rationale:
 
 | Item | Status | Notes |
 |---|---|---|
-| 4.1 C1 versioning + strict validation + schema | IN PROGRESS | Canonical + spec + schema landed (voxgig/omni#5). Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence; both fixed and pinned. 13 of 23 ports propagated, 10 in flight. |
+| 4.1 C1 versioning + strict validation + schema | DONE | All 23 ports (voxgig/omni#5); `make parity` reports every port complete. Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence — both fixed and pinned by negative tests. 11 suites executed locally; 12 ports' toolchains are absent from the dev environment and are verified by CI only. |
 | 4.2 A1 sentinel soundness (`nullin`, `__RAW__`) | NOT STARTED | Default-flips ride a spec-version bump. |
 | 4.3 A2 out/err/match composition | NOT STARTED | `err`+`out` rejection already landed with 4.1. |
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |

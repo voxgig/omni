@@ -447,6 +447,73 @@ def nullmodifier (val : Val) : Val :=
 
 /- ---- runner --------------------------------------------------------- -/
 
+/-- The newest spec format version this runner understands. A spec with no
+`OMNI` block is version 0: the original, lenient format, frozen forever.
+Version 1 turns on strict entry validation (see `checkentry`). -/
+def SPECVERSION : Nat := 1
+
+/-- Capability strings this runner supports beyond the version baseline. A
+spec's `OMNI.requires` list is checked against this: an unknown capability
+refuses the spec loudly at load time, instead of a lagging port silently
+mis-running it. (Empty today; future format features mint a string here.) -/
+def CAPABILITIES : List String := []
+
+/-- The complete set of fields an entry may carry. Under version 1 anything
+else is an error: an unrecognised key is almost always a typo'd assertion,
+and a typo'd assertion is a test that silently stopped testing. -/
+private def ENTRYFIELDS : List String :=
+  ["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"]
+
+-- A capability that is not a string, or not in CAPABILITIES, is one this
+-- runner does not recognise.
+private def unsupportedcap (cap : Json) : Bool :=
+  match asstr (some cap) with
+  | some capstr => !(CAPABILITIES.contains capstr)
+  | none => true
+
+/-- The `requires` half of `resolveversion`: a present-but-non-list is
+malformed, and any listed capability this runner does not recognise
+refuses the whole spec. An absent `requires` is fine - it only narrows,
+never widens, what a version already permits. -/
+private def checkrequires (requires : Val) (version : Nat) : Except String Nat :=
+  if isabsent requires then
+    pure version
+  else
+    match aslist requires with
+    | none => throw "omni: malformed OMNI requires list"
+    | some caps =>
+      match caps.toList.find? unsupportedcap with
+      | some badcap =>
+        throw s!"omni: spec requires unsupported capability: {stringify (some badcap)}"
+      | none => pure version
+
+/-- Read the spec's format version from its optional top-level `OMNI`
+block, and refuse a spec this runner cannot faithfully run: a version
+newer than `SPECVERSION`, or a required capability not in `CAPABILITIES`.
+These are runner refusals, never candidates for an `err` expectation.
+
+Only a genuinely absent `OMNI` key is legacy; a present null (or anything
+else that is not a map) is malformed - the presence/definedness
+distinction the sentinel system exists to preserve applies to the
+runner's own validation too. -/
+def resolveversion (alltests : Json) : Except String Nat :=
+  let meta := jget (some alltests) "OMNI"
+  if isabsent meta then
+    pure 0
+  else
+    match meta with
+    | some (.obj _) =>
+      match asnum (jget meta "version") with
+      | some num =>
+        if num != num.floor then
+          throw "omni: malformed OMNI version block"
+        else if num < 0.0 || SPECVERSION.toFloat < num then
+          throw s!"omni: unsupported spec version: {numstr num}"
+        else
+          checkrequires (jget meta "requires") num.toUInt64.toNat
+      | none => throw "omni: malformed OMNI version block"
+    | _ => throw "omni: malformed OMNI version block"
+
 /-- The function under test. Arguments arrive as JSON values; failure is
 reported as `Except.error message`. -/
 abbrev Subject : Type := List Json → Except String Json
@@ -522,6 +589,57 @@ private def failure (label : String) (index : Nat) (entry : Json) (reason : Stri
     | some text => head ++ s!"\n  actual:   {text}"
     | none => head
   head ++ s!"\n  entry:    {stringify (some (entrysummary entry))}"
+
+-- Strict entry validation, applied when the spec declares version 1 or
+-- later. The lenient format converts each of these mistakes into a silent
+-- pass or a dead field; here they fail with the entry named.
+private def checkentry (label : String) (index : Nat) (entry : Json) : Except String Unit := do
+  if !ismap (some entry) then
+    throw (failure label index entry "entry is not a map" none none)
+
+  let entrykeys := (asmap (some entry)).getD []
+  match entrykeys.find? (fun kv => !(ENTRYFIELDS.contains kv.1)) with
+  | some badkv => throw (failure label index entry s!"unknown entry field: {badkv.1}" none none)
+  | none => pure ()
+
+  let argsources := (["in", "args", "ctx"].filter (fun key => jhas (some entry) key)).length
+  if 1 < argsources then
+    throw (failure label index entry "entry has more than one of in, args, ctx" none none)
+
+  -- `err` must be present AND non-null; `out` only needs to be present -
+  -- an authored `out: null` still collides with an `err` expectation.
+  let errpresent := !isnone (jget (some entry) "err")
+  let outpresent := jhas (some entry) "out"
+  if errpresent && outpresent then
+    throw (failure label index entry "entry has both err and out" none none)
+
+  let idval := jget (some entry) "id"
+  if !isabsent idval && (asstr idval).isNone then
+    throw (failure label index entry "entry id is not a string" none none)
+  else
+    pure ()
+
+-- Validate a version-1 group up front, against the AUTHORED entries -
+-- null-normalisation would otherwise rewrite an authored null (e.g.
+-- `id: null`) into a sentinel string and hide it from validation. A
+-- malformed spec is a spec error, not a test result, so it fails before
+-- any subject runs.
+private def checkset (label : String) (testspec : Json) (normalset : Array Json)
+    : Except String Unit := do
+  let origset :=
+    match aslist (jget (some testspec) "set") with
+    | some entries => entries
+    | none => normalset
+
+  let emptyflag := match jget (some testspec) "empty" with
+    | some (.bool true) => true
+    | _ => false
+
+  if origset.size == 0 && !emptyflag then
+    throw s!"omni: empty test set: {label}"
+
+  for index in List.range origset.size do
+    checkentry label index origset[index]!
 
 -- Check that every leaf of `check` is present, and matches, in `base`.
 private partial def matchcheck (label : String) (index : Nat) (entry check base : Json)
@@ -627,6 +745,10 @@ structure RunPack where
   client : Provider
   clients : List (String × Provider)
   name : String
+  -- The spec's resolved format version (see `resolveversion`). 0 for a
+  -- legacy spec with no `OMNI` block, in which case strict validation
+  -- (`checkset`/`checkentry`) never runs.
+  specversion : Nat
 
 /-- A named group of the resolved spec. -/
 def RunPack.set (pack : RunPack) (setname : String) : Json :=
@@ -646,6 +768,12 @@ partial def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flag
   let testset ← match aslist (jget (some testspecmap) "set") with
     | some entries => pure entries
     | none => throw s!"omni: test spec has no set: {label}"
+
+  -- Validate the AUTHORED group (testspec, not testspecmap) once, before
+  -- any subject runs - see checkset for why this must read the
+  -- pre-normalisation entries.
+  if 1 <= pack.specversion then
+    checkset label testspec testset
 
   for index in List.range testset.size do
     let rawentry := testset[index]!
@@ -684,9 +812,17 @@ partial def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flag
 
     let (args, entry) :=
       if (hasctx || hasargs) && !args0.isEmpty && ismap (some args0.head!) then
-        let first := match pack.client.contextify with
+        let contextified := match pack.client.contextify with
           | some contextify => contextify args0.head!
           | none => args0.head!
+        -- Canonical attaches the resolved client onto ctx/args[0]
+        -- (testpack.client) so a context subject can tell it was invoked
+        -- through one. Json has no case for a live Provider reference,
+        -- and the resolved client is never absent (it defaults to the
+        -- root provider), so a boolean marker carries the same
+        -- observable meaning the corpus checks for - presence, never
+        -- identity.
+        let first := jset contextified "client" (jbool true)
         (first :: args0.tail!, jset entry "ctx" first)
       else (args0, entry)
 
@@ -701,8 +837,14 @@ def RunPack.runset (pack : RunPack) (testspec : Json) (testsubject : Option Subj
     : Except String Unit :=
   pack.runsetflags testspec {} testsubject
 
-/-- Make a runner for a spec value and a provider. -/
-def makeRunnerSpec (alltests : Json) (provider : Provider) (name : String) : RunPack :=
+/-- Make a runner for a spec value and a provider. Resolves the spec's
+format version first (see `resolveversion`) and refuses to build a runner
+at all for a version this port cannot faithfully run - fail fast, before
+any group or client is resolved. -/
+def makeRunnerSpec (alltests : Json) (provider : Provider) (name : String)
+    : Except String RunPack := do
+  let specversion ← resolveversion alltests
+
   let spec := resolvespec name alltests
 
   -- A spec may define clients that a given test run never references.
@@ -720,7 +862,8 @@ def makeRunnerSpec (alltests : Json) (provider : Provider) (name : String) : Run
       | some resolve => resolve name
       | none => none
 
-  { spec := spec, subject := subject, client := provider, clients := clients, name := name }
+  pure { spec := spec, subject := subject, client := provider, clients := clients,
+         name := name, specversion := specversion }
 
 /-- Load a spec: a path to a JSON file. -/
 def loadspec (path : String) : IO Json := do
@@ -729,9 +872,14 @@ def loadspec (path : String) : IO Json := do
   | .ok value => pure value
   | .error message => throw (IO.userError s!"omni: cannot parse spec: {path}: {message}")
 
-/-- Make a runner for a spec file path and a provider. -/
+/-- Make a runner for a spec file path and a provider. A version refusal
+from `makeRunnerSpec` surfaces the same way a spec-load failure already
+does: a thrown `IO.userError`, so a caller can guard one `makeRunner` call
+regardless of which stage failed. -/
 def makeRunner (path : String) (provider : Provider) (name : String) : IO RunPack := do
   let alltests ← loadspec path
-  pure (makeRunnerSpec alltests provider name)
+  match makeRunnerSpec alltests provider name with
+  | .ok pack => pure pack
+  | .error message => throw (IO.userError message)
 
 end Omni
