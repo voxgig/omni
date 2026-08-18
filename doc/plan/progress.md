@@ -11,7 +11,7 @@ reason).
 | Item | Status | Notes |
 |---|---|---|
 | 0.1 Local-checkout consumption documented (DOCS §8.3) | DONE | No publishing for now, by decision; `$OMNI_HOME` + sibling paths + gitignored per-language wiring, as in sekreto. |
-| 0.2 Spec coverage: `context` group + `err.name` pin | IN PROGRESS | Canonical + spec landed; port propagation in flight. |
+| 0.2 Spec coverage: `context` group + `err.name` pin | IN PROGRESS | Canonical + spec landed; 13 of 23 ports propagated (voxgig/omni#5), 10 in flight. |
 | 0.3 DOCS/code reconciliation | DONE | inject mutation contract, `__EXISTS__` incl. null, error-path match base, `nullmodifier` in-string rewrite, sentinel reservation. |
 | 0.4 Single-source `build-spec.js` (sekreto/struct call omni's) | NOT STARTED | sekreto's copy already needed synchronized fixes once. |
 | 0.5 Pin the struct-compat CI checkout to a struct ref | NOT STARTED | Gate currently floats on struct's default branch. |
@@ -23,7 +23,7 @@ Wire local checkout → provider adapter → import swap → delete
 
 | Port | Status | Notes |
 |---|---|---|
-| javascript | IN PROGRESS | Shim validated by struct-compat gate; swap in flight on struct branch. |
+| javascript | IN PROGRESS | Swap done and green (95/95 through the shim); voxgig/struct#84 open, awaiting merge. |
 | typescript | NOT STARTED | Resolve `makeContext`/`contextify` drift + `ctx.utility`; coordinate with @voxgig/sdkgen first. |
 | python | NOT STARTED | |
 | go | NOT STARTED | |
@@ -71,7 +71,7 @@ Findings and rationale:
 
 | Item | Status | Notes |
 |---|---|---|
-| 4.1 C1 versioning + strict validation + schema | IN PROGRESS | Canonical + spec + schema landed; port propagation in flight. |
+| 4.1 C1 versioning + strict validation + schema | IN PROGRESS | Canonical + spec + schema landed (voxgig/omni#5). Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence; both fixed and pinned. 13 of 23 ports propagated, 10 in flight. |
 | 4.2 A1 sentinel soundness (`nullin`, `__RAW__`) | NOT STARTED | Default-flips ride a spec-version bump. |
 | 4.3 A2 out/err/match composition | NOT STARTED | `err`+`out` rejection already landed with 4.1. |
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |
