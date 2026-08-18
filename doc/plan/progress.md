@@ -71,7 +71,7 @@ Findings and rationale:
 
 | Item | Status | Notes |
 |---|---|---|
-| 4.1 C1 versioning + strict validation + schema | DONE | All 23 ports (voxgig/omni#5); `make parity` reports every port complete. Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence — both fixed and pinned by negative tests. 11 suites executed locally; 12 ports' toolchains are absent from the dev environment and are verified by CI only. |
+| 4.1 C1 versioning + strict validation + schema | DONE | All 23 ports (voxgig/omni#5); `make parity` reports every port complete. Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence — both fixed and pinned by negative tests. 11 suites executed locally; the 12 ports whose toolchains are absent from the dev environment were verified by CI — all 26 checks on voxgig/omni#5 green, including every port job, `api parity`, `struct compatibility` and spec freshness. |
 | 4.2 A1 sentinel soundness (`nullin`, `__RAW__`) | NOT STARTED | Default-flips ride a spec-version bump. |
 | 4.3 A2 out/err/match composition | NOT STARTED | `err`+`out` rejection already landed with 4.1. |
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |
