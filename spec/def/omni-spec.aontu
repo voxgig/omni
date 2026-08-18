@@ -1,0 +1,56 @@
+
+# The spec-format shape, written in aontu — the same language the corpus
+# itself is written in.
+#
+# This is used by tools/check-spec-shape.js, which unifies it with each
+# spec SOURCE and discards the result: the question asked is only "does
+# the corpus unify with the shape", and a violation is an ordinary aontu
+# conflict, reported with an error code, the exact spec path, and the
+# source file it came from.
+#
+# It is deliberately NOT unified into the corpus during `make spec`. Under
+# aontu 0.48.2 an optional key holding an empty container (`out: []`) is
+# treated as unresolved and DROPPED from the output, which would silently
+# rewrite entries like fib/seq#empty into "no out" - a different test.
+# Keeping the check separate from the build keeps the artifact exact.
+#
+# WHAT THIS ENFORCES (see DOCS.md 2.7):
+#   - entry fields limited to the nine defined ones - the typo class, where
+#     `matches:` silently replaces `match:` and the assertion disappears
+#   - field types: id and client are strings, doc is boolean, err is a
+#     boolean or a string; `id: null` is rejected here too
+#
+# WHAT IT DOES NOT ENFORCE, and why:
+#   - at most one of in/args/ctx, and `err` never beside `out`: cross-field
+#     rules needing `must()`, which aontu 0.48.2 does not implement (Band B
+#     of its constraint algebra)
+#   - a non-empty `set`: needs the `length()` sizing atom, likewise absent
+# The runner enforces all three at run time in every port, and remains the
+# authority on spec semantics. When aontu gains `must` and `length` they
+# belong here, so that a malformed spec fails at build rather than at test.
+
+
+# One test entry. Closed: an unrecognised key is an error, because an
+# unrecognised key is almost always an assertion that stopped asserting.
+# Every field is optional - the runner decides which combinations mean
+# what - and the data-carrying fields hold arbitrary spec values, so they
+# are constrained to presence, not type.
+Entry: hide(close({
+  in?: top
+  args?: top
+  ctx?: top
+  out?: top
+  err?: boolean | string
+  match?: top
+  client?: string
+  id?: string
+  doc?: boolean
+}))
+
+
+# One group: a `set` of entries. `set` is optional so that this template
+# can be spread across a whole section, where DEF - metadata, not a group -
+# sits beside the groups and must pass through untouched.
+Group: hide({
+  set?: [ &: $.Entry ]
+})

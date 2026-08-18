@@ -12,11 +12,10 @@
     "build-spec-check": "node build-spec.js --check",
     "clean": "rm -rf node_modules package-lock.json",
     "reset": "npm run clean && npm i && npm run build-spec",
-    "check-spec-schema": "node check-spec-schema.js"
+    "check-spec-shape": "node check-spec-shape.js --self-test"
   },
   "license": "MIT",
   "dependencies": {
-    "@voxgig/model": "^9.3.0",
-    "ajv": "^8.17.0"
+    "@voxgig/model": "^9.3.0"
   }
 }

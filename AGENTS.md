@@ -42,21 +42,28 @@ TypeScript, case for case, in idiomatic local style."
    `spec/fib.aontu` encodes canonical behaviour. Change it only when
    deliberately changing that behaviour, and verify the canonical
    TypeScript still passes first.
-3. **Never hand-edit `spec/*.json`.** It is generated from `spec/*.aontu`
+3. **The spec format has a shape, written in aontu.**
+   [`spec/def/omni-spec.aontu`](spec/def/omni-spec.aontu) is unified with
+   every spec source by `make spec-check`, so a typo'd entry field or a
+   mistyped `id` fails with an error code, a spec path and a source file.
+   It is checked separately from `make spec` on purpose - unifying it into
+   the build would drop optional keys holding empty containers (`out: []`)
+   and silently rewrite entries. The runner is still the authority.
+4. **Never hand-edit `spec/*.json`.** It is generated from `spec/*.aontu`
    by `make spec` and committed so that no port needs a Node toolchain to
    run its tests. Edit the aontu, run `make spec`, commit both. CI's
    `spec-freshness` job rebuilds and fails on any drift.
-4. **Do not add dependencies.** Every port uses only its standard library.
+5. **Do not add dependencies.** Every port uses only its standard library.
    Where the standard library has no JSON parser or no regex engine (Rust,
    C, C++, Java, Kotlin, Scala, Clojure, Lua, Swift, Elixir, OCaml,
    Haskell, Zig), the port carries a small in-tree one. (`tools/` is build
    machinery, not a port — it may depend on `@voxgig/model`, and nothing
    at test time ever reaches it.)
-5. **The runner may not use the library under test.** omni carries its own
+6. **The runner may not use the library under test.** omni carries its own
    `clone`, `deepequal`, `getpath`, `walk`, `stringify` and JSON parsing.
    A runner that borrowed them could not test a library that provides them
    - and a bug in that library would hide itself.
-6. **Every port must prove it can fail.** Each test file asserts that the
+7. **Every port must prove it can fail.** Each test file asserts that the
    runner raises on a wrong result, a missing error, a failed match, and an
    absent key. A green suite that cannot go red proves nothing.
 
@@ -71,9 +78,12 @@ TypeScript, case for case, in idiomatic local style."
 ├── Makefile           # aggregate targets
 ├── spec/
 │   ├── fib.aontu      # the shared test corpus - the contract, edit this
-│   └── fib.json       # generated from fib.aontu; what the ports read
+│   ├── fib.json       # generated from fib.aontu; what the ports read
+│   └── def/
+│       └── omni-spec.aontu  # the spec-format shape, in aontu
 ├── tools/
 │   ├── build-spec.js      # compiles spec/*.aontu -> spec/*.json
+│   ├── check-spec-shape.js # unifies each spec with the format shape
 │   ├── package.json       # tools/ is a node project (@voxgig/model)
 │   ├── check_parity.py    # every port defines the canonical API
 │   └── struct_compat.sh   # run voxgig/struct's own suite on omni

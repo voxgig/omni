@@ -83,7 +83,7 @@ Findings and rationale:
 
 | Item | Status | Notes |
 |---|---|---|
-| 4.1 C1 versioning + strict validation + schema | DONE | All 23 ports (voxgig/omni#5); `make parity` reports every port complete. Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence — both fixed and pinned by negative tests. 11 suites executed locally; the 12 ports whose toolchains are absent from the dev environment were verified by CI — all 26 checks on voxgig/omni#5 green, including every port job, `api parity`, `struct compatibility` and spec freshness. |
+| 4.1 C1 versioning + strict validation + shape check | DONE | All 23 ports (voxgig/omni#5); `make parity` reports every port complete. Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence — both fixed and pinned by negative tests. 11 suites executed locally; the 12 ports whose toolchains are absent from the dev environment were verified by CI — all 26 checks on voxgig/omni#5 green, including every port job, `api parity`, `struct compatibility` and spec freshness. The format check is now aontu (`spec/def/omni-spec.aontu`) rather than JSON Schema: the shape is unified with each spec source, so it cannot drift from a second description of the format, and it drops the ajv dependency. Cross-field rules (one-of in/args/ctx, err-with-out, non-empty set) await aontu `must()`/`length()` — see 4.10. |
 | 4.2 A1 sentinel soundness (`nullin`, `__RAW__`) | NOT STARTED | Default-flips ride a spec-version bump. |
 | 4.3 A2 out/err/match composition | NOT STARTED | `err`+`out` rejection already landed with 4.1. |
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |
@@ -92,3 +92,5 @@ Findings and rationale:
 | 4.7 C3 skip/pending/only | NOT STARTED | Gated by a `requires` capability. |
 | 4.8 C4 declarative unpacking (`DEF.subject.<name>.unpack`) | NOT STARTED | |
 | 4.9 B-group naming coherence (aliases, strict section resolution, `options` short form) | NOT STARTED | |
+| 4.10 Shape check: cross-field rules once aontu supports them | NOT STARTED | `must()` and `length()` are absent in aontu 0.48.2 (Band B / sizing atoms). When they land, move one-of in/args/ctx, err-with-out and non-empty-set into `spec/def/omni-spec.aontu` so a malformed spec fails at build, not only at test. |
+| 4.11 Share the shape with downstream corpora | NOT STARTED | struct and sekreto author their own specs; decide how they import omni's shape across the local-checkout boundary (struct's corpus is legacy v0, so it needs a v0 variant or an opt-in). |
