@@ -64,9 +64,10 @@ namespace Voxgig.Omni
         private readonly Provider provider;
         private readonly Dictionary<string, Provider> clients;
         private readonly string name;
+        private readonly int specversion;
 
         internal RunPack(object spec, Subject subject, Provider provider,
-                         Dictionary<string, Provider> clients, string name)
+                         Dictionary<string, Provider> clients, string name, int specversion)
         {
             Spec = spec;
             Subject = subject;
@@ -74,6 +75,7 @@ namespace Voxgig.Omni
             this.provider = provider;
             this.clients = clients;
             this.name = name;
+            this.specversion = specversion;
         }
 
         /// <summary>A named group of the resolved spec.</summary>
@@ -112,6 +114,11 @@ namespace Voxgig.Omni
             }
 
             var testset = (IList<object>)testspecmap["set"];
+
+            if (1 <= specversion)
+            {
+                Runner.CheckSet(useflags, testspec, testset);
+            }
 
             for (int index = 0; index < testset.Count; index++)
             {
@@ -212,11 +219,13 @@ namespace Voxgig.Omni
     {
         private readonly object alltests;
         private readonly Provider provider;
+        private readonly int specversion;
 
-        internal RunnerPack(object alltests, Provider provider)
+        internal RunnerPack(object alltests, Provider provider, int specversion)
         {
             this.alltests = alltests;
             this.provider = provider ?? new Provider();
+            this.specversion = specversion;
         }
 
         /// <summary>Resolve one named section of the spec.</summary>
@@ -225,7 +234,7 @@ namespace Voxgig.Omni
             object spec = Runner.ResolveSpec(name, alltests);
             var clients = Runner.ResolveClients(provider, spec, store);
             var subject = Runner.ResolveSubject(name, provider);
-            return new RunPack(spec, subject, provider, clients, name);
+            return new RunPack(spec, subject, provider, clients, name, specversion);
         }
     }
 
@@ -235,16 +244,39 @@ namespace Voxgig.Omni
         public const string UNDEFMARK = Util.UNDEFMARK;
         public const string EXISTSMARK = Util.EXISTSMARK;
 
+        // The newest spec format version this runner understands. A spec
+        // with no OMNI block is version 0: the original, lenient format,
+        // frozen forever. Version 1 turns on strict entry validation (see
+        // CheckEntry).
+        public const int SPECVERSION = 1;
+
+        // Capability strings this runner supports beyond the version
+        // baseline. A spec's OMNI.requires list is checked against this: an
+        // unknown capability refuses the spec loudly at load time, instead
+        // of a lagging port silently mis-running it. (Empty today; future
+        // format features mint a string here.)
+        public static readonly string[] CAPABILITIES = Array.Empty<string>();
+
+        // The complete set of fields an entry may carry. Under version 1
+        // anything else is an error: an unrecognised key is almost always a
+        // typo'd assertion, and a typo'd assertion is a test that silently
+        // stopped testing.
+        private static readonly string[] ENTRYFIELDS =
+            { "in", "args", "ctx", "out", "err", "match", "client", "id", "doc" };
+
         /// <summary>Make a runner for a spec file path and a provider.</summary>
         public static RunnerPack MakeRunner(string path, Provider provider = null)
         {
-            return new RunnerPack(LoadSpec(path), provider);
+            object alltests = LoadSpec(path);
+            int specversion = ResolveVersion(alltests);
+            return new RunnerPack(alltests, provider, specversion);
         }
 
         /// <summary>Make a runner for an in-memory spec and a provider.</summary>
         public static RunnerPack MakeRunner(object spec, Provider provider = null)
         {
-            return new RunnerPack(spec, provider);
+            int specversion = ResolveVersion(spec);
+            return new RunnerPack(spec, provider, specversion);
         }
 
         /// <summary>Load a spec: a path to a JSON file.</summary>
@@ -255,6 +287,131 @@ namespace Voxgig.Omni
                 throw new OmniError("omni: cannot read spec: " + path);
             }
             return Util.Parse(File.ReadAllText(path));
+        }
+
+        // Read the spec's format version from its optional top-level OMNI
+        // block, and refuse a spec this runner cannot faithfully run: a
+        // version newer than SPECVERSION, or a required capability not in
+        // CAPABILITIES.
+        internal static int ResolveVersion(object alltests)
+        {
+            if (!(alltests is IDictionary<string, object> allmap) || !allmap.ContainsKey("OMNI"))
+            {
+                return 0;
+            }
+
+            object meta = allmap["OMNI"];
+
+            if (!(meta is IDictionary<string, object> metamap) ||
+                !metamap.ContainsKey("version") ||
+                !Util.IsNum(metamap["version"]) ||
+                0 != Util.ToNum(metamap["version"]) % 1)
+            {
+                throw new OmniError("omni: malformed OMNI version block");
+            }
+
+            double version = Util.ToNum(metamap["version"]);
+
+            if (0 > version || SPECVERSION < version)
+            {
+                throw new OmniError("omni: unsupported spec version: " + Util.NumStr(version));
+            }
+
+            if (metamap.ContainsKey("requires"))
+            {
+                if (!(metamap["requires"] is IList<object> requires))
+                {
+                    throw new OmniError("omni: malformed OMNI requires list");
+                }
+
+                foreach (var cap in requires)
+                {
+                    if (!(cap is string capstr) || !CAPABILITIES.Contains(capstr))
+                    {
+                        throw new OmniError("omni: spec requires unsupported capability: " + Util.Stringify(cap));
+                    }
+                }
+            }
+
+            return (int)version;
+        }
+
+        // Strict entry validation, applied when the spec declares version 1
+        // or later. The lenient format converts each of these mistakes into
+        // a silent pass or a dead field; here they fail with the entry
+        // named.
+        internal static void CheckEntry(Flags flags, int index, object entry)
+        {
+            if (!(entry is IDictionary<string, object> map))
+            {
+                throw Fail(flags, index, entry, "entry is not a map");
+            }
+
+            foreach (var key in map.Keys)
+            {
+                if (!ENTRYFIELDS.Contains(key))
+                {
+                    throw Fail(flags, index, entry, "unknown entry field: " + key);
+                }
+            }
+
+            int argsources = 0;
+            foreach (var key in new[] { "in", "args", "ctx" })
+            {
+                if (map.ContainsKey(key))
+                {
+                    argsources++;
+                }
+            }
+            if (1 < argsources)
+            {
+                throw Fail(flags, index, entry, "entry has more than one of in, args, ctx");
+            }
+
+            bool haserr = map.ContainsKey("err") && null != map["err"];
+            bool hasout = map.ContainsKey("out");
+            if (haserr && hasout)
+            {
+                throw Fail(flags, index, entry, "entry has both err and out");
+            }
+
+            if (map.ContainsKey("id") && !(map["id"] is string))
+            {
+                throw Fail(flags, index, entry, "entry id is not a string");
+            }
+        }
+
+        // Validate a version-1 group up front, against the AUTHORED entries
+        // - null-normalisation would otherwise rewrite an authored null
+        // (e.g. id: null) into a sentinel string and hide it from
+        // validation. A malformed spec is a spec error, not a test result,
+        // so it fails before any subject runs.
+        internal static void CheckSet(Flags flags, object testspec, IList<object> normalset)
+        {
+            IList<object> origset = normalset;
+
+            if (testspec is IDictionary<string, object> specmap &&
+                specmap.ContainsKey("set") && specmap["set"] is IList<object> setlist)
+            {
+                origset = setlist;
+            }
+
+            bool markedempty = false;
+            if (testspec is IDictionary<string, object> em &&
+                em.ContainsKey("empty") && em["empty"] is bool flag)
+            {
+                markedempty = flag;
+            }
+
+            if (0 == origset.Count && !markedempty)
+            {
+                throw new OmniError("omni: empty test set: " + flags.Name);
+            }
+
+            for (int index = 0; index < origset.Count; index++)
+            {
+                CheckEntry(flags, index, origset[index]);
+            }
         }
 
         /// <summary>Find `primary.&lt;name&gt;`, then `&lt;name&gt;`, then the whole spec.</summary>
@@ -389,16 +546,18 @@ namespace Voxgig.Omni
         }
 
         // The label of one entry, for failure messages.
-        private static string EntryRef(Flags flags, int index, IDictionary<string, object> entry)
+        private static string EntryRef(Flags flags, int index, object entry)
         {
             string label = string.IsNullOrEmpty(flags.Name) ? "set" : flags.Name;
-            string idpart = null != entry && entry.ContainsKey("id") && null != entry["id"]
-                ? " (" + Util.Stringify(entry["id"]) + ")"
-                : "";
+            string idpart = "";
+            if (entry is IDictionary<string, object> map && map.ContainsKey("id") && null != map["id"])
+            {
+                idpart = " (" + Util.Stringify(map["id"]) + ")";
+            }
             return label + "[" + index.ToString(CultureInfo.InvariantCulture) + "]" + idpart;
         }
 
-        internal static OmniError Fail(Flags flags, int index, IDictionary<string, object> entry,
+        internal static OmniError Fail(Flags flags, int index, object entry,
                                        string reason, string expected = null, string actual = null)
         {
             var msg = new StringBuilder("omni: ").Append(EntryRef(flags, index, entry)).Append(": ").Append(reason);
@@ -417,10 +576,14 @@ namespace Voxgig.Omni
         }
 
         // The spec-defined part of an entry (drop runner bookkeeping).
-        private static object EntrySummary(IDictionary<string, object> entry)
+        private static object EntrySummary(object entry)
         {
+            if (!(entry is IDictionary<string, object> map))
+            {
+                return entry;
+            }
             var out_ = new Dictionary<string, object>();
-            foreach (var field in entry)
+            foreach (var field in map)
             {
                 if ("res" != field.Key && "thrown" != field.Key && "ctx" != field.Key)
                 {

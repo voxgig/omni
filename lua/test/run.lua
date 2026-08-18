@@ -42,6 +42,7 @@ local function FIBINFO(n) return fib.fibinfo(n) end
 
 -- The provider hosts the system under test. `shift` offsets the Fibonacci
 -- index, so that a client-specific subject is observably different.
+-- `contextify` marks the map, so the context group can prove the hook ran.
 local function fibprovider(shift)
   local subjects = {
     fib = function(n)
@@ -61,7 +62,23 @@ local function fibprovider(shift)
       local shiftval = u.get(options, 'shift')
       return fibprovider(u.isnum(shiftval) and shiftval or 0)
     end,
+    contextify = function(val)
+      rawset(val, 'mark', 'CTX')
+      return val
+    end,
   }
+end
+
+-- The context-group subject: reports what the runner delivered - the
+-- contextify mark and the attached client - as plain data, so the spec can
+-- pin both with an ordinary `out` comparison in every port.
+local function FIBCTX(ctx)
+  return u.map({
+    n = u.get(ctx, 'n'),
+    val = fib.fib(u.get(ctx, 'n')),
+    mark = u.get(ctx, 'mark'),
+    hasclient = not u.isabsent(u.get(ctx, 'client')),
+  })
 end
 
 local function testcase(name, body)
@@ -133,6 +150,27 @@ local function expectfail(setname, subject)
   end
 end
 
+-- Run `fn` and assert it raises an OmniError whose message contains
+-- `wantsubstr` - used by the version/strict-validation negative tests,
+-- which (unlike `expectfail`) pin the failure reason, not just the fact of
+-- failure.
+local function expectmsg(fn, wantsubstr)
+  local ok, err = pcall(fn)
+
+  if ok then
+    error('omni: expected a failure', 0)
+  end
+
+  if not runner.isomnierror(err) then
+    error(err, 0)
+  end
+
+  local msg = runner.errmessage(err)
+  if nil == msg:find(wantsubstr, 1, true) then
+    error('omni: message missing [' .. wantsubstr .. ']: ' .. msg, 0)
+  end
+end
+
 local function checkmessage()
   local spec = u.map({
     fib = u.map({
@@ -169,6 +207,7 @@ testcase('error', function() R.runset(R.set('error'), FIB) end)
 testcase('match', function() R.runset(R.set('match'), FIB) end)
 testcase('matchinfo', function() R.runset(R.set('matchinfo'), FIBINFO) end)
 testcase('client', function() R.runset(R.set('client'), FIB) end)
+testcase('context', function() R.runset(R.set('context'), FIBCTX) end)
 
 testcase('detects wrong result', function() expectfail('wrongout', FIB) end)
 testcase('detects missing error', function() expectfail('wrongerr', FIB) end)
@@ -182,6 +221,95 @@ testcase('__NULL__ does not match an absent key',
   function() expectfail('nullonabsent', FIBINFO) end)
 testcase('an empty-string match leaf is not a wildcard',
   function() expectfail('emptystr', FIBINFO) end)
+
+testcase('rejects an unsupported spec version', function()
+  expectmsg(function()
+    runner.makeRunner(u.map({
+      OMNI = u.map({ version = 99 }),
+      fib = u.map({ g = u.map({ set = u.list({}) }) }),
+    }))
+  end, 'unsupported spec version')
+end)
+
+testcase('rejects an unknown required capability', function()
+  expectmsg(function()
+    runner.makeRunner(u.map({
+      OMNI = u.map({ version = 1, requires = u.list({ 'nosuchfeature' }) }),
+      fib = u.map({ g = u.map({ set = u.list({}) }) }),
+    }))
+  end, 'unsupported capability')
+end)
+
+testcase('rejects a malformed version block', function()
+  expectmsg(function()
+    runner.makeRunner(u.map({
+      OMNI = u.map({ version = 'one' }),
+      fib = u.map({ g = u.map({ set = u.list({}) }) }),
+    }))
+  end, 'malformed OMNI')
+end)
+
+testcase('strict: an unknown entry field fails instead of passing vacuously', function()
+  local bad = runner.makeRunner(u.map({
+    OMNI = u.map({ version = 1 }),
+    fib = u.map({ g = u.map({ set = u.list({
+      u.map({ ['in'] = 6, matches = u.map({ out = 999 }) }),
+    }) }) }),
+  }))('fib')
+  expectmsg(function() bad.runset(bad.set('g'), FIBINFO) end, 'unknown entry field: matches')
+end)
+
+testcase('strict: more than one of in, args, ctx fails', function()
+  local bad = runner.makeRunner(u.map({
+    OMNI = u.map({ version = 1 }),
+    fib = u.map({ g = u.map({ set = u.list({
+      u.map({ ['in'] = 5, args = u.list({ 5 }), out = 5 }),
+    }) }) }),
+  }))('fib')
+  expectmsg(function() bad.runset(bad.set('g'), FIB) end, 'more than one of in, args, ctx')
+end)
+
+testcase('strict: err together with out fails', function()
+  local bad = runner.makeRunner(u.map({
+    OMNI = u.map({ version = 1 }),
+    fib = u.map({ g = u.map({ set = u.list({
+      u.map({ ['in'] = -1, err = true, out = 5 }),
+    }) }) }),
+  }))('fib')
+  expectmsg(function() bad.runset(bad.set('g'), FIB) end, 'both err and out')
+end)
+
+testcase('strict: a null id fails even under null-normalisation', function()
+  local bad = runner.makeRunner(u.map({
+    OMNI = u.map({ version = 1 }),
+    fib = u.map({ g = u.map({ set = u.list({
+      u.map({ ['in'] = 1, out = 1, id = u.NULL }),
+    }) }) }),
+  }))('fib')
+  expectmsg(function() bad.runset(bad.set('g'), FIB) end, 'entry id is not a string')
+end)
+
+testcase('strict: an empty set fails unless marked empty', function()
+  local bad = runner.makeRunner(u.map({
+    OMNI = u.map({ version = 1 }),
+    fib = u.map({
+      g = u.map({ set = u.list({}) }),
+      h = u.map({ set = u.list({}), empty = true }),
+    }),
+  }))('fib')
+  expectmsg(function() bad.runset(bad.set('g'), FIB) end, 'empty test set')
+  bad.runset(bad.set('h'), FIB)
+end)
+
+testcase('a legacy spec (no OMNI block) stays lenient', function()
+  local bad = runner.makeRunner(u.map({
+    fib = u.map({ g = u.map({ set = u.list({
+      u.map({ ['in'] = 6, matches = u.map({ out = 999 }), out = 8 }),
+    }) }) }),
+  }))('fib')
+  bad.runset(bad.set('g'), FIB)
+end)
+
 testcase('reports entry index and id', checkmessage)
 
 print('\n' .. PASSCOUNT .. ' passed, ' .. FAILCOUNT .. ' failed')
