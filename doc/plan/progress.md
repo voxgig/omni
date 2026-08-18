@@ -20,9 +20,14 @@ reason).
 
 Wire local checkout → provider adapter → import swap → delete
 `<lang>/test/runner.*` → full suite green. One port per commit.
-**1 of 24 migrated.** The struct-compat gate rewrites both
-`require('./runner')` (not yet migrated) and `require('./omni')`
-(migrated), so it holds either side of each port's swap.
+**1 of 24 migrated.** omni's struct-compat gate covers the
+**JavaScript** swap only: it copies struct's `javascript/test` files,
+rewrites both `require('./runner')` (not yet migrated) and
+`require('./omni')` (migrated), and runs them under Node — so it holds
+either side of *that* port's swap, and nothing more. No equivalent
+cross-repo gate exists for the other ports; each one's own suite,
+run before and after, is the check that its swap preserved behaviour.
+Whether to add per-port gates is open — see 1.1 below.
 
 | Port | Status | Notes |
 |---|---|---|
@@ -50,6 +55,10 @@ Wire local checkout → provider adapter → import swap → delete
 | haskell | NOT STARTED | |
 | lean | NOT STARTED | |
 | boru | NOT STARTED | Decision needed: omni boru port, or documented in-situ exception. |
+
+| Item | Status | Notes |
+|---|---|---|
+| 1.1 per-port compat gates | NOT STARTED | Only JavaScript has a cross-repo gate (`make struct-compat`). Decide whether each migrated port needs an equivalent, or whether its own suite passing before and after the swap is sufficient evidence. |
 
 ## Phase 2 — sekreto scaffolding retirement
 
