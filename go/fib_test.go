@@ -54,6 +54,12 @@ var (
 	// The context-group subject: reports what the runner delivered - the
 	// contextify mark and the attached client - as plain data, so the spec
 	// can pin both with an ordinary `out` comparison in every port.
+	// A subject that returns the sentinel text "__UNDEF__" as ordinary data.
+	// A match of `{"__UNDEF__"}` asserts the key is ABSENT, so it must not be
+	// satisfied by a present key that happens to hold that literal string.
+	FIBUNDEFLIT = omni.Subject(func(args ...any) (any, error) {
+		return map[string]any{"a": "__UNDEF__"}, nil
+	})
 	FIBCTX = omni.Subject(func(args ...any) (any, error) {
 		ctx, _ := args[0].(map[string]any)
 		val, err := fib.Fib(ctx["n"])
@@ -193,6 +199,13 @@ func TestRunner(t *testing.T) {
 					"out": map[string]any{"nope": "__NULL__"},
 				}},
 			}},
+			// __UNDEF__ (absent) must not be satisfied by a present key
+			// holding the literal string "__UNDEF__" as data.
+			"wrongundef": map[string]any{"set": []any{
+				map[string]any{"in": 1.0, "match": map[string]any{
+					"out": map[string]any{"a": "__UNDEF__"},
+				}},
+			}},
 			// An empty-string want is not a wildcard substring match.
 			"emptystr": map[string]any{"set": []any{
 				map[string]any{"in": 6.0, "match": map[string]any{
@@ -236,6 +249,8 @@ func TestRunner(t *testing.T) {
 		func(t *testing.T) { expectfail(t, "nullonabsent", FIBINFO) })
 	t.Run("an empty-string match leaf is not a wildcard",
 		func(t *testing.T) { expectfail(t, "emptystr", FIBINFO) })
+	t.Run("__UNDEF__ does not match its own literal string",
+		func(t *testing.T) { expectfail(t, "wrongundef", FIBUNDEFLIT) })
 
 	t.Run("rejects an unsupported spec version", func(t *testing.T) {
 		_, err := omni.MakeRunner(map[string]any{

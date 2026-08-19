@@ -47,6 +47,11 @@ def fibctx (ctx : Val) : Except String Json := do
 
 def FIBCTX : Subject := fun args => fibctx (args.head?)
 
+/-- A subject that returns the sentinel spelling as ordinary string data,
+so the negative test can prove that a literal "__UNDEF__" no longer
+satisfies an assertion that the key is absent. -/
+def FIBLITERALUNDEF : Subject := fun _args => pure (jmap [("a", jstr "__UNDEF__")])
+
 /-- The provider hosts the system under test. `shift` offsets the
 Fibonacci index, so that a client-specific subject is observably
 different. `contextify` marks the map, so the context group can prove the
@@ -97,6 +102,12 @@ def badspec : Json :=
       jmap [("in", jnum 1), ("err", jstr "never happens")]])]),
     ("wrongmatch", jmap [("set", jlist [
       jmap [("in", jnum 6), ("match", jmap [("out", jnum 999)])]])]),
+    -- A literal "__UNDEF__" in the data is ordinary data, not the absent
+    -- sentinel: __UNDEF__ asserts the key is MISSING, so a present literal
+    -- must fail. A sentinel that accepts its own literal is not a sentinel.
+    ("wrongundef", jmap [("set", jlist [
+      jmap [("in", jnum 6),
+            ("match", jmap [("out", jmap [("a", jstr "__UNDEF__")])])]])]),
     ("missing", jmap [("set", jlist [
       jmap [("in", jnum 6),
             ("match", jmap [("out", jmap [("nope", jstr "__EXISTS__")])])]])]),
@@ -300,6 +311,8 @@ def main (argv : List String) : IO UInt32 := do
   run "detects wrong result" (expectfail "wrongout" FIB)
   run "detects missing error" (expectfail "wrongerr" FIB)
   run "detects failed match" (expectfail "wrongmatch" FIB)
+  run "a literal __UNDEF__ in the data is not the absent sentinel"
+    (expectfail "wrongundef" FIBLITERALUNDEF)
   run "detects absent key" (expectfail "missing" FIBINFO)
   run "a concrete match leaf does not match a missing key" (expectfail "matchabsent" FIBINFO)
   run "__UNDEF__ does not match a present null" (expectfail "undefonnull" FIBINFO)

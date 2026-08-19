@@ -121,8 +121,14 @@ describe('runner', () => {
       nullonabsent: { set: [{ in: 6, match: { out: { nope: '__NULL__' } } }] },
       // An empty-string match leaf is not a wildcard.
       emptystr: { set: [{ in: 6, match: { out: { label: '' } } }] },
+      // __UNDEF__ (absent) must not be satisfied by a subject returning the
+      // literal string "__UNDEF__" as ordinary data.
+      wrongundef: { set: [{ in: 6, match: { out: { a: '__UNDEF__' } } }] },
     },
   }
+
+  // A subject whose ordinary data happens to be the literal sentinel text.
+  const fibundefliteral = (n) => ({ n, a: '__UNDEF__' })
 
   async function expectfail(setname, subject, flags) {
     const runner = await makeRunner(badspec)
@@ -163,6 +169,10 @@ describe('runner', () => {
 
   test('an empty-string match leaf is not a wildcard', async () => {
     await expectfail('emptystr', fibinfo)
+  })
+
+  test('__UNDEF__ does not match a literal "__UNDEF__" in the data', async () => {
+    await expectfail('wrongundef', fibundefliteral)
   })
 
   test('rejects an unsupported spec version', async () => {

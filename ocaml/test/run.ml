@@ -30,6 +30,10 @@ let fibrangesub args = Fib.fibrange (List.nth args 0) (List.nth args 1)
 let fibinfosub args = Fib.fibinfo (List.nth args 0)
 let fibctxsub args = Fib.fibctx (List.nth args 0)
 
+(* A subject that returns the literal string "__UNDEF__" as ordinary data -
+   it must not satisfy an __UNDEF__ (absent) match assertion. *)
+let undefsub _args = JMap [ ("a", Str "__UNDEF__") ]
+
 (* The provider hosts the system under test. `shift` offsets the Fibonacci
    index, so that a client-specific subject is observably different.
    `contextify` marks the map, so the context group can prove the hook
@@ -152,6 +156,22 @@ let badspec =
                           [
                             ("in", Num 6.0);
                             ("match", JMap [ ("out", JMap [ ("nope", Str "__NULL__") ]) ]);
+                          ];
+                      ] );
+                ] );
+            (* A subject returning the literal string "__UNDEF__" as
+               ordinary data must not satisfy an __UNDEF__ (absent)
+               assertion - the sentinel never accepts its own literal. *)
+            ( "wrongundef",
+              JMap
+                [
+                  ( "set",
+                    JList
+                      [
+                        JMap
+                          [
+                            ("in", Num 6.0);
+                            ("match", JMap [ ("out", JMap [ ("a", Str "__UNDEF__") ]) ]);
                           ];
                       ] );
                 ] );
@@ -383,6 +403,10 @@ let () =
   testcase "__NULL__ does not match an absent key" (fun () -> expectfail "nullonabsent" fibinfosub);
   testcase "an empty-string match leaf is not a wildcard" (fun () ->
       expectfail "emptystr" fibinfosub);
+  (* The literal string "__UNDEF__" returned as data does not satisfy an
+     __UNDEF__ (absent) assertion. *)
+  testcase "the literal __UNDEF__ as data does not match __UNDEF__" (fun () ->
+      expectfail "wrongundef" undefsub);
   testcase "reports entry index and id" checkmessage;
 
   testcase "rejects an unsupported spec version" (fun () ->

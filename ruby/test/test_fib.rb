@@ -103,6 +103,10 @@ class TestFib < Minitest::Test
   end
 end
 
+# A subject that returns the UNDEFMARK sentinel string as ordinary data,
+# to prove __UNDEF__ is only satisfied by a genuinely absent key.
+FIBUNDEF = ->(_n) { { 'a' => '__UNDEF__' } }
+
 BADSPEC = {
   'fib' => {
     'wrongout' => { 'set' => [{ 'in' => 5, 'out' => 5 }, { 'in' => 6, 'out' => 999 }] },
@@ -117,7 +121,11 @@ BADSPEC = {
     # __NULL__ (present null) must not be satisfied by an absent key.
     'nullonabsent' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'nope' => '__NULL__' } } }] },
     # An empty-string match leaf is not a wildcard.
-    'emptystr' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'label' => '' } } }] }
+    'emptystr' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'label' => '' } } }] },
+    # __UNDEF__ (absent) must not be satisfied by the literal string
+    # "__UNDEF__" arriving as ordinary data: a sentinel that accepts its
+    # own literal is not a sentinel.
+    'wrongundef' => { 'set' => [{ 'in' => 6, 'match' => { 'out' => { 'a' => '__UNDEF__' } } }] }
   }
 }.freeze
 
@@ -152,6 +160,10 @@ class TestRunner < Minitest::Test
 
   def test_undef_does_not_match_present_null
     expectfail('undefonnull', FIBINFO)
+  end
+
+  def test_undef_does_not_match_its_own_literal_as_data
+    expectfail('wrongundef', FIBUNDEF)
   end
 
   def test_null_does_not_match_absent_key

@@ -48,6 +48,11 @@ val FIBSEQ: Subject = { args -> Fib.fibseq(args[0]) }
 val FIBRANGE: Subject = { args -> Fib.fibrange(args[0], args[1]) }
 val FIBINFO: Subject = { args -> Fib.fibinfo(args[0]) }
 
+// A subject that returns the literal string "__UNDEF__" as ordinary data.
+// The absent sentinel must reject it: a sentinel that accepts its own
+// literal is not a sentinel.
+val FIBUNDEFLITERAL: Subject = { _ -> Json.map("a" to Json.str("__UNDEF__")) }
+
 // The context-group subject: reports what the runner delivered - the
 // contextify mark and the attached client - as plain data, so the spec can
 // pin both with an ordinary `out` comparison in every port.
@@ -151,6 +156,16 @@ fun badspec(): Json =
                     Json.map(
                         "in" to Json.num(0),
                         "match" to Json.map("out" to Json.map("prev" to Json.str("__UNDEF__"))),
+                    ),
+                ),
+            ),
+            // A subject returning the literal "__UNDEF__" as data must not
+            // satisfy an assertion that the key is absent.
+            "wrongundef" to Json.map(
+                "set" to Json.list(
+                    Json.map(
+                        "in" to Json.num(6),
+                        "match" to Json.map("out" to Json.map("a" to Json.str("__UNDEF__"))),
                     ),
                 ),
             ),
@@ -274,6 +289,9 @@ fun main(args: Array<String>) {
     testcase("concrete leaf does not match missing key") { expectfail("matchabsent", FIBINFO) }
     testcase("__UNDEF__ does not match present null") { expectfail("undefonnull", FIBINFO) }
     testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
+    testcase("__UNDEF__ does not match its own literal") {
+        expectfail("wrongundef", FIBUNDEFLITERAL)
+    }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
 

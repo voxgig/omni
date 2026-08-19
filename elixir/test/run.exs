@@ -116,6 +116,12 @@ defmodule OmniTest do
         # An empty-string match leaf is not a wildcard.
         "emptystr" => %{
           "set" => [%{"in" => 6.0, "match" => %{"out" => %{"label" => ""}}}]
+        },
+        # __UNDEF__ (absent) must not be satisfied by the literal string
+        # "__UNDEF__" returned as ordinary data - a sentinel that accepts
+        # its own literal is not a sentinel.
+        "wrongundef" => %{
+          "set" => [%{"in" => 6.0, "match" => %{"out" => %{"a" => "__UNDEF__"}}}]
         }
       }
     }
@@ -320,6 +326,9 @@ fibseq = fn args -> Fib.fibseq(hd(args)) end
 fibrange = fn args -> Fib.fibrange(hd(args), Enum.at(args, 1)) end
 fibinfo = fn args -> Fib.fibinfo(hd(args)) end
 
+# A subject that returns the literal sentinel string as ordinary data.
+fibundef = fn _args -> %{"a" => "__UNDEF__"} end
+
 # The context-group subject: reports what the runner delivered - the
 # contextify mark and the attached client - as plain data, so the spec can
 # pin both with an ordinary `out` comparison in every port.
@@ -398,6 +407,13 @@ state =
   OmniTest.testcase(
     "an empty-string match leaf is not a wildcard",
     fn -> OmniTest.expectfail("emptystr", fibinfo) end,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "__UNDEF__ does not match the literal string \"__UNDEF__\"",
+    fn -> OmniTest.expectfail("wrongundef", fibundef) end,
     state
   )
 

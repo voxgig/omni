@@ -46,6 +46,10 @@
                "mark" (get ctx "mark")
                "hasclient" (some? (get ctx "client")))))
 
+;; A subject that returns the sentinel text as ordinary data. Matching it
+;; against __UNDEF__ (absent) must fail: the key is plainly present.
+(defn FIBUNDEF [_args] (array-map "a" u/UNDEFMARK))
+
 ;; The provider hosts the system under test. `shift` offsets the Fibonacci
 ;; index, so that a client-specific subject is observably different.
 ;; `contextify` marks the map, so the context group can prove the hook ran.
@@ -88,6 +92,10 @@
     "matchabsent" {"set" [{"in" 6.0 "match" {"out" {"nope" "fine"}}}]}
     ;; __UNDEF__ (absent) must not be satisfied by a present null.
     "undefonnull" {"set" [{"in" 0.0 "match" {"out" {"prev" "__UNDEF__"}}}]}
+    ;; __UNDEF__ (absent) must not be satisfied by the literal string
+    ;; "__UNDEF__" arriving as ordinary data - a sentinel that accepts its
+    ;; own literal is not a sentinel.
+    "wrongundef" {"set" [{"in" 6.0 "match" {"out" {"a" "__UNDEF__"}}}]}
     ;; __NULL__ (present null) must not be satisfied by an absent key.
     "nullonabsent" {"set" [{"in" 6.0 "match" {"out" {"nope" "__NULL__"}}}]}
     ;; An empty-string want is a substring of everything, not a wildcard.
@@ -188,6 +196,8 @@
               #(expectfail "matchabsent" FIBINFO))
     (testcase "__UNDEF__ does not match a present null"
               #(expectfail "undefonnull" FIBINFO))
+    (testcase "__UNDEF__ does not match the literal string __UNDEF__ as data"
+              #(expectfail "wrongundef" FIBUNDEF))
     (testcase "__NULL__ does not match an absent key"
               #(expectfail "nullonabsent" FIBINFO))
     (testcase "an empty-string match leaf is not a wildcard"

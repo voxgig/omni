@@ -40,6 +40,11 @@ object Main:
   val FIBRANGE: Subject = args => Fib.fibrange(args.head, args(1))
   val FIBINFO: Subject = args => Fib.fibinfo(args.head)
 
+  // A subject that returns the sentinel's own literal text as ordinary
+  // data. A __UNDEF__ match leaf asserts the key is absent, so it must not
+  // be satisfied by a present value that merely spells the sentinel.
+  val FIBUNDEF: Subject = _ => Json.map("a" -> Json.str("__UNDEF__"))
+
   // The context-group subject: reports what the runner delivered - the
   // contextify mark and the attached client - as plain data, so the spec
   // can pin both with an ordinary `out` comparison in every port.
@@ -147,6 +152,16 @@ object Main:
             )
           )
         ),
+        // __UNDEF__ (absent) must not be satisfied by the sentinel's own
+        // literal text returned as ordinary data.
+        "wrongundef" -> Json.map(
+          "set" -> Json.list(
+            Json.map(
+              "in" -> Json.num(6),
+              "match" -> Json.map("out" -> Json.map("a" -> Json.str("__UNDEF__"))),
+            )
+          )
+        ),
         // An empty-string match leaf must not substring-match anything.
         "emptystr" -> Json.map(
           "set" -> Json.list(
@@ -239,6 +254,7 @@ object Main:
     testcase("concrete leaf does not match missing key") { expectfail("matchabsent", FIBINFO) }
     testcase("__UNDEF__ does not match present null") { expectfail("undefonnull", FIBINFO) }
     testcase("__NULL__ does not match absent key") { expectfail("nullonabsent", FIBINFO) }
+    testcase("__UNDEF__ does not match its own literal") { expectfail("wrongundef", FIBUNDEF) }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
 
