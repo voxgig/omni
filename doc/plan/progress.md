@@ -32,7 +32,7 @@ Whether to add per-port gates is open — see 1.1 below.
 | Port | Status | Notes |
 |---|---|---|
 | javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
-| typescript | NOT STARTED | Resolve `makeContext`/`contextify` drift + `ctx.utility`; coordinate with @voxgig/sdkgen first. |
+| typescript | DONE | In-situ runner deleted; test/omni.ts resolves the local checkout and prefers omni's TypeScript compat build (`typescript/compat/struct.ts`), falling back to the JavaScript peer when omni is checked out unbuilt. 110/110 through the shim — the same 110 the old runner passed, plus client.test.ts (1). `makeContext`/`contextify` drift resolved in the shim: `contextify` first, `makeContext` as fallback. @voxgig/sdkgen still copies the version-stamped TS runner — it needs the same swap. |
 | python | NOT STARTED | |
 | go | NOT STARTED | |
 | php | NOT STARTED | |
