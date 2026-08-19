@@ -195,13 +195,31 @@ The base is:
 
 Leaf matching rules, in order:
 
-1. deep equality;
-2. `"__UNDEF__"` against an absent value;
+1. `"__UNDEF__"` against an absent value;
+2. `"__NULL__"` against a present null;
 3. `"__EXISTS__"` against any present value, including null;
-4. `"/pattern/"` as a regular expression over the stringified base value;
-5. any other string as a case-insensitive substring of the stringified
+4. deep equality;
+5. `"/pattern/"` as a regular expression over the stringified base value;
+6. any other string as a case-insensitive substring of the stringified
    base value;
-6. otherwise, deep equality of the two values.
+7. otherwise, deep equality of the two values.
+
+The three sentinels are tested **before** deep equality, and that ordering
+is load-bearing. Were equality first, a subject returning the literal
+string `"__UNDEF__"` as ordinary data would satisfy an assertion that the
+key is *absent* - two mutually exclusive states passing one check. A
+sentinel that accepts its own literal cannot distinguish what it exists to
+distinguish.
+
+The consequence is that a match leaf cannot currently assert a literal
+sentinel string in the data: `match: { out: { a: "__UNDEF__" } }` always
+means *absent*, never *the four-character-plus string*, in either null
+mode. There is no escape for that yet - `__RAW__` is the planned one (see
+the model review's A1 and the register's item 4.2). `"__NULL__"` keeps a
+second, narrower ambiguity for the same reason: under the default `null`
+flag a real null has already been rewritten to that string before the
+comparison, so a literal `"__NULL__"` and a genuine null are
+indistinguishable at the leaf.
 
 The base differs by outcome: on success it carries `in`, `args`, `out`
 and `ctx`; when the subject fails it carries `in`, `out`, `ctx` and `err`
