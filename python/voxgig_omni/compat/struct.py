@@ -16,6 +16,7 @@ import inspect
 import os
 from typing import Any, Callable
 
+from ..util import islist
 from ..runner import (
     EXISTSMARK,
     NULLMARK,
@@ -102,6 +103,60 @@ def structprovider(sdk: Any) -> 'Provider':
     })
 
 
+def zeroargs(testspec: Any) -> Any:
+    """Reproduce struct's python runner for the no-argument entries.
+
+    struct's corpus has seventeen entries carrying no `in`, `args` or `ctx`.
+    They mean "call the subject with no arguments": each sits beside an
+    `in: null` sibling with a DIFFERENT expected result, and canonical
+    JavaScript agrees - typify() is 1073741824 where typify(null) is 4194432.
+
+    struct's own runners never agreed on that. python's resolve_args left
+    `args` empty and so called with zero arguments; typescript, php and go
+    passed one absent value; ruby passed its UNDEF sentinel; lua filtered
+    the entries out entirely. omni's generic rule is the typescript one
+    (DOCS 2.2: `args = [clone(entry.in)]`), which JavaScript cannot tell
+    apart from a zero-argument call but python can.
+
+    A compat shim exists to keep a port's behaviour identical across the
+    swap, so this restores python's reading by rewriting those entries to
+    an explicit empty `args` - in memory, for this port only. The corpus on
+    disk is untouched, which matters: an authored `args: []` shortens the
+    argument list, and that breaks the fixed-arity adapters (it panics
+    omni/go and aborts omni/rust outright). Python is not one of those.
+
+    The discrimination is made HERE, on the entry, rather than on the
+    argument value, because under `{'null': False}` an authored `in: null`
+    also arrives as None - indistinguishable from an absent `in` once the
+    argument list has been built.
+
+    The general fix is the absence model: spell the state as
+    `in: '__UNDEF__'` and let each port map it to its own no-value. That
+    needs the marker honoured in input position first, so it rides a spec
+    version bump rather than this shim.
+    """
+    if not isinstance(testspec, dict) or not islist(testspec.get('set')):
+        return testspec
+
+    entries = testspec['set']
+    if not any(
+        isinstance(e, dict) and not ({'in', 'args', 'ctx'} & set(e.keys()))
+        for e in entries
+    ):
+        return testspec
+
+    patched = []
+    for entry in entries:
+        if isinstance(entry, dict) and not ({'in', 'args', 'ctx'} & set(entry.keys())):
+            entry = dict(entry)
+            entry['args'] = []
+        patched.append(entry)
+
+    testspec = dict(testspec)
+    testspec['set'] = patched
+    return testspec
+
+
 def makeRunner(testfile: str, client: Any) -> Callable:
     """struct's makeRunner(testfile, client) signature, backed by omni."""
     specpath = (
@@ -114,10 +169,19 @@ def makeRunner(testfile: str, client: Any) -> Callable:
 
     def structrunner(name: str, store: Any = None) -> dict:
         runpack = runner(name, {} if store is None else store)
+        omni_runset = runpack['runset']
+        omni_runsetflags = runpack['runsetflags']
+
+        def runset(testspec, testsubject=None):
+            return omni_runset(zeroargs(testspec), testsubject)
+
+        def runsetflags(testspec, flags=None, testsubject=None):
+            return omni_runsetflags(zeroargs(testspec), flags, testsubject)
+
         return {
             'spec': runpack['spec'],
-            'runset': runpack['runset'],
-            'runsetflags': runpack['runsetflags'],
+            'runset': runset,
+            'runsetflags': runsetflags,
             'subject': runpack['subject'],
             'client': provider,
         }
