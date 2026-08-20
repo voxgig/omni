@@ -24,7 +24,7 @@ lessons a landed item left behind are in [`handover.md`](handover.md).
 
 Wire local checkout → provider adapter → import swap → delete
 `<lang>/test/runner.*` → full suite green. One port per commit.
-**2 of 24 migrated.** omni's struct-compat gate covers the
+**3 of 24 migrated.** omni's struct-compat gate covers the
 **JavaScript** swap only: it copies struct's `javascript/test` files,
 rewrites both `require('./runner')` (not yet migrated) and
 `require('./omni')` (migrated), and runs them under Node — so it holds
@@ -40,7 +40,7 @@ Whether to add per-port gates is open — see 1.1 below.
 | python | DONE | In-situ runner deleted; `tests/omni.py` resolves the local checkout and re-exports omni's python compat shim. 100 tests, OK, 3 pre-existing skips — against the unmodified corpus. Merged as voxgig/struct#86 (CI wiring — the omni checkout and `OMNI_HOME` the `test-python` job lacked — applied by a maintainer as struct f581a4f). The swap turned on 4.12: the seventeen no-argument entries are kept at struct's python reading by `compat.struct.zeroargs`, in memory and for this port only (voxgig/omni#8). It also exposed a real port bug in `slice` — Python's `bool` is a subclass of `int` — fixed as voxgig/struct#85. |
 | go | NOT STARTED | omni's side is ready: `go/compat/struct/struct.go` (voxgig/omni#8), completed by voxgig/omni#13 — the shim now reproduces struct's `fixJSON` integral-`float64`→`int` normalisation (eight subtests) and passes the port's own no-value for the seventeen implicit entries. struct-side swap open as voxgig/struct#89, gated on the two known struct/go defects (voxgig/struct#90: `Transform` swallowed collected errors; the port had no undefined in its value domain). |
 | php | NOT STARTED | |
-| ruby | NOT STARTED | omni's side is ready: `ruby/lib/voxgig_omni/compat/struct.rb` (voxgig/omni#8), completed by voxgig/omni#12 — `undefargs` supplies `VoxgigStruct::UNDEF` for the seventeen implicit entries, the input-side peer of python's `zeroargs`. Without it `minor/typify#10` is the single failure. struct-side swap open as voxgig/struct#88. |
+| ruby | DONE | In-situ runner deleted — the 301-line `voxgig_runner.rb` — and `ruby/omni.rb` resolves the local checkout, presenting omni's shim under struct's own `VoxgigRunner` namespace; the test files change by one require line. 93 runs, 159 assertions, 0 failures — the same 93 the in-situ runner passed. Merged as voxgig/struct#88. Needed voxgig/omni#12 first: `undefargs` supplies `VoxgigStruct::UNDEF` for the seventeen implicit entries, the input-side peer of python's `zeroargs`; without it `minor/typify#10` was the single failure. |
 | lua | NOT STARTED | |
 | rust | NOT STARTED | |
 | c | NOT STARTED | |

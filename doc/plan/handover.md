@@ -20,11 +20,13 @@ Last updated: 2026-08-20.
 |---|---|
 | voxgig/omni#5 | C1 spec versioning (`OMNI: {version, requires}`), strict entry validation, the `context` group and the `err.name` pin, across the canonical TypeScript and all 23 ports. |
 | voxgig/omni#6 | The spec-format shape moved from JSON Schema to aontu (`spec/def/omni-spec.aontu`, `make spec-check`); the ajv dependency dropped. |
-| voxgig/omni#8 | Four struct compat shims — python (`voxgig_omni/compat/struct.py`), and in bb5ad6e the typescript (`typescript/compat/struct.ts`), go (`go/compat/struct/struct.go`) and ruby (`ruby/lib/voxgig_omni/compat/struct.rb`) peers. With `javascript/compat/struct.js` that is five ports whose omni side is ready — of which **javascript and python have since swapped** (voxgig/struct#84, #86), leaving **three** pending: typescript, go and ruby. |
+| voxgig/omni#8 | Four struct compat shims — python (`voxgig_omni/compat/struct.py`), and in bb5ad6e the typescript (`typescript/compat/struct.ts`), go (`go/compat/struct/struct.go`) and ruby (`ruby/lib/voxgig_omni/compat/struct.rb`) peers. With `javascript/compat/struct.js` that is five ports whose omni side is ready — of which **javascript, python and ruby have since swapped** (voxgig/struct#84, #86, #88), leaving **two** pending: typescript and go. |
 | voxgig/omni#9 | The sentinels tested before the identity check in `match`, canonical and all 23 ports, each pinned by a `wrongundef` negative case. |
 | voxgig/struct#84 | The **javascript** port migrated to omni. In-situ runner deleted; `javascript/test/omni.js` resolves the local checkout. 95/95 — the same 95 the old runner passed. |
 | voxgig/struct#85 | The `slice` bool/number bug (§4). |
 | voxgig/struct#86 | The **python** port migrated. 100 tests, OK, 3 pre-existing skips. Takes struct to **2 of 24**. |
+| voxgig/omni#12, #13 | The ruby and go shims' input sides, both missing from #8: ruby `undefargs` (the port's `VoxgigStruct::UNDEF` for the seventeen implicit entries) and go `fixnums` (struct's `fixJSON` integral-`float64`→`int` normalisation, on both sides) plus the port's own no-value reaching the subject. |
+| voxgig/struct#88 | The **ruby** port migrated. 93 runs, 159 assertions, 0 failures. Takes struct to **3 of 24**. |
 
 omni's `make struct-compat` gate runs struct's javascript suite against
 omni on every omni PR. It is the only cross-repo gate that exists, and it

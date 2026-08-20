@@ -2,8 +2,8 @@
 
 omni's goal: be the single multi-language test-spec utility of the voxgig
 ecosystem. `voxgig/sekreto` already runs every port's conformance suite
-through omni; `voxgig/struct` is to replace its in-situ runners with omni - 2 of 24
-done, 22 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
+through omni; `voxgig/struct` is to replace its in-situ runners with omni - 3 of 24
+done, 21 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
 checkout world. This document is the plan; the live status is the register
 in [`progress.md`](progress.md), which changes in the same commit as the
 work it records (see AGENTS.md).
@@ -45,14 +45,18 @@ runners disagree. Audit the 59 `err` and 15 `match` corpus entries on each
 swap; they exercise the paths most likely to differ.
 
 Order, as actually taken: javascript (shim already validated by the
-struct-compat gate), then **python** (voxgig/struct#86). typescript was
+struct-compat gate), then **python** (voxgig/struct#86), then **ruby**
+(voxgig/struct#88). **go** is open as voxgig/struct#89. typescript was
 planned second and is now deferred - omni's side is ready
 (`typescript/compat/struct.ts`), but `@voxgig/sdkgen` copies the
-version-stamped TS runner and is outside the current repository scope, so
-`status.md` names go and ruby as the next swaps instead. omni already
-carries their compat shims (`go/compat/struct/struct.go`,
-`ruby/lib/voxgig_omni/compat/struct.rb`, both voxgig/omni#8), so those two
-start from the same position javascript and python did.
+version-stamped TS runner and is outside the current repository scope.
+
+Both the ruby and go swaps needed omni-side work first, and neither was
+visible until a struct port was actually run through the shim: #8's shims
+were incomplete for struct's seventeen implicit entries (ruby, closed by
+voxgig/omni#12) and for struct's `fixJSON` number normalisation (go, closed
+by voxgig/omni#13). **Expect one omni PR per swap**, not a clean lift - the
+shim is only proved by its consumer.
 
 boru needs a decision: an omni boru port, or a documented exception that
 keeps its in-situ runner. It is the only struct port with neither a test
