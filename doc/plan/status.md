@@ -46,10 +46,16 @@ checkout to a struct ref instead of floating on its default branch.
 
 ## Blocked on a human, not on work
 
-- **voxgig/station has no CI at all.** The workflow is parked in `ci/` because
-  the authoring credential lacks the `workflow` OAuth scope. 16 ports and a
-  40-entry conformance corpus are verified by nothing. Two commands, in
-  `station/ci/README.md`. Cheapest high-value action in the programme.
+- ~~**voxgig/station has no CI at all.**~~ **Cleared 2026-08-20.** The parked
+  workflow is live at `station/.github/workflows/build.yml` (voxgig/station#2
+  to activate it, #3 to make it pass), and 11 of station's 16 ports are green.
+  Activation was not free: the `rust` leg ran a bare `cargo test`, skipping the
+  Makefile `vendor` target that links the path dependencies `Cargo.toml`
+  names — and because the eleven ports were sequential steps in one job, that
+  failure stopped it and `c` and `cpp` never ran at all. Fixed, along with the
+  same bug in station's top-level Makefile (`test-rust` and `test-swift`), and
+  each step now reports before the job fails. **Five ports still have no job:
+  csharp, dart, elixir, lua, swift.**
 - **Both mains are green again** — omni run #36 (26/26) and struct's Build
   and Test, Lint and Security runs, all on 2026-08-20. The earlier red was
   external toolchain flake, not a code defect: a six-hour `apt-get` hang on
@@ -58,9 +64,15 @@ checkout to a struct ref instead of floating on its default branch.
   the `preinstalled` matrix carries no `timeout-minutes`, so adding
   `timeout-minutes: 15` turns a six-hour cancellation into a fast,
   obviously-infrastructural failure.
+- **Node 20 actions across all four repos.** station is off them
+  (checkout v4→v7, setup-node v4→v7, setup-go v5→v7, setup-python v5→v7,
+  setup-java v4→v5); **omni, struct and sekreto are not.** GitHub is already
+  forcing them onto Node 24 with a deprecation warning on every run, so this
+  is a countdown, not a preference.
+
 - **The `workflow` scope generally.** It blocked the `test-python` CI change on
-  struct#86 (a maintainer applied it as f581a4f) and it is the same thing
-  keeping station's CI parked. Worth clearing once at the org level.
+  struct#86 (a maintainer applied it as f581a4f) and it was what kept station's
+  CI parked until 2026-08-20. Worth clearing once at the org level.
 
 
 ## Known defects, recorded so they are not rediscovered
