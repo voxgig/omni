@@ -191,7 +191,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
+      # SwiftyLab rather than swift-actions/setup-swift: the latter targets
+      # Node 20 at every published version including its v3 pre-release, and
+      # Node 20 actions are refused. Same `swift-version` input.
+      - uses: SwiftyLab/setup-swift@38f54a76b70d989321de9dc7c840618c08cf56e9 # v1.14.0
         with:
           swift-version: '5.10'
       - run: make test-swift
