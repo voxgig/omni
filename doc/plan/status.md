@@ -20,6 +20,8 @@ Nothing. The three open items at the last snapshot have all landed:
 | [voxgig/omni#13](https://github.com/voxgig/omni/pull/13) | Merged. The go shim's: `fixnums` reproduces struct's `fixJSON` integral-`float64`→`int` normalisation on both sides, and the port's own no-value reaches the subject. Eight of ten failing subtests were this one bug. |
 | [voxgig/omni#14](https://github.com/voxgig/omni/pull/14) | Merged. Every action reference pinned to a full-length commit SHA; swift setup moved to Node 24. |
 | [voxgig/struct#88](https://github.com/voxgig/struct/pull/88) | Merged. struct's **ruby** port off its 301-line in-situ runner — 93 runs, 159 assertions, 0 failures. struct is now **3 of 24** migrated. |
+| [voxgig/struct#90](https://github.com/voxgig/struct/pull/90) | Merged. Two struct/go library defects the in-situ runner had been hiding: `Transform` now returns `(any, error)` so it surfaces the errors it collects, and `NOVAL` gives the port a no-value that typifies as `T_noval`. Both sat inside the 108 entry-executions that runner dropped. |
+| [voxgig/struct#89](https://github.com/voxgig/struct/pull/89) | Merged. struct's **go** port off its 985-line in-situ runner — 105 subtests, 0 failures. struct is now **4 of 24** migrated. Its harness became a nested module so omni cannot reach the library's build (register 4.13). |
 
 [voxgig/omni#8](https://github.com/voxgig/omni/pull/8) merged 2026-08-19: the
 python compat shim, `voxgig_omni/compat/struct.py`, its TypeScript peer, and
@@ -36,10 +38,17 @@ rewriting real nulls in `args`/`in`/`ctx` — until that lands, the model's null
 row is unimplementable and any corpus distinction between zero and null has to
 declare `{null: false}`.
 
-**2. Keep migrating ports.** `ruby` landed (voxgig/struct#88) and `go` is
-open (voxgig/struct#89, gated on #90's two library defects), so the next
-undone swap with a present toolchain and no external coupling is `php`, then
-`lua` — the latter also closing the skip filter under register 4.12.
+**2. Keep migrating ports.** `ruby` (voxgig/struct#88) and `go`
+(voxgig/struct#89) have both landed, so the next undone swap with a present
+toolchain and no external coupling is `php`, then `lua` — the latter also
+closing the skip filter under register 4.12.
+
+go is the one to read before starting another: it needed an omni fix
+(#13), **two struct-side library fixes** (#90) and a module split (4.13),
+none of which were visible until the corpus actually ran. Its runner had
+been dropping 108 of 1362 entry-executions. Any port whose runner filters
+rather than fails should be budgeted the same way — `lua` (17 skipped) and
+`csharp` (86 dropped) are the two known cases.
 `typescript` is *not* next despite omni's side being ready
 (`typescript/compat/struct.ts`, shipped in #8): struct's swap has not been
 written, and `@voxgig/sdkgen` copies the version-stamped TS runner, which is

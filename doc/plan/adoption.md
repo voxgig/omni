@@ -2,8 +2,8 @@
 
 omni's goal: be the single multi-language test-spec utility of the voxgig
 ecosystem. `voxgig/sekreto` already runs every port's conformance suite
-through omni; `voxgig/struct` is to replace its in-situ runners with omni - 3 of 24
-done, 21 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
+through omni; `voxgig/struct` is to replace its in-situ runners with omni - 4 of 24
+done, 20 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
 checkout world. This document is the plan; the live status is the register
 in [`progress.md`](progress.md), which changes in the same commit as the
 work it records (see AGENTS.md).
@@ -45,8 +45,8 @@ runners disagree. Audit the 59 `err` and 15 `match` corpus entries on each
 swap; they exercise the paths most likely to differ.
 
 Order, as actually taken: javascript (shim already validated by the
-struct-compat gate), then **python** (voxgig/struct#86), then **ruby**
-(voxgig/struct#88). **go** is open as voxgig/struct#89. typescript was
+struct-compat gate), then **python** (voxgig/struct#86), **ruby**
+(voxgig/struct#88) and **go** (voxgig/struct#89). typescript was
 planned second and is now deferred - omni's side is ready
 (`typescript/compat/struct.ts`), but `@voxgig/sdkgen` copies the
 version-stamped TS runner and is outside the current repository scope.
@@ -57,6 +57,17 @@ were incomplete for struct's seventeen implicit entries (ruby, closed by
 voxgig/omni#12) and for struct's `fixJSON` number normalisation (go, closed
 by voxgig/omni#13). **Expect one omni PR per swap**, not a clean lift - the
 shim is only proved by its consumer.
+
+go went further and needed **struct-side library changes** too
+(voxgig/struct#90), because its in-situ runner had been hiding real defects
+behind 108 dropped entry-executions. Budget for that on any port whose
+runner filters entries rather than failing on them: the swap does not just
+move the runner, it runs code the port has never run. lua's skip filter (17
+entries) and csharp's no-`out` drop (86) are the two known remaining cases.
+
+A third cost, specific to compiled languages with a module system: keeping
+the omni import out of the *library's* build. struct/go needed its harness
+split into a nested module for that - see register 4.13.
 
 boru needs a decision: an omni boru port, or a documented exception that
 keeps its in-situ runner. It is the only struct port with neither a test
@@ -123,8 +134,9 @@ out safely:
 Each item follows the standard workflow: canonical + spec + all 23 ports +
 DOCS in one PR, and its register row flips in that PR.
 
-The register carries three items this list does not, added after it was
+The register carries four items this list does not, added after it was
 written: **4.10** (cross-field shape rules, once aontu grows `must()` and
-`length()`), **4.11** (sharing the shape with downstream corpora) and
-**4.12** (zero-argument calls - the one `DECISION NEEDED` row in the
-register). The register is the authority; this list is the narrative.
+`length()`), **4.11** (sharing the shape with downstream corpora), **4.12**
+(zero-argument calls - the one `DECISION NEEDED` row in the register) and
+**4.13** (keeping the omni import out of each port's library build, opened
+by the go swap). The register is the authority; this list is the narrative.
