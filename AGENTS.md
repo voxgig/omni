@@ -223,6 +223,9 @@ The cross-repo plan for omni becoming the shared test-spec utility of
 `voxgig/struct` and `voxgig/sekreto` (validated externally by
 `senecajs/Sekreto`) lives in [`doc/plan/adoption.md`](doc/plan/adoption.md),
 and its progress register in [`doc/plan/progress.md`](doc/plan/progress.md).
+[`doc/plan/handover.md`](doc/plan/handover.md) carries what survives an
+item landing - the open decisions and the lessons a migration left behind -
+so they are not rediscovered from scratch.
 
 **A work item's row in the register changes in the same commit that
 changes its status.** For work landing in *this* repo that is a hard rule;
@@ -233,7 +236,8 @@ the one place the whole goal is visible.
 
 **Starting a session?** Read [`doc/plan/status.md`](doc/plan/status.md) first.
 It says what is in flight, what is blocked on a human, and which known defects
-have already been diagnosed - so they are not rediscovered from scratch.
+have already been diagnosed. It is a live snapshot and is meant to be rewritten
+or deleted as it goes stale; `handover.md` is the durable half.
 
 
 ## Where to look next

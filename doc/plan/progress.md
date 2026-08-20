@@ -3,8 +3,12 @@
 Live status of [`adoption.md`](adoption.md). **A row changes in the same
 commit that changes its status** for work landing in this repo; rows
 tracking other repos are updated when the change merges there, citing the
-PR. Statuses: `NOT STARTED`, `IN PROGRESS`, `DONE`, `DECIDED-NO` (with a
-reason).
+PR. Statuses: `NOT STARTED`, `IN PROGRESS`, `DONE`, `DECISION NEEDED`
+(waiting on a call that is not the implementer's to make), `DECIDED-NO`
+(with a reason).
+
+What is in flight right now is in [`status.md`](status.md); the decisions and
+lessons a landed item left behind are in [`handover.md`](handover.md).
 
 ## Phase 0 — make omni consumable and trustworthy
 
@@ -20,7 +24,7 @@ reason).
 
 Wire local checkout → provider adapter → import swap → delete
 `<lang>/test/runner.*` → full suite green. One port per commit.
-**1 of 24 migrated.** omni's struct-compat gate covers the
+**2 of 24 migrated.** omni's struct-compat gate covers the
 **JavaScript** swap only: it copies struct's `javascript/test` files,
 rewrites both `require('./runner')` (not yet migrated) and
 `require('./omni')` (migrated), and runs them under Node — so it holds
@@ -32,8 +36,8 @@ Whether to add per-port gates is open — see 1.1 below.
 | Port | Status | Notes |
 |---|---|---|
 | javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
-| typescript | DONE | In-situ runner deleted; test/omni.ts resolves the local checkout and prefers omni's TypeScript compat build (`typescript/compat/struct.ts`), falling back to the JavaScript peer when omni is checked out unbuilt. 110/110 through the shim — the same 110 the old runner passed, plus client.test.ts (1). `makeContext`/`contextify` drift resolved in the shim: `contextify` first, `makeContext` as fallback. @voxgig/sdkgen still copies the version-stamped TS runner — it needs the same swap. |
-| python | NOT STARTED | |
+| typescript | NOT STARTED | omni's side is ready — `typescript/compat/struct.ts` ships in voxgig/omni#8, resolving the `makeContext`/`contextify` drift (`contextify` first, `makeContext` as fallback). struct's own swap has not merged and no struct PR exists for it: `struct/typescript/test/runner.ts` is still the in-situ runner. @voxgig/sdkgen copies the version-stamped TS runner and needs the same swap. |
+| python | DONE | In-situ runner deleted; `tests/omni.py` resolves the local checkout and re-exports omni's python compat shim. 100 tests, OK, 3 pre-existing skips — against the unmodified corpus. Merged as voxgig/struct#86 (CI wiring — the omni checkout and `OMNI_HOME` the `test-python` job lacked — applied by a maintainer as struct f581a4f). The swap turned on 4.12: the seventeen no-argument entries are kept at struct's python reading by `compat.struct.zeroargs`, in memory and for this port only (voxgig/omni#8). It also exposed a real port bug in `slice` — Python's `bool` is a subclass of `int` — fixed as voxgig/struct#85. |
 | go | NOT STARTED | |
 | php | NOT STARTED | |
 | ruby | NOT STARTED | |
@@ -94,3 +98,4 @@ Findings and rationale:
 | 4.9 B-group naming coherence (aliases, strict section resolution, `options` short form) | NOT STARTED | |
 | 4.10 Shape check: cross-field rules once aontu supports them | NOT STARTED | `must()` and `length()` are absent in aontu 0.48.2 (Band B / sizing atoms). When they land, move one-of in/args/ctx, err-with-out and non-empty-set into `spec/def/omni-spec.aontu` so a malformed spec fails at build, not only at test. |
 | 4.11 Share the shape with downstream corpora | NOT STARTED | struct and sekreto author their own specs; decide how they import omni's shape across the local-checkout boundary (struct's corpus is legacy v0, so it needs a v0 variant or an opt-in). |
+| 4.12 Zero-argument calls (model review A6) | **DECISION NEEDED** | An entry carrying none of `in`/`args`/`ctx` is called with one *absent* argument (`resolveargs` → `args = [clone(entry.in)]`, DOCS §2.2); struct's corpus uses that form to mean *no arguments*, in 17 of its 1397 entries. No longer blocking — struct's python swap landed with the reading preserved in-memory by `compat.struct.zeroargs` (voxgig/omni#8) — but the shim is per-port and does not scale. Zero effect on fib (0 implicit entries of 68) or sekreto (0 of 110); the 17 struct entries change their invoked argument list either way. Superseded in approach by [`../design/absence-model.md`](../design/absence-model.md): the portable spelling is `in: '__UNDEF__'`, not `args: []` (which shortens the argument vector and breaks five of nine fixed-arity adapters) and not a silent default. Rides the spec version bump; 4.2 is its prerequisite. |

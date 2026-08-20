@@ -106,8 +106,13 @@ This is **spec format version 2**. Verified: `requires` is not in
   reporting `index out of range [0] with length 0` and **`omni/rust` aborting
   the process** with `panicked: index out of bounds`, reporting nothing. Tried
   and reverted in voxgig/struct 932a84d.
-- **Deleting the "no `in`/`args`/`ctx`" rule changes nothing.** Zero of
-  struct's 1397 entries and zero of omni's 68 lack all three.
+- **Deleting the "no `in`/`args`/`ctx`" rule is not free, but it is
+  contained.** Zero of omni's 68 entries and zero of sekreto's 110 lack
+  all three, so no spec either repo authored changes meaning. **Seventeen
+  of struct's 1397 do**, and their invoked argument list changes with the
+  rule — `struct/minor/typify#10` being the only one whose subject can
+  observe it today. Measured by counting entries in `spec/fib.json`,
+  `spec/sekreto.json` and `build/test/test.json`.
 
 
 ## Prerequisites — the sentinel channel
