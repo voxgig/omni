@@ -2,8 +2,8 @@
 
 omni's goal: be the single multi-language test-spec utility of the voxgig
 ecosystem. `voxgig/sekreto` already runs every port's conformance suite
-through omni; `voxgig/struct` is to replace its 24 in-situ runners with
-omni; `senecajs/Sekreto` is to validate omni from outside the sibling-
+through omni; `voxgig/struct` is to replace its in-situ runners with omni - 2 of 24
+done, 22 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
 checkout world. This document is the plan; the live status is the register
 in [`progress.md`](progress.md), which changes in the same commit as the
 work it records (see AGENTS.md).
@@ -44,12 +44,19 @@ run the full suite - one port per commit, so a failure can only mean the
 runners disagree. Audit the 59 `err` and 15 `match` corpus entries on each
 swap; they exercise the paths most likely to differ.
 
-Order: javascript (shim already validated by the struct-compat gate),
-typescript (resolve the `makeContext`/`contextify` drift and the
-`ctx.utility` attachment; coordinate with `@voxgig/sdkgen`, which copies
-the version-stamped TS runner), then the remaining omni-covered ports.
+Order, as actually taken: javascript (shim already validated by the
+struct-compat gate), then **python** (voxgig/struct#86). typescript was
+planned second and is now deferred - omni's side is ready
+(`typescript/compat/struct.ts`), but `@voxgig/sdkgen` copies the
+version-stamped TS runner and is outside the current repository scope, so
+`status.md` names go and ruby as the next swaps instead. omni already
+carries their compat shims (`go/compat/struct/struct.go`,
+`ruby/lib/voxgig_omni/compat/struct.rb`, both voxgig/omni#8), so those two
+start from the same position javascript and python did.
+
 boru needs a decision: an omni boru port, or a documented exception that
-keeps its in-situ runner.
+keeps its in-situ runner. It is the only struct port with neither a test
+nor a lint job in CI.
 
 Per-port status lives in the register's struct table.
 
@@ -80,8 +87,11 @@ out safely:
 
 1. **C1 - versioning + strict validation** (the enabler): top-level `OMNI`
    `{version, requires}` block; version-1 strict entry validation; the
-   format schema (`spec/omni-spec.schema.json`). Ships to all 23 ports
-   while `requires` is empty and nothing can break.
+   format schema. Ships to all 23 ports while `requires` is empty and
+   nothing can break. (Landed as voxgig/omni#5; the schema is aontu -
+   `spec/def/omni-spec.aontu`, checked by `make spec-check` - not the JSON
+   Schema this originally named. voxgig/omni#6 made that swap and dropped
+   the ajv dependency.)
 2. **A1 - sentinel soundness**: `nullin`-style split so subjects receive
    real nulls; `__RAW__` escape; remove or justify the `nullmodifier`
    string splice. Default-flips ride a spec-version bump.
@@ -106,3 +116,9 @@ out safely:
 
 Each item follows the standard workflow: canonical + spec + all 23 ports +
 DOCS in one PR, and its register row flips in that PR.
+
+The register carries three items this list does not, added after it was
+written: **4.10** (cross-field shape rules, once aontu grows `must()` and
+`length()`), **4.11** (sharing the shape with downstream corpora) and
+**4.12** (zero-argument calls - the one `DECISION NEEDED` row in the
+register). The register is the authority; this list is the narrative.

@@ -199,7 +199,10 @@ degrades non-atomically across independently-updated runners — the exact
 failure class the project exists to eliminate, at the meta level.
 **Fix (landed 2026-08):** top-level `OMNI {version, requires}` block with
 loud refusal of unknown capabilities; version-1 strict entry validation;
-`spec/omni-spec.schema.json` + CI check. See DOCS §2.7.
+an aontu format shape (`spec/def/omni-spec.aontu`) + `make spec-check` in
+CI. See DOCS §2.7. (The fix originally shipped as a JSON Schema;
+voxgig/omni#6 replaced it with aontu, unifying the shape with each spec
+source and dropping the ajv dependency.)
 
 ### C2 (high) — Nothing checks that every group is run by every port
 An omitted group is perfectly silent; with struct's 87 groups × 24 ports

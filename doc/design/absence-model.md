@@ -8,7 +8,9 @@ existed), then attacked from four directions: lua semantics, the fixed-arity
 languages, sentinel soundness, and corpus ergonomics. Claims below marked
 *measured* were produced by running code.
 
-Status: designed, not started. Register item 4.2 is its first prerequisite.
+Status: designed; the first prerequisite is under way. Register item 4.2 is
+that prerequisite — one of its four sentinel-channel defects is closed
+(voxgig/omni#9), three remain, and nothing in the model itself has started.
 
 
 ## The problem
@@ -23,8 +25,13 @@ The corpus has been trying to express **three** states with two spellings.
 | absent | slot does not exist | key missing | `__EXISTS__` / `haskey` |
 
 The evidence that this is real, not theoretical: voxgig/struct's corpus has
-seventeen entries meaning *call the subject with no arguments*, each sitting
-directly beside an `in: null` sibling with a **different** expected result.
+seventeen entries meaning *call the subject with no arguments*. Fourteen sit
+directly beside an `in: null` sibling — and in `struct/minor/typify` that
+sibling expects a **different** result (`typify()` is `1073741824`,
+`typify(null)` is `4194432`), which is the pair that proves the two calls are
+not the same call. The other thirteen agree today only because their subjects
+are predicates that cannot tell the states apart; they are latent, not
+settled.
 struct's own in-situ runners read those seventeen **five** different ways —
 python passes zero arguments, typescript/php/go pass one absent value, ruby
 passes a `VoxgigStruct::UNDEF` sentinel, lua filters the entries out entirely,
@@ -89,9 +96,16 @@ Four rules:
    is a contradiction. It is why `{in: null}` means different things in
    `minor/isnode` and `minor/typify` today.
 
-This is **spec format version 2**. Verified: `requires` is not in
-`ENTRYFIELDS`, so every version-1 runner rejects it outright
+This is **spec format version 2**. Verified: no entry-level capability field
+is in `ENTRYFIELDS`, so every version-1 runner rejects one outright
 (`omni: arity[0]: unknown entry field: requires`).
+
+**Name it `needs:`, not `requires`.** `requires` is already taken — it is the
+top-level `OMNI.requires` capability list, parsed and checked against
+`CAPABILITIES` in `typescript/src/Runner.ts`. This document's own Sequence
+says `needs:`, and register 4.7 says "a `requires` capability"; three
+spellings for two different things is how the collision starts. `needs:` is
+the entry-level one.
 
 
 ## What the stress tests killed

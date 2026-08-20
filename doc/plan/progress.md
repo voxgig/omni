@@ -38,9 +38,9 @@ Whether to add per-port gates is open — see 1.1 below.
 | javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
 | typescript | NOT STARTED | omni's side is ready — `typescript/compat/struct.ts` ships in voxgig/omni#8, resolving the `makeContext`/`contextify` drift (`contextify` first, `makeContext` as fallback). struct's own swap has not merged and no struct PR exists for it: `struct/typescript/test/runner.ts` is still the in-situ runner. @voxgig/sdkgen copies the version-stamped TS runner and needs the same swap. |
 | python | DONE | In-situ runner deleted; `tests/omni.py` resolves the local checkout and re-exports omni's python compat shim. 100 tests, OK, 3 pre-existing skips — against the unmodified corpus. Merged as voxgig/struct#86 (CI wiring — the omni checkout and `OMNI_HOME` the `test-python` job lacked — applied by a maintainer as struct f581a4f). The swap turned on 4.12: the seventeen no-argument entries are kept at struct's python reading by `compat.struct.zeroargs`, in memory and for this port only (voxgig/omni#8). It also exposed a real port bug in `slice` — Python's `bool` is a subclass of `int` — fixed as voxgig/struct#85. |
-| go | NOT STARTED | |
+| go | NOT STARTED | omni's side is ready: `go/compat/struct/struct.go` (voxgig/omni#8). Named with ruby as the next swap — toolchain present, no external coupling. Mind the two known struct/go defects first (silent corpus skips, and no undefined in its value domain). |
 | php | NOT STARTED | |
-| ruby | NOT STARTED | |
+| ruby | NOT STARTED | omni's side is ready: `ruby/lib/voxgig_omni/compat/struct.rb` (voxgig/omni#8). Named with go as the next swap. |
 | lua | NOT STARTED | |
 | rust | NOT STARTED | |
 | c | NOT STARTED | |
@@ -69,7 +69,7 @@ Whether to add per-port gates is open — see 1.1 below.
 | Item | Status | Notes |
 |---|---|---|
 | 2.1 Depend on omni's build-spec (drop local copy) | NOT STARTED | Pairs with 0.4. |
-| 2.2 Fix "all 22 ports" comment in `spec/def/resolve.aontu` | NOT STARTED | |
+| 2.2 Fix "all 22 ports" comment in `spec/def/resolve.aontu` | NOT STARTED | sekreto has **10** ports (csharp, go, java, javascript, perl, php, python, ruby, rust, typescript). 22 is wrong on every reading — omni has 23 implementations, struct 24 with boru. |
 
 ## Phase 3 — senecajs/Sekreto validation use case
 
