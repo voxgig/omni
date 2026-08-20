@@ -85,13 +85,14 @@ func MakeRunner(testfile string, client any) func(name string, store any) (*RunP
 		runsetflags := func(t TestingT, testspec any, flags map[string]bool, testsubject any) {
 			t.Helper()
 
+			spec, patched := novalargs(fixnums(testspec), sentinel)
+
 			subject := pack.Subject
 			if nil != testsubject {
 				subject = Subjectify(testsubject)
 			}
-			subject = novalsubject(subject, sentinel)
+			subject = novalsubject(subject, sentinel, patched)
 
-			spec := novalargs(fixnums(testspec), sentinel)
 			if err := pack.RunSetFlags(spec, omniflags(flags), subject); nil != err {
 				t.Error(err.Error())
 			}
@@ -360,19 +361,19 @@ func callnamed(target any, name string) any {
 // The marker is a string, so it survives untouched, and `novalsubject`
 // swaps it for the real sentinel at the call boundary. The marker is
 // private to this shim, so nothing in a corpus can collide with it.
-func novalargs(testspec any, sentinel any) any {
+func novalargs(testspec any, sentinel any) (any, bool) {
 	if nil == sentinel {
-		return testspec
+		return testspec, false
 	}
 
 	spec, is := testspec.(map[string]any)
 	if !is {
-		return testspec
+		return testspec, false
 	}
 
 	set, is := spec["set"].([]any)
 	if !is {
-		return testspec
+		return testspec, false
 	}
 
 	found := false
@@ -383,7 +384,7 @@ func novalargs(testspec any, sentinel any) any {
 		}
 	}
 	if !found {
-		return testspec
+		return testspec, false
 	}
 
 	patched := make([]any, len(set))
@@ -405,7 +406,7 @@ func novalargs(testspec any, sentinel any) any {
 	}
 	out["set"] = patched
 
-	return out
+	return out, true
 }
 
 // NOVALMARK stands in for the port's no-value between novalargs and
@@ -415,8 +416,20 @@ const NOVALMARK = "__STRUCTCOMPAT_NOVAL__"
 
 // novalsubject swaps the marker back for the port's real sentinel, at the
 // point of call - after the runner has finished normalising the spec.
-func novalsubject(subject Subject, sentinel any) Subject {
-	if nil == sentinel || nil == subject {
+//
+// `patched` is what keeps the marker honest. Without it, a corpus that
+// legitimately authored the marker string in `in` or `args` would have that
+// value silently replaced. The wrapper is only installed for a spec
+// novalargs actually rewrote, so an authored string is never touched.
+//
+// Known gap: an entry that BOTH omits in/args/ctx and carries `client` gets
+// its subject from the client provider, via omni's resolvetestpack, which
+// bypasses this wrapper - so that subject would see the marker rather than
+// the sentinel. Measured against struct's corpus: of the seventeen implicit
+// entries, zero carry `client`, so it is unreachable today. Closing it means
+// wrapping the subject inside StructProvider, DEF.client providers included.
+func novalsubject(subject Subject, sentinel any, patched bool) Subject {
+	if nil == sentinel || nil == subject || !patched {
 		return subject
 	}
 
@@ -466,18 +479,14 @@ func noargs(entry any) bool {
 // compared against a `float64` result, which omni's deepequal correctly
 // refuses to conflate.
 //
-// Non-integral numbers are left alone, and so are numbers that are already
-// an integer type. Nothing outside the Float64 branch is touched.
+// Non-integral numbers are left alone, and so is every other numeric type -
+// `float32` included, deliberately: struct's fixJSON had a Float64 branch and
+// nothing else, and converting a float32 would break a subject whose
+// parameter is typed float32. Nothing outside the Float64 branch is touched.
 func fixnums(val any) any {
 	switch value := val.(type) {
 	case float64:
 		if value == float64(int(value)) {
-			return int(value)
-		}
-		return val
-
-	case float32:
-		if float64(value) == float64(int(value)) {
 			return int(value)
 		}
 		return val
