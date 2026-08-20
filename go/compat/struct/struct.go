@@ -67,6 +67,7 @@ type RunPack struct {
 // further resolution.
 func MakeRunner(testfile string, client any) func(name string, store any) (*RunPack, error) {
 	provider := StructProvider(client)
+	sentinel := structnoval(client)
 	runner, mkerr := omni.MakeRunner(testfile, provider)
 
 	return func(name string, store any) (*RunPack, error) {
@@ -84,12 +85,15 @@ func MakeRunner(testfile string, client any) func(name string, store any) (*RunP
 		runsetflags := func(t TestingT, testspec any, flags map[string]bool, testsubject any) {
 			t.Helper()
 
+			spec, patched := novalargs(fixnums(testspec), sentinel)
+
 			subject := pack.Subject
 			if nil != testsubject {
 				subject = Subjectify(testsubject)
 			}
+			subject = novalsubject(subject, sentinel, patched)
 
-			if err := pack.RunSetFlags(testspec, omniflags(flags), subject); nil != err {
+			if err := pack.RunSetFlags(spec, omniflags(flags), subject); nil != err {
 				t.Error(err.Error())
 			}
 		}
@@ -284,6 +288,228 @@ func findfield(val reflect.Value, name string) reflect.Value {
 	return reflect.Value{}
 }
 
+// structnoval reads the port's own no-value sentinel off the SDK, the same
+// way StructProvider reaches everything else: by reflection, so the shim
+// never imports the library it checks. Nil when the port has no such
+// sentinel, in which case the generic rule applies unchanged.
+func structnoval(client any) any {
+	defer func() { _ = recover() }()
+
+	utility := callnamed(client, "Utility")
+	if nil == utility {
+		return nil
+	}
+
+	structutils := callnamed(utility, "Struct")
+	if nil == structutils {
+		return nil
+	}
+
+	val := reflect.ValueOf(structutils)
+	for reflect.Ptr == val.Kind() && !val.IsNil() {
+		val = val.Elem()
+	}
+	if reflect.Struct != val.Kind() {
+		return nil
+	}
+
+	field := val.FieldByName("NOVAL")
+	if !field.IsValid() || !field.CanInterface() {
+		return nil
+	}
+
+	return field.Interface()
+}
+
+// callnamed invokes a zero-argument method by name, returning its first
+// result. Nil when there is no such method.
+func callnamed(target any, name string) any {
+	val := reflect.ValueOf(target)
+	method := val.MethodByName(name)
+	if !method.IsValid() || 0 != method.Type().NumIn() || 1 > method.Type().NumOut() {
+		return nil
+	}
+
+	out := method.Call(nil)
+	if 0 == len(out) {
+		return nil
+	}
+
+	return out[0].Interface()
+}
+
+// novalargs is the go peer of the python shim's `zeroargs` and the ruby
+// shim's `undefargs`: struct's corpus carries seventeen entries with no
+// `in`, `args` or `ctx`, meaning "call the subject with no arguments", and
+// each port's runner spelled that its own way.
+//
+// go's runner spelled it by not running them - it skipped this class
+// outright, on a hardcoded T_noval comparison, so the port's suite never
+// asserted them. There is no prior behaviour to reproduce, so the shim
+// gives them the port's own no-value instead, which is what canonical
+// means by them: `typify()` is T_noval where `typify(null)` is
+// T_scalar|T_null.
+//
+// The rewrite is in memory and for this port only; the corpus on disk is
+// untouched. When the port exposes no sentinel the spec is returned
+// unchanged.
+//
+// What goes into the spec is a MARKER, not the sentinel: omni's runner
+// runs `fixjson` over the whole group, arguments included (register 4.2's
+// third channel defect), and a Go sentinel is a struct pointer, so it
+// would arrive at the subject as the string "{NOVAL}" and typify as a map.
+// The marker is a string, so it survives untouched, and `novalsubject`
+// swaps it for the real sentinel at the call boundary. The marker is
+// private to this shim, so nothing in a corpus can collide with it.
+func novalargs(testspec any, sentinel any) (any, bool) {
+	if nil == sentinel {
+		return testspec, false
+	}
+
+	spec, is := testspec.(map[string]any)
+	if !is {
+		return testspec, false
+	}
+
+	set, is := spec["set"].([]any)
+	if !is {
+		return testspec, false
+	}
+
+	found := false
+	for _, entry := range set {
+		if noargs(entry) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return testspec, false
+	}
+
+	patched := make([]any, len(set))
+	for index, entry := range set {
+		if noargs(entry) {
+			copied := map[string]any{}
+			for key, val := range entry.(map[string]any) {
+				copied[key] = val
+			}
+			copied["args"] = []any{NOVALMARK}
+			entry = copied
+		}
+		patched[index] = entry
+	}
+
+	out := map[string]any{}
+	for key, val := range spec {
+		out[key] = val
+	}
+	out["set"] = patched
+
+	return out, true
+}
+
+// NOVALMARK stands in for the port's no-value between novalargs and
+// novalsubject. Deliberately not one of omni's own sentinels: those are
+// meaningful to the runner, and this one must pass through it inert.
+const NOVALMARK = "__STRUCTCOMPAT_NOVAL__"
+
+// novalsubject swaps the marker back for the port's real sentinel, at the
+// point of call - after the runner has finished normalising the spec.
+//
+// `patched` is what keeps the marker honest. Without it, a corpus that
+// legitimately authored the marker string in `in` or `args` would have that
+// value silently replaced. The wrapper is only installed for a spec
+// novalargs actually rewrote, so an authored string is never touched.
+//
+// Known gap: an entry that BOTH omits in/args/ctx and carries `client` gets
+// its subject from the client provider, via omni's resolvetestpack, which
+// bypasses this wrapper - so that subject would see the marker rather than
+// the sentinel. Measured against struct's corpus: of the seventeen implicit
+// entries, zero carry `client`, so it is unreachable today. Closing it means
+// wrapping the subject inside StructProvider, DEF.client providers included.
+func novalsubject(subject Subject, sentinel any, patched bool) Subject {
+	if nil == sentinel || nil == subject || !patched {
+		return subject
+	}
+
+	return func(args ...any) (any, error) {
+		for index, arg := range args {
+			if mark, is := arg.(string); is && NOVALMARK == mark {
+				args[index] = sentinel
+			}
+		}
+		return subject(args...)
+	}
+}
+
+func noargs(entry any) bool {
+	fields, is := entry.(map[string]any)
+	if !is {
+		return false
+	}
+
+	for _, key := range []string{"in", "args", "ctx"} {
+		if _, has := fields[key]; has {
+			return false
+		}
+	}
+
+	return true
+}
+
+// fixnums reproduces the Float64 branch of struct's own `fixJSON`
+// (`go/testutil/runner.go`, before the swap): an integral JSON number
+// becomes a Go `int`.
+//
+// Go is the only port where this matters, and it is not cosmetic. struct's
+// Go API is written in `int` - `Typename(t int)`, `Flatten(list, depths
+// ...int)`, `Stringify(val, maxlen ...int)`, `Merge(val, maxdepths ...int)`
+// - and struct's test file destructures entries itself, doing
+// `m["depth"].(int)` on the way in. omni's Go runner keeps JSON numbers as
+// `float64`, which is right for its own value model but hands struct a type
+// its API and its tests both reject: a direct subject fails `callarg` with
+// "not assignable to parameter type int", and a destructuring closure
+// panics outright with "interface conversion: interface {} is float64, not
+// int".
+//
+// So the shim normalises where struct's runner did, and on both sides for
+// the same reason struct's did: `fixJSON` ran over the whole group, results
+// included. Normalising only the spec would leave an `int` expectation
+// compared against a `float64` result, which omni's deepequal correctly
+// refuses to conflate.
+//
+// Non-integral numbers are left alone, and so is every other numeric type -
+// `float32` included, deliberately: struct's fixJSON had a Float64 branch and
+// nothing else, and converting a float32 would break a subject whose
+// parameter is typed float32. Nothing outside the Float64 branch is touched.
+func fixnums(val any) any {
+	switch value := val.(type) {
+	case float64:
+		if value == float64(int(value)) {
+			return int(value)
+		}
+		return val
+
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for key, entry := range value {
+			out[key] = fixnums(entry)
+		}
+		return out
+
+	case []any:
+		out := make([]any, len(value))
+		for index, entry := range value {
+			out[index] = fixnums(entry)
+		}
+		return out
+
+	default:
+		return val
+	}
+}
+
 // Subjectify adapts any Go function to omni's calling convention, so that
 // a struct test can keep passing the library function itself as the
 // subject. Missing arguments become the parameter's zero value, and a
@@ -339,10 +565,10 @@ func Subjectify(fn any) Subject {
 		case 0:
 			return nil, nil
 		case 1:
-			return out[0].Interface(), nil
+			return fixnums(out[0].Interface()), nil
 		case 2:
 			err, _ := out[1].Interface().(error)
-			return out[0].Interface(), err
+			return fixnums(out[0].Interface()), err
 		default:
 			return nil, fmt.Errorf("structcompat: subject returns too many values (%d)", len(out))
 		}
