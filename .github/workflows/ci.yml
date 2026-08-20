@@ -47,7 +47,7 @@ jobs:
           # and Ubuntu's 4.14 is the version it targets.
           - { lang: ocaml, apt: ocaml-nox }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         if: matrix.apt != ''
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ${{ matrix.apt }}
@@ -61,8 +61,8 @@ jobs:
       matrix:
         lang: [typescript, javascript]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - run: make test-${{ matrix.lang }}
@@ -75,12 +75,12 @@ jobs:
       matrix:
         lang: [java, kotlin, scala]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
-      - uses: coursier/setup-action@v1
+      - uses: coursier/setup-action@v3
         if: matrix.lang == 'scala'
         with:
           apps: scala scalac scala-cli
@@ -109,8 +109,8 @@ jobs:
   clojure:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -124,8 +124,8 @@ jobs:
   python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: make test-python
@@ -133,7 +133,7 @@ jobs:
   ruby:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
@@ -142,8 +142,8 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.22'
       - run: make test-go
@@ -151,15 +151,15 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: make test-rust
 
   csharp:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0'
       - run: make test-csharp
@@ -167,7 +167,7 @@ jobs:
   zig:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Downloaded straight from ziglang.org rather than via setup-zig.
       # 0.16.0 is a real tagged release, but that action tries community
       # mirrors first and then falls back to ziglang.org/builds, which only
@@ -190,7 +190,7 @@ jobs:
   swift:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: '5.10'
@@ -199,7 +199,7 @@ jobs:
   dart:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
@@ -208,7 +208,7 @@ jobs:
   elixir:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
         with:
           otp-version: '27'
@@ -218,7 +218,7 @@ jobs:
   haskell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: haskell-actions/setup@v2
         with:
           ghc-version: '9.6'
@@ -227,7 +227,7 @@ jobs:
   lean:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # elan directly rather than lean-action: with its build and test steps
       # disabled, lean-action installs elan but never configures a default
       # toolchain, so lake had no lean to run. The version comes from
@@ -247,8 +247,8 @@ jobs:
     name: spec regenerates from *.aontu
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - run: make spec
@@ -276,8 +276,8 @@ jobs:
     name: api parity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: make parity
@@ -286,13 +286,13 @@ jobs:
     name: struct compatibility
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check out voxgig/struct
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: voxgig/struct
           path: .struct
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - run: make struct-compat STRUCT=${{ github.workspace }}/.struct
