@@ -1,0 +1,570 @@
+<?php
+
+/**
+ * Drop-in replacement for the in-situ test runner in the voxgig/struct
+ * repository (`php/tests/Runner.php`).
+ *
+ * struct's own runner and omni's runner implement the same spec format;
+ * this class exposes omni behind struct's exact runner API, so the port
+ * switches over by changing one require. Everything else - the corpus,
+ * the SDK, the test files - is unchanged. This is the PHP peer of
+ * javascript/compat/struct.js, python/voxgig_omni/compat/struct.py,
+ * ruby/lib/voxgig_omni/compat/struct.rb and go/compat/struct.
+ *
+ * The shim never imports voxgig/struct. Everything it needs from the port
+ * it reaches through the SDK client it is handed.
+ */
+
+declare(strict_types=1);
+
+namespace Voxgig\Omni\Compat;
+
+use Voxgig\Omni\Absent;
+use Voxgig\Omni\Runner;
+use Voxgig\Omni\Util;
+
+require_once __DIR__ . '/../src/Runner.php';
+
+final class Struct
+{
+    public const NULLMARK = Util::NULLMARK;
+    public const UNDEFMARK = Util::UNDEFMARK;
+    public const EXISTSMARK = Util::EXISTSMARK;
+
+    /** Root of omni's PHP port, used to skip its own frames when resolving a caller-relative path. */
+    private const OMNIDIR = __DIR__ . '/..';
+
+    /** Stands in for an empty map between loadspec and the call boundary. */
+    public const EMPTYMAPMARK = '__STRUCTCOMPAT_EMPTYMAP__';
+
+    /** The entry keys that supply an argument list. An entry with none of them is implicit. */
+    private const ARGKEYS = ['in', 'args', 'ctx'];
+
+    /**
+     * struct's makeRunner(testfile, client) signature, backed by omni.
+     */
+    public static function makeRunner(string $testfile, $client): callable
+    {
+        $specpath = self::abspath($testfile) ? $testfile : self::callerdir() . DIRECTORY_SEPARATOR . $testfile;
+
+        $provider = self::structprovider($client);
+        $sentinel = self::structundef($client);
+        $runner = Runner::makeRunner(self::loadspec($specpath), $provider);
+
+        return function (?string $name = null, $store = null) use ($runner, $provider, $sentinel): array {
+            $runpack = $runner($name, null === $store ? [] : $store);
+
+            $omniflags = $runpack['runsetflags'];
+
+            $runsetflags = function ($testspec, ?array $flags = [], $testsubject = null) use ($omniflags, $sentinel): void {
+                $omniflags(
+                    self::undefargs(self::emptymaps($testspec), $sentinel),
+                    $flags ?? [],
+                    self::wrapsubject($testsubject, $sentinel)
+                );
+            };
+
+            $runset = function ($testspec, $testsubject = null) use ($runsetflags): void {
+                $runsetflags($testspec, [], $testsubject);
+            };
+
+            return [
+                'spec' => $runpack['spec'],
+                'runset' => $runset,
+                'runsetflags' => $runsetflags,
+                'subject' => $runpack['subject'],
+                'client' => $provider,
+            ];
+        };
+    }
+
+    /**
+     * Load the spec so that an empty map survives.
+     *
+     * PHP is the one port that cannot tell `{}` from `[]` after
+     * `json_decode($json, true)`: both become `[]`, and `array_is_list([])` is
+     * true, so an empty map arrives as an empty LIST. omni's runner decodes
+     * exactly that way, which is fine for its own corpus - `spec/fib.json` has
+     * no empty maps at all - and wrong for struct's, which has 272.
+     *
+     * It matters because struct/php models maps as `stdClass` (its `ismap`
+     * accepts `stdClass` and rejects `[]`), so the collapse changes what the
+     * subject is actually asked:
+     *
+     *     merge([['a' => 1], []])                    => []         wrong
+     *     merge([(object)['a' => 1], new stdClass])  => {"a": 1}   right
+     *
+     *     validate([], '`$MAP`')           => "Expected map, but found list"
+     *     validate(new stdClass, '`$MAP`') => ok
+     *
+     * So the spec is decoded with objects preserved and then converted to
+     * omni's array model, with the single exception of an empty map, which
+     * stays a `stdClass`. Nothing downstream objects: `fixjson` and `clone`
+     * pass a non-array through untouched, and omni's `deepequal` already
+     * declines to distinguish an empty list from an empty map
+     * (`islist($a) !== islist($b) && 0 < count($a)`).
+     *
+     * A non-empty map is left as an associative array, which is unambiguous
+     * in both models and keeps the runner on its normal path.
+     */
+    public static function loadspec(string $path)
+    {
+        $text = file_get_contents($path);
+        if (false === $text) {
+            throw new \RuntimeException('struct compat: cannot read spec: ' . $path);
+        }
+
+        return self::mapempty(json_decode($text, false, 512, JSON_THROW_ON_ERROR));
+    }
+
+    /** Objects to arrays; an empty object becomes the marker. */
+    private static function mapempty($val)
+    {
+        if ($val instanceof \stdClass) {
+            $vars = get_object_vars($val);
+            if (0 === count($vars)) {
+                return self::EMPTYMAPMARK;
+            }
+
+            $out = [];
+            foreach ($vars as $key => $subval) {
+                $out[$key] = self::mapempty($subval);
+            }
+            return $out;
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::mapempty($subval);
+            }
+            return $out;
+        }
+
+        return $val;
+    }
+
+    /**
+     * Resolve the empty-map marker, differently on each side of the call.
+     *
+     * In an argument (`in`, `args`, `ctx`) it becomes a real `stdClass`, which
+     * is what struct/php means by an empty map. Everywhere else - `out`, `err`,
+     * `match` - it becomes `[]`, because the result side is normalised back to
+     * arrays by `structfix`, and `[]` is what the comparison will see.
+     *
+     * Keeping it a plain string until this point is what makes it safe: omni's
+     * `fixjson`, `clone`, `stringify` and error formatting all handle a string,
+     * and none of them handle a `stdClass` - `stringify` raises "Object of
+     * class stdClass could not be converted to string" and `handleerror`
+     * declares `array $entry`.
+     */
+    public static function emptymaps($testspec)
+    {
+        if (!Util::ismap($testspec)) {
+            return $testspec;
+        }
+
+        $set = $testspec['set'] ?? null;
+        if (!Util::islist($set)) {
+            return $testspec;
+        }
+
+        $patched = [];
+        foreach ($set as $entry) {
+            // A whole entry may be the marker - a degenerate `{}` entry. omni
+            // declares `array $entry`, so it has to be an array by here.
+            if (self::EMPTYMAPMARK === $entry) {
+                $entry = [];
+            }
+
+            if (Util::ismap($entry)) {
+                foreach ($entry as $key => $val) {
+                    // Argument positions keep the marker: it is resolved at the
+                    // call boundary, inside the subject wrapper, so omni never
+                    // sees anything but a string.
+                    if (in_array($key, self::ARGKEYS, true)) {
+                        continue;
+                    }
+                    $entry[$key] = self::unmark($val);
+                }
+            }
+            $patched[] = $entry;
+        }
+
+        $out = $testspec;
+        $out['set'] = $patched;
+        return $out;
+    }
+
+    /**
+     * Result side: the marker becomes `[]`.
+     *
+     * `structfix` normalises a returned map back to an array, so `[]` is what
+     * the comparison will actually see for an empty map.
+     */
+    private static function unmark($val)
+    {
+        if (self::EMPTYMAPMARK === $val) {
+            return [];
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::unmark($subval);
+            }
+            return $out;
+        }
+
+        return $val;
+    }
+
+    /** Argument side: the marker becomes a real empty map. */
+    private static function emptymapargs($val)
+    {
+        if (self::EMPTYMAPMARK === $val) {
+            return new \stdClass();
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::emptymapargs($subval);
+            }
+            return $out;
+        }
+
+        return $val;
+    }
+
+    /**
+     * Convert NULLMARK sentinels back into real nulls.
+     *
+     * struct's own modifier declared `array &$parent`, which is too narrow:
+     * this port's `inject` walks `stdClass` nodes as well as arrays, and hands
+     * whichever it is straight to the modifier. The strict hint raised
+     *
+     *     Argument #3 ($parent) must be of type array, stdClass given
+     *
+     * the first time a modifier actually ran. It never had before, because an
+     * array-shaped injdef was silently demoted to plain store data and the
+     * `modify` hook was dropped on the floor - so the declaration was never
+     * tested. omni's own `nullmodifier` assumes array access too, hence the
+     * object branch here rather than a straight delegation.
+     *
+     * The trailing parameters are struct's: its test files pass a five-argument
+     * closure, and PHP would otherwise reject the extra arguments.
+     */
+    public static function nullModifier($val, $key, &$parent = null, $state = null, $store = null): void
+    {
+        if (is_object($parent) && !($parent instanceof \ArrayAccess)) {
+            if (Util::NULLMARK === $val) {
+                $parent->{$key} = null;
+            } elseif (is_string($val)) {
+                $parent->{$key} = str_replace(Util::NULLMARK, 'null', $val);
+            }
+            return;
+        }
+
+        Runner::nullmodifier($val, $key, $parent);
+    }
+
+    /**
+     * Wrap a struct SDK client as an omni provider.
+     */
+    public static function structprovider($client): array
+    {
+        $provider = [];
+
+        // struct resolves a subject off the utility, or off utility->struct.
+        $provider['subject'] = function (string $name) use ($client) {
+            $utility = self::utility($client);
+            $found = self::lookup($utility, $name);
+
+            if (null === $found) {
+                $structutils = self::lookup($utility, 'struct');
+                if (null !== $structutils) {
+                    $found = self::lookup($structutils, $name);
+                }
+            }
+
+            return self::wrapsubject($found, self::structundef($client));
+        };
+
+        // A DEF.client entry becomes another SDK instance.
+        $provider['client'] = function ($options) use ($client) {
+            return self::structprovider($client->test($options ?? []));
+        };
+
+        // struct's runner hands both the client AND the utility to the context;
+        // omni's resolveargs only installs `client`, so `utility` is added here.
+        $provider['contextify'] = function ($val) use ($client) {
+            $utility = self::utility($client);
+
+            $ctx = $val;
+            $contextify = self::lookup($utility, 'contextify');
+            if (null !== $contextify && is_callable($contextify)) {
+                $ctx = $contextify($val);
+            }
+
+            if (is_array($ctx)) {
+                $ctx['utility'] = $utility;
+            }
+
+            return $ctx;
+        };
+
+        // Client options may reference the runner store.
+        $provider['inject'] = function (&$options, $store) use ($client) {
+            $structutils = self::lookup(self::utility($client), 'struct');
+            if (null === $structutils) {
+                return $options;
+            }
+            return $structutils->inject($options, $store);
+        };
+
+        $provider['sdk'] = $client;
+
+        return $provider;
+    }
+
+    /** The SDK's utility, however the client spells it. */
+    private static function utility($client)
+    {
+        if (is_object($client) && method_exists($client, 'utility')) {
+            return $client->utility();
+        }
+        if (is_array($client) && isset($client['sdk'])) {
+            return self::utility($client['sdk']);
+        }
+        return null;
+    }
+
+    /**
+     * Read `name` off a container the way struct's runner does, without
+     * calling it. A property holding a closure IS the subject; a method
+     * (including one reached through __call) is bound rather than invoked.
+     */
+    private static function lookup($container, string $name)
+    {
+        if (null === $container) {
+            return null;
+        }
+
+        if (is_object($container)) {
+            if (isset($container->{$name})) {
+                return $container->{$name};
+            }
+            if (method_exists($container, $name) || method_exists($container, '__call')) {
+                return [$container, $name];
+            }
+            return null;
+        }
+
+        if (is_array($container)) {
+            return $container[$name] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
+     * struct's PHP port has no `undefined`, so it models absence with its own
+     * `Struct::undef()` stdClass singleton, while omni models it with
+     * `Voxgig\Omni\Absent`. Reached through the SDK, so the shim still never
+     * imports struct.
+     */
+    public static function structundef($client)
+    {
+        $structutils = self::lookup(self::utility($client), 'struct');
+        if (null === $structutils) {
+            return null;
+        }
+
+        if (!is_object($structutils)) {
+            return null;
+        }
+
+        try {
+            $undef = $structutils->undef();
+            return is_object($undef) ? $undef : null;
+        } catch (\Throwable $err) {
+            return null;
+        }
+    }
+
+    /**
+     * Normalise a result the way struct's own runner did, and translate its
+     * absence sentinel into omni's.
+     *
+     * Two things happen here, and both are needed for the same reason - the
+     * two runners disagree about what a PHP value means:
+     *
+     * 1. **Objects become maps.** struct's `fixJSON` ended in
+     *    `json_decode(json_encode($fixed), true)`, so a `stdClass` result
+     *    arrived at the comparison as an associative array. omni's `fixjson`
+     *    walks arrays only and passes objects through untouched, because its
+     *    own value model has no plain-object case. Left alone, struct's SDK
+     *    returning `(object)['zed' => ...]` is compared against the corpus's
+     *    `{"zed": ...}` map and fails - and the failure message is itself an
+     *    "Object of class stdClass could not be converted to string" error,
+     *    because stringify cannot render it.
+     *
+     * 2. **struct's no-value becomes omni's.** struct models absence with a
+     *    `stdClass` singleton from `Struct::undef()`; omni models it with
+     *    `Voxgig\Omni\Absent`. Translating here keeps the two absence models
+     *    from meeting, and lets omni's `fixjson` turn it into NULLMARK.
+     *
+     * The sentinel is checked BEFORE the object walk, since it is itself a
+     * `stdClass` and would otherwise be flattened into an empty map.
+     * Throwables are left for omni's `errify`.
+     */
+    public static function structfix($val, $sentinel)
+    {
+        if (null !== $sentinel && $val === $sentinel) {
+            return Absent::mark();
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::structfix($subval, $sentinel);
+            }
+            return $out;
+        }
+
+        if (is_object($val) && !($val instanceof \Throwable) && !Util::isabsent($val)) {
+            $out = [];
+            foreach (get_object_vars($val) as $key => $subval) {
+                $out[$key] = self::structfix($subval, $sentinel);
+            }
+            return $out;
+        }
+
+        return $val;
+    }
+
+    /** A subject whose result speaks omni's value model. */
+    public static function wrapsubject($subject, $sentinel)
+    {
+        if (null === $subject || !is_callable($subject)) {
+            return $subject;
+        }
+
+        return function (...$args) use ($subject, $sentinel) {
+            $args = self::emptymapargs($args);
+            return self::structfix($subject(...$args), $sentinel);
+        };
+    }
+
+    /**
+     * Reproduce struct's PHP reading for the no-argument entries.
+     *
+     * struct's corpus has seventeen entries carrying no `in`, `args` or `ctx`.
+     * They mean "call the subject with no arguments": each sits beside an
+     * `in: null` sibling, and in `minor/typify` that sibling expects a
+     * different result - `typify()` is 1073741824 where `typify(null)` is
+     * 4194432.
+     *
+     * PHP cannot spell that as zero arguments: its functions are not
+     * variadic-defaulted, so `Struct::typify()` raises ArgumentCountError.
+     * struct's PHP suite passes `Struct::undef()` instead, which typifies as
+     * T_noval - the canonical reading. omni's generic rule is
+     * `args = [clone(entry.in)]` (DOCS 2.2), and a missing `in` clones to
+     * `null` in this port, which would collapse the two.
+     *
+     * So those entries are rewritten to an explicit `args` of one sentinel -
+     * in memory, for this port only. The corpus on disk is untouched. The
+     * sentinel is the one already resolved off the SDK by `structundef`, so
+     * the shim still never imports struct; with no such constant the spec is
+     * returned unchanged and the generic rule applies.
+     *
+     * The discrimination is made HERE, on the entry, rather than on the
+     * argument value: once the argument list is built an authored `in: null`
+     * is indistinguishable from an absent `in`.
+     *
+     * This is a compat measure, not the model - see register 4.12 and
+     * doc/design/absence-model.md. The general fix is to spell the state as
+     * `in: '__UNDEF__'` and let each port map it to its own no-value.
+     */
+    public static function undefargs($testspec, $sentinel)
+    {
+        if (null === $sentinel || !Util::ismap($testspec)) {
+            return $testspec;
+        }
+
+        $set = $testspec['set'] ?? null;
+        if (!Util::islist($set)) {
+            return $testspec;
+        }
+
+        $found = false;
+        foreach ($set as $entry) {
+            if (self::noargs($entry)) {
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            return $testspec;
+        }
+
+        $patched = [];
+        foreach ($set as $entry) {
+            if (self::noargs($entry)) {
+                $entry['args'] = [$sentinel];
+            }
+            $patched[] = $entry;
+        }
+
+        $out = $testspec;
+        $out['set'] = $patched;
+        return $out;
+    }
+
+    /** An entry that supplies no argument list at all. */
+    private static function noargs($entry): bool
+    {
+        if (!Util::ismap($entry)) {
+            return false;
+        }
+        foreach (self::ARGKEYS as $key) {
+            if (array_key_exists($key, $entry)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Windows drive letters count, so this is not just a leading separator. */
+    private static function abspath(string $path): bool
+    {
+        return 1 === preg_match('/^(\/|[A-Za-z]:[\/\\\\])/', $path);
+    }
+
+    /**
+     * struct passes a spec path relative to the file that loads the runner,
+     * so resolve it the same way: the first stack frame outside omni is the
+     * caller.
+     */
+    private static function callerdir(): string
+    {
+        $omnidir = realpath(self::OMNIDIR);
+
+        foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $frame) {
+            $file = $frame['file'] ?? null;
+            if (null === $file) {
+                continue;
+            }
+            $full = realpath($file);
+            if (false === $full) {
+                continue;
+            }
+            if (false === $omnidir || !str_starts_with($full, $omnidir . DIRECTORY_SEPARATOR)) {
+                return dirname($full);
+            }
+        }
+
+        return getcwd() ?: '.';
+    }
+}
