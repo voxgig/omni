@@ -1,0 +1,365 @@
+// Drop-in replacement for the in-situ test runner in the voxgig/struct
+// repository (`go/testutil/runner.go`).
+//
+// struct's own runner and omni's runner implement the same spec format;
+// this package exposes omni behind struct's exact runner API, so the Go
+// port switches over by deleting its runner and re-exporting this package
+// from `go/testutil/omni.go`. Everything else - the corpus, the SDK, the
+// test files - is unchanged. This is the Go peer of
+// javascript/compat/struct.js and python/voxgig_omni/compat/struct.py.
+//
+// The package never imports struct: a compat shim that linked the library
+// under test would make omni depend on the thing it is meant to check. The
+// SDK is reached by reflection instead, over the four names struct's SDK
+// already exposes: Utility(), Utility().Struct(), Utility().Contextify()
+// and Tester().
+//
+// Two shapes cannot cross the language boundary and so stay in struct's
+// own test tree: `NullModifier`, whose signature names struct's
+// `*voxgigstruct.Injection`, and the `Fdt`/`ToJSONString` debug helpers,
+// which are not runner API at all.
+
+package structcompat
+
+import (
+	"fmt"
+	"reflect"
+	"strings"
+
+	omni "github.com/voxgig/omni/go"
+)
+
+// The sentinels, under struct's names.
+var (
+	NULLMARK   = omni.NULLMARK   // Value is JSON null.
+	UNDEFMARK  = omni.UNDEFMARK  // Value is not present (thus, undefined).
+	EXISTSMARK = omni.EXISTSMARK // Value exists (not undefined).
+)
+
+// Subject is the function under test, in struct's (and omni's) form.
+type Subject = omni.Subject
+
+// TestingT is the part of *testing.T that struct's runner API uses.
+// Naming it structurally keeps `testing` out of omni's import graph.
+type TestingT interface {
+	Helper()
+	Error(args ...any)
+}
+
+// RunSet runs one set of test entries, reporting failures to the test.
+type RunSet func(t TestingT, testspec any, testsubject any)
+
+// RunSetFlags runs one set of test entries with flags.
+type RunSetFlags func(t TestingT, testspec any, flags map[string]bool, testsubject any)
+
+// RunPack is what struct's runner returns for one named spec section.
+type RunPack struct {
+	Spec        map[string]any
+	RunSet      RunSet
+	RunSetFlags RunSetFlags
+	Subject     Subject
+	Client      any
+}
+
+// MakeRunner is struct's makeRunner(testfile, client) signature, backed by
+// omni. struct's test files run with the package directory as the working
+// directory, and pass the corpus path relative to it, so the path needs no
+// further resolution.
+func MakeRunner(testfile string, client any) func(name string, store any) (*RunPack, error) {
+	provider := StructProvider(client)
+	runner, mkerr := omni.MakeRunner(testfile, provider)
+
+	return func(name string, store any) (*RunPack, error) {
+		if nil != mkerr {
+			return nil, mkerr
+		}
+
+		pack, err := runner(name, store)
+		if nil != err {
+			return nil, err
+		}
+
+		spec, _ := pack.Spec.(map[string]any)
+
+		runsetflags := func(t TestingT, testspec any, flags map[string]bool, testsubject any) {
+			t.Helper()
+
+			subject := pack.Subject
+			if nil != testsubject {
+				subject = Subjectify(testsubject)
+			}
+
+			if err := pack.RunSetFlags(testspec, omniflags(flags), subject); nil != err {
+				t.Error(err.Error())
+			}
+		}
+
+		runset := func(t TestingT, testspec any, testsubject any) {
+			t.Helper()
+			runsetflags(t, testspec, nil, testsubject)
+		}
+
+		return &RunPack{
+			Spec:        spec,
+			RunSet:      runset,
+			RunSetFlags: runsetflags,
+			Subject:     pack.Subject,
+			Client:      client,
+		}, nil
+	}
+}
+
+// struct's flags are booleans; omni's carry any value.
+func omniflags(flags map[string]bool) omni.Flags {
+	out := omni.Flags{}
+	for name, flag := range flags {
+		out[name] = flag
+	}
+	return out
+}
+
+// StructProvider wraps a struct SDK client as an omni provider. The
+// original client travels on the RunPack, so test code that reaches
+// through it keeps working unchanged.
+func StructProvider(client any) *omni.Provider {
+	return &omni.Provider{
+		// struct resolves a subject from the utility, or from utility.struct.
+		Subject: func(name string) omni.Subject {
+			utility := utilityof(client)
+
+			if method := findmethod(utility, name); method.IsValid() {
+				return Subjectify(method.Interface())
+			}
+
+			field := findfield(structutilof(utility), name)
+			if field.IsValid() && reflect.Func == field.Kind() && !field.IsNil() {
+				return Subjectify(field.Interface())
+			}
+
+			return nil
+		},
+
+		// A DEF.client entry becomes another SDK instance.
+		Client: func(options any) (*omni.Provider, error) {
+			tester := findmethod(reflect.ValueOf(client), "tester")
+			if !tester.IsValid() {
+				return nil, fmt.Errorf("structcompat: client has no Tester method")
+			}
+
+			opts, is := options.(map[string]any)
+			if !is {
+				opts = map[string]any{}
+			}
+
+			results := tester.Call([]reflect.Value{reflect.ValueOf(opts)})
+			if 2 != len(results) {
+				return nil, fmt.Errorf("structcompat: Tester must return (client, error)")
+			}
+			if err, is := results[1].Interface().(error); is && nil != err {
+				return nil, err
+			}
+
+			return StructProvider(results[0].Interface()), nil
+		},
+
+		// struct's SDK supplies its own context wrapper.
+		Contextify: func(val any) any {
+			utility := utilityof(client)
+
+			ctx := val
+			if hook := findmethod(utility, "contextify"); hook.IsValid() {
+				if ctxmap, is := val.(map[string]any); is {
+					results := hook.Call([]reflect.Value{reflect.ValueOf(ctxmap)})
+					if 1 == len(results) {
+						ctx = results[0].Interface()
+					}
+				}
+			}
+
+			if ctxmap, is := ctx.(map[string]any); is && utility.IsValid() {
+				ctxmap["utility"] = utility.Interface()
+			}
+
+			return ctx
+		},
+
+		// Client options may reference the runner store.
+		Inject: func(options any, store any) any {
+			inject := findfield(structutilof(utilityof(client)), "inject")
+			if !inject.IsValid() || reflect.Func != inject.Kind() || inject.IsNil() {
+				return options
+			}
+
+			results := inject.Call([]reflect.Value{
+				anyvalue(options),
+				anyvalue(store),
+			})
+			if 0 == len(results) {
+				return options
+			}
+
+			return results[0].Interface()
+		},
+	}
+}
+
+// A reflect.Value of static type `any`, so that a nil argument still has a
+// type to be assigned to an `any` parameter.
+func anyvalue(val any) reflect.Value {
+	holder := reflect.New(reflect.TypeOf((*any)(nil)).Elem()).Elem()
+	if nil != val {
+		holder.Set(reflect.ValueOf(val))
+	}
+	return holder
+}
+
+func utilityof(client any) reflect.Value {
+	method := findmethod(reflect.ValueOf(client), "utility")
+	if !method.IsValid() {
+		return reflect.Value{}
+	}
+
+	results := method.Call(nil)
+	if 1 != len(results) {
+		return reflect.Value{}
+	}
+
+	return reflect.ValueOf(results[0].Interface())
+}
+
+func structutilof(utility reflect.Value) reflect.Value {
+	method := findmethod(utility, "struct")
+	if !method.IsValid() {
+		return reflect.Value{}
+	}
+
+	results := method.Call(nil)
+	if 1 != len(results) {
+		return reflect.Value{}
+	}
+
+	return reflect.ValueOf(results[0].Interface())
+}
+
+// Spec names are lower case; Go names are exported, and some are
+// multi-word (`getpath` is `GetPath`), so match without case.
+func findmethod(val reflect.Value, name string) reflect.Value {
+	if !val.IsValid() || "" == name {
+		return reflect.Value{}
+	}
+
+	valtype := val.Type()
+	for index := 0; index < valtype.NumMethod(); index++ {
+		if strings.EqualFold(valtype.Method(index).Name, name) {
+			return val.Method(index)
+		}
+	}
+
+	return reflect.Value{}
+}
+
+func findfield(val reflect.Value, name string) reflect.Value {
+	if !val.IsValid() || "" == name {
+		return reflect.Value{}
+	}
+
+	if reflect.Pointer == val.Kind() {
+		if val.IsNil() {
+			return reflect.Value{}
+		}
+		val = val.Elem()
+	}
+
+	if reflect.Struct != val.Kind() {
+		return reflect.Value{}
+	}
+
+	valtype := val.Type()
+	for index := 0; index < valtype.NumField(); index++ {
+		if strings.EqualFold(valtype.Field(index).Name, name) {
+			return val.Field(index)
+		}
+	}
+
+	return reflect.Value{}
+}
+
+// Subjectify adapts any Go function to omni's calling convention, so that
+// a struct test can keep passing the library function itself as the
+// subject. Missing arguments become the parameter's zero value, and a
+// (value, error) pair becomes omni's result.
+func Subjectify(fn any) Subject {
+	if subject, is := fn.(Subject); is {
+		return subject
+	}
+
+	fnval := reflect.ValueOf(fn)
+	if !fnval.IsValid() || reflect.Func != fnval.Kind() {
+		panic("structcompat: subject is not a function")
+	}
+
+	fntype := fnval.Type()
+
+	return func(args ...any) (any, error) {
+		fixed := fntype.NumIn()
+		if fntype.IsVariadic() {
+			fixed--
+		}
+
+		if len(args) < fixed {
+			extended := make([]any, fixed)
+			copy(extended, args)
+			args = extended
+		}
+
+		in := make([]reflect.Value, 0, len(args))
+
+		for index := 0; index < fixed; index++ {
+			val, err := callarg(args[index], fntype.In(index), index)
+			if nil != err {
+				return nil, err
+			}
+			in = append(in, val)
+		}
+
+		if fntype.IsVariadic() {
+			elemtype := fntype.In(fntype.NumIn() - 1).Elem()
+			for index := fixed; index < len(args); index++ {
+				val, err := callarg(args[index], elemtype, index)
+				if nil != err {
+					return nil, err
+				}
+				in = append(in, val)
+			}
+		}
+
+		out := fnval.Call(in)
+
+		switch len(out) {
+		case 0:
+			return nil, nil
+		case 1:
+			return out[0].Interface(), nil
+		case 2:
+			err, _ := out[1].Interface().(error)
+			return out[0].Interface(), err
+		default:
+			return nil, fmt.Errorf("structcompat: subject returns too many values (%d)", len(out))
+		}
+	}
+}
+
+func callarg(arg any, paramtype reflect.Type, index int) (reflect.Value, error) {
+	if nil == arg {
+		return reflect.Zero(paramtype), nil
+	}
+
+	val := reflect.ValueOf(arg)
+	if !val.Type().AssignableTo(paramtype) {
+		return reflect.Value{}, fmt.Errorf(
+			"structcompat: argument %d type %T not assignable to parameter type %s",
+			index, arg, paramtype)
+	}
+
+	return val, nil
+}

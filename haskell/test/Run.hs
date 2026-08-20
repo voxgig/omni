@@ -44,6 +44,12 @@ fibrangesub args = fibrange (head args) (args !! 1)
 fibinfosub :: Subject
 fibinfosub args = fibinfo (head args)
 
+-- A subject that returns the literal string "__UNDEF__" as ordinary data.
+-- The sentinel must not accept its own literal: this result is a present
+-- key, so a `__UNDEF__` (absent) assertion against it has to fail.
+fibundeflitsub :: Subject
+fibundeflitsub _ = pure (JMap [("a", Str "__UNDEF__")])
+
 -- The context-group subject: reports what the runner delivered - the
 -- contextify mark and the attached client - as plain data, so the spec
 -- can pin both with an ordinary `out` comparison.
@@ -145,6 +151,20 @@ badspec =
                       [ JMap
                           [ ("in", Num 6),
                             ("match", JMap [("out", JMap [("nope", Str "fine")])])
+                          ]
+                      ]
+                  )
+                ]
+            ),
+            -- __UNDEF__ (absent) must not be satisfied by the literal
+            -- string "__UNDEF__" returned as ordinary data.
+            ( "wrongundef",
+              JMap
+                [ ( "set",
+                    JList
+                      [ JMap
+                          [ ("in", Num 6),
+                            ("match", JMap [("out", JMap [("a", Str "__UNDEF__")])])
                           ]
                       ]
                   )
@@ -429,6 +449,9 @@ main = do
   run "detects absent key" (expectfail "missing" fibinfosub)
   run "a concrete match leaf does not match a missing key" (expectfail "matchabsent" fibinfosub)
   run "__UNDEF__ does not match a present null" (expectfail "undefonnull" fibinfosub)
+  run
+    "__UNDEF__ does not match the literal \"__UNDEF__\" as data"
+    (expectfail "wrongundef" fibundeflitsub)
   run "__NULL__ does not match an absent key" (expectfail "nullonabsent" fibinfosub)
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" fibinfosub)
 

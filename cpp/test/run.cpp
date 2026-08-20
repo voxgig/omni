@@ -53,6 +53,15 @@ const omni::Subject FIBINFO = [](const std::vector<omni::Json>& args) {
   return fib::fibinfo(args[0]);
 };
 
+// A subject that returns the literal string "__UNDEF__" as ordinary data.
+// The sentinel must not accept its own literal: `match:{out:{a:"__UNDEF__"}}`
+// asserts the key is ABSENT, so this present value has to fail.
+const omni::Subject UNDEFDATA = [](const std::vector<omni::Json>&) {
+  omni::Json out = omni::Json::map();
+  out.set("a", omni::Json::str("__UNDEF__"));
+  return out;
+};
+
 // The context-group subject: reports what the runner delivered - the
 // contextify mark and the attached client - as plain data, so the spec can
 // pin both with an ordinary `out` comparison.
@@ -171,6 +180,14 @@ omni::Json badspec() {
                             {{"in", Json::num(6)},
                              {"match", Json::map({{"out", Json::map({{"nope",
                                                                       Json::str("__NULL__")}})}})}})})}})},
+           // __UNDEF__ (absent) must not be satisfied by a subject returning
+           // the literal string "__UNDEF__" as data.
+           {"wrongundef",
+            Json::map({{"set",
+                        Json::list({Json::map(
+                            {{"in", Json::num(6)},
+                             {"match", Json::map({{"out", Json::map({{"a",
+                                                                      Json::str("__UNDEF__")}})}})}})})}})},
            // An empty-string want is a substring of everything, not a wildcard.
            {"emptystr",
             Json::map({{"set",
@@ -433,6 +450,8 @@ int main(int argc, char** argv) {
            [] { expectfail("undefonnull", FIBINFO); });
   testcase("__NULL__ does not match an absent key",
            [] { expectfail("nullonabsent", FIBINFO); });
+  testcase("__UNDEF__ does not match the literal string \"__UNDEF__\"",
+           [] { expectfail("wrongundef", UNDEFDATA); });
   testcase("an empty-string match leaf is not a wildcard",
            [] { expectfail("emptystr", FIBINFO); });
 

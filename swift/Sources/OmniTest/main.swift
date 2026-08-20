@@ -52,6 +52,12 @@ let FIBCTX: Subject = { args in
   ])
 }
 
+// A subject that returns the sentinel string as ordinary data. The absent
+// sentinel must not be satisfied by a literal "__UNDEF__" in the result.
+let FIBUNDEF: Subject = { _ in
+  return Json.mapOf([("a", .str(UNDEFMARK))])
+}
+
 // The provider hosts the system under test. `shift` offsets the Fibonacci
 // index, so that a client-specific subject is observably different.
 // `contextify` marks the map, so the context group can prove the hook ran.
@@ -212,6 +218,25 @@ func badspec() -> Json {
             )
           ])
         ),
+        // The literal string "__UNDEF__" as ordinary data is not an absent
+        // key - the sentinel must not accept its own literal.
+        (
+          "wrongundef",
+          Json.mapOf([
+            (
+              "set",
+              .list([
+                Json.mapOf([
+                  ("in", .num(6)),
+                  (
+                    "match",
+                    Json.mapOf([("out", Json.mapOf([("a", .str("__UNDEF__"))]))])
+                  ),
+                ])
+              ])
+            )
+          ])
+        ),
         // An empty-string leaf matches only an empty string, not "anything".
         (
           "emptystr",
@@ -357,6 +382,9 @@ testcase("a concrete match leaf does not match a missing key") {
 testcase("__UNDEF__ does not match a present null") { try expectfail("undefonnull", FIBINFO) }
 testcase("__NULL__ does not match an absent key") { try expectfail("nullonabsent", FIBINFO) }
 testcase("an empty-string match leaf is not a wildcard") { try expectfail("emptystr", FIBINFO) }
+testcase("__UNDEF__ does not match a literal \"__UNDEF__\" result") {
+  try expectfail("wrongundef", FIBUNDEF)
+}
 
 testcase("rejects an unsupported spec version") {
   try expectmakefail(

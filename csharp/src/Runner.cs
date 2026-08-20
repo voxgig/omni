@@ -697,10 +697,15 @@ namespace Voxgig.Omni
 
             object baseval = Util.GetPath(base_, path);
 
-            if (Util.DeepEqual(check, baseval))
-            {
-                return;
-            }
+            // The sentinels are tested BEFORE the identity check below.
+            // Otherwise a subject returning the literal string "__UNDEF__"
+            // satisfies an assertion that the key is absent - two mutually
+            // exclusive states passing one check. A sentinel that accepts
+            // its own literal is not a sentinel. (NULLMARK still accepts
+            // NULLMARK: under the default null flag a real null has already
+            // been normalised to it, so the two are genuinely
+            // indistinguishable here - that one needs a raw-value escape,
+            // not an ordering change.)
 
             // Explicitly absent: satisfied only by a genuinely missing key,
             // never by a present null (the distinction the sentinels exist
@@ -735,6 +740,13 @@ namespace Voxgig.Omni
                 }
                 throw Fail(flags, index, entry, "expected present at " + where,
                            "present", "absent");
+            }
+
+            // Identical values match. This sits below the sentinel branches
+            // on purpose - see the note above.
+            if (Util.DeepEqual(check, baseval))
+            {
+                return;
             }
 
             // A concrete expectation never matches a missing key - a match

@@ -48,6 +48,9 @@ public final class FibTest {
   static final Subject FIBRANGE = args -> Fib.fibrange(args[0], args[1]);
   static final Subject FIBINFO = args -> Fib.fibinfo(args[0]);
 
+  // A subject whose ordinary data happens to be the literal sentinel text.
+  static final Subject FIBUNDEFLITERAL = args -> map("n", args[0], "a", "__UNDEF__");
+
   // The context-group subject: reports what the runner delivered - the
   // contextify mark and the attached client - as plain data, so the spec
   // can pin both with an ordinary `out` comparison in every port.
@@ -161,6 +164,9 @@ public final class FibTest {
     testcase("__NULL__ does not match absent key", () -> expectfail("nullonabsent", FIBINFO));
     testcase(
         "an empty-string match leaf is not a wildcard", () -> expectfail("emptystr", FIBINFO));
+    testcase(
+        "__UNDEF__ does not match a literal \"__UNDEF__\" in the data",
+        () -> expectfail("wrongundef", FIBUNDEFLITERAL));
 
     testcase("rejects an unsupported spec version", FibTest::rejectsUnsupportedVersion);
     testcase("rejects an unknown required capability", FibTest::rejectsUnknownCapability);
@@ -224,7 +230,11 @@ public final class FibTest {
             map("set", list(map("in", 6.0, "match", map("out", map("nope", "__NULL__"))))),
             // An empty-string match leaf must not substring-match anything.
             "emptystr",
-            map("set", list(map("in", 6.0, "match", map("out", map("label", "")))))));
+            map("set", list(map("in", 6.0, "match", map("out", map("label", ""))))),
+            // __UNDEF__ (absent) must not be satisfied by a subject returning
+            // the literal string "__UNDEF__" as ordinary data.
+            "wrongundef",
+            map("set", list(map("in", 6.0, "match", map("out", map("a", "__UNDEF__")))))));
   }
 
   static void expectfail(String setname, Subject subject) {

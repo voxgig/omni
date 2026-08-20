@@ -24,7 +24,7 @@ Where the work stopped, and what a new session needs to resume it, is in
 
 Wire local checkout → provider adapter → import swap → delete
 `<lang>/test/runner.*` → full suite green. One port per commit.
-**1 of 24 migrated.** omni's struct-compat gate covers the
+**2 of 24 migrated.** omni's struct-compat gate covers the
 **JavaScript** swap only: it copies struct's `javascript/test` files,
 rewrites both `require('./runner')` (not yet migrated) and
 `require('./omni')` (migrated), and runs them under Node — so it holds
@@ -36,8 +36,8 @@ Whether to add per-port gates is open — see 1.1 below.
 | Port | Status | Notes |
 |---|---|---|
 | javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
-| typescript | NOT STARTED | Resolve `makeContext`/`contextify` drift + `ctx.utility`; coordinate with @voxgig/sdkgen first. |
-| python | IN PROGRESS | Blocked on 4.12. Adapter written and working: 99 of 100 tests pass through omni. The single failure is `struct/minor/typify#10` — the corpus entry that means "call with no arguments", which omni calls with one absent argument (model review A6). The migration also exposed a real port bug in `slice` (Python `bool` is a subclass of `int`), fixed separately in voxgig/struct. Not pushed: struct's `test-python` CI job has no omni checkout or `OMNI_HOME`, so the swap must land together with that wiring. Details and the adapter source: [`handover.md`](handover.md). |
+| typescript | NOT STARTED | omni's side is ready — `typescript/compat/struct.ts` ships in voxgig/omni#8, resolving the `makeContext`/`contextify` drift (`contextify` first, `makeContext` as fallback). struct's own swap has not merged and no struct PR exists for it: `struct/typescript/test/runner.ts` is still the in-situ runner. @voxgig/sdkgen copies the version-stamped TS runner and needs the same swap. |
+| python | DONE | In-situ runner deleted; `tests/omni.py` resolves the local checkout and re-exports omni's python compat shim. 100 tests, OK, 3 pre-existing skips — against the unmodified corpus. Merged as voxgig/struct#86 (CI wiring — the omni checkout and `OMNI_HOME` the `test-python` job lacked — applied by a maintainer as struct f581a4f). The swap turned on 4.12: the seventeen no-argument entries are kept at struct's python reading by `compat.struct.zeroargs`, in memory and for this port only (voxgig/omni#8). It also exposed a real port bug in `slice` — Python's `bool` is a subclass of `int` — fixed as voxgig/struct#85. |
 | go | NOT STARTED | |
 | php | NOT STARTED | |
 | ruby | NOT STARTED | |
@@ -88,7 +88,7 @@ Findings and rationale:
 | Item | Status | Notes |
 |---|---|---|
 | 4.1 C1 versioning + strict validation + shape check | DONE | All 23 ports (voxgig/omni#5); `make parity` reports every port complete. Review found three defects — validation ran after null-normalisation, and three checks tested nullness where they had to test presence — both fixed and pinned by negative tests. 11 suites executed locally; the 12 ports whose toolchains are absent from the dev environment were verified by CI — all 26 checks on voxgig/omni#5 green, including every port job, `api parity`, `struct compatibility` and spec freshness. The format check is now aontu (`spec/def/omni-spec.aontu`) rather than JSON Schema: the shape is unified with each spec source, so it cannot drift from a second description of the format, and it drops the ajv dependency. Cross-field rules (one-of in/args/ctx, err-with-out, non-empty set) await aontu `must()`/`length()` — see 4.10. |
-| 4.2 A1 sentinel soundness (`nullin`, `__RAW__`) | NOT STARTED | Default-flips ride a spec-version bump. |
+| 4.2 A1 sentinel soundness (`nullin`, `__RAW__`) | IN PROGRESS | One of the four channel defects closed: the sentinels are now tested **before** the identity check in `match`, in canonical and all 23 ports, each pinned by a `wrongundef` negative case (voxgig/omni#9). Previously a subject returning the literal `"__UNDEF__"` as data satisfied an assertion that the key was *absent* — two mutually exclusive states passing one check. Three defects remain, and they gate the absence model: no `__RAW__` escape (so a literal sentinel cannot be asserted at all — now stated in DOCS §2.5); `fixjson` rewriting real nulls in `args`/`in`/`ctx` to the string `"__NULL__"` before the subject sees them; and `__UNDEF__` meaning four different things across the shipped consumer runners (canonical requires a genuinely absent key, struct php and ruby also accept a present null, struct go accepts any zero value). |
 | 4.3 A2 out/err/match composition | NOT STARTED | `err`+`out` rejection already landed with 4.1. |
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |
 | 4.5 A4 `__EXACT__`/`__HAS__` match leaves | NOT STARTED | |

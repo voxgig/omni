@@ -60,6 +60,15 @@ def fibctx(ctx):
     }
 
 
+def fibundefliteral(_n):
+    """A subject that returns the sentinel's own literal as ordinary data.
+
+    `__UNDEF__` here is a plain string result, not a missing key, so a
+    `match` of `__UNDEF__` (which asserts absence) must fail against it.
+    """
+    return {'a': '__UNDEF__'}
+
+
 runner = makeRunner(specfile('fib.json'), fibprovider(0))
 R = runner('fib')
 
@@ -116,6 +125,9 @@ BADSPEC = {
         'nullonabsent': {'set': [{'in': 6, 'match': {'out': {'nope': '__NULL__'}}}]},
         # An empty-string match leaf is not a wildcard.
         'emptystr': {'set': [{'in': 6, 'match': {'out': {'label': ''}}}]},
+        # __UNDEF__ (absent) must not be satisfied by a subject returning
+        # the literal string "__UNDEF__" as ordinary data.
+        'wrongundef': {'set': [{'in': 6, 'match': {'out': {'a': '__UNDEF__'}}}]},
     }
 }
 
@@ -145,6 +157,9 @@ class TestRunner(unittest.TestCase):
 
     def test_undef_does_not_match_present_null(self):
         self.expectfail('undefonnull', fibinfo)
+
+    def test_undef_does_not_match_the_literal_undef_string(self):
+        self.expectfail('wrongundef', fibundefliteral)
 
     def test_null_does_not_match_absent_key(self):
         self.expectfail('nullonabsent', fibinfo)

@@ -234,6 +234,11 @@ there, citing the PR. Do not let the register drift from reality - it is
 the one place the whole goal is visible.
 
 
+**Starting a session?** Read [`doc/plan/status.md`](doc/plan/status.md) first.
+It says what is in flight, what is blocked on a human, and which known defects
+have already been diagnosed - so they are not rediscovered from scratch.
+
+
 ## Where to look next
 
 - Spec format and semantics: [`DOCS.md`](DOCS.md)
