@@ -188,6 +188,65 @@ module VoxgigOmni
         out
       end
 
+      # Reproduce struct's ruby runner for the no-argument entries.
+      #
+      # struct's corpus has seventeen entries carrying no `in`, `args` or
+      # `ctx`. They mean "call the subject with no arguments": each sits
+      # beside an `in: null` sibling, and in `minor/typify` that sibling
+      # expects a different result - canonical JavaScript agrees, typify()
+      # is 1073741824 where typify(null) is 4194432.
+      #
+      # struct's own runners never agreed on how to spell that. ruby's
+      # resolve_args passed `VoxgigStruct::UNDEF`, its own absence
+      # sentinel; python left `args` empty; typescript, php and go passed
+      # one absent value. omni's generic rule is the typescript one
+      # (DOCS 2.2: `args = [clone(entry.in)]`).
+      #
+      # A compat shim exists to keep a port's behaviour identical across
+      # the swap, so this restores ruby's reading by rewriting those
+      # entries to an explicit `args` of one sentinel - in memory, for
+      # this port only. The corpus on disk is untouched.
+      #
+      # The sentinel is the one already resolved off the SDK by
+      # `structundef`, so the shim still never imports struct. When the
+      # port has no such constant the spec is returned unchanged and the
+      # generic rule applies.
+      #
+      # The discrimination is made HERE, on the entry, rather than on the
+      # argument value: once the argument list is built an authored
+      # `in: null` is indistinguishable from an absent `in`.
+      #
+      # This is a compat measure, not the model. The general fix is the
+      # absence model: spell the state as `in: '__UNDEF__'` and let each
+      # port map it to its own no-value. That needs the marker honoured in
+      # input position first, so it rides a spec version bump.
+      ARGKEYS = %w[in args ctx].freeze
+
+      def undefargs(testspec, sentinel)
+        return testspec if sentinel.nil?
+        return testspec unless testspec.is_a?(::Hash)
+
+        set = testspec['set']
+        return testspec unless set.is_a?(::Array)
+        return testspec unless set.any? { |entry| noargs?(entry) }
+
+        patched = set.map do |entry|
+          if noargs?(entry)
+            entry = entry.dup
+            entry['args'] = [sentinel]
+          end
+          entry
+        end
+
+        out = testspec.dup
+        out['set'] = patched
+        out
+      end
+
+      def noargs?(entry)
+        entry.is_a?(::Hash) && (entry.keys & ARGKEYS).empty?
+      end
+
       # struct's make_runner(testfile, client) signature, backed by omni.
       def make_runner(testfile, client)
         specpath =
@@ -206,7 +265,8 @@ module VoxgigOmni
 
           omniflags = runpack[:runsetflags]
           runsetflags = lambda do |testspec, flags = nil, testsubject = nil|
-            omniflags.call(testspec, normflags(flags), wrapsubject(testsubject, sentinel))
+            omniflags.call(undefargs(testspec, sentinel), normflags(flags),
+                           wrapsubject(testsubject, sentinel))
           end
           runset = ->(testspec, testsubject = nil) { runsetflags.call(testspec, {}, testsubject) }
 
