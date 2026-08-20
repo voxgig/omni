@@ -22,6 +22,8 @@ Nothing. The three open items at the last snapshot have all landed:
 | [voxgig/struct#88](https://github.com/voxgig/struct/pull/88) | Merged. struct's **ruby** port off its 301-line in-situ runner — 93 runs, 159 assertions, 0 failures. struct is now **3 of 24** migrated. |
 | [voxgig/struct#90](https://github.com/voxgig/struct/pull/90) | Merged. Two struct/go library defects the in-situ runner had been hiding: `Transform` now returns `(any, error)` so it surfaces the errors it collects, and `NOVAL` gives the port a no-value that typifies as `T_noval`. Both sat inside the 108 entry-executions that runner dropped. |
 | [voxgig/struct#89](https://github.com/voxgig/struct/pull/89) | Merged. struct's **go** port off its 985-line in-situ runner — 105 subtests, 0 failures. struct is now **4 of 24** migrated. Its harness became a nested module so omni cannot reach the library's build (register 4.13). |
+| [voxgig/omni#16](https://github.com/voxgig/omni/pull/16) | Merged. The **php** compat shim - the fifth, and the first written with its consumer in hand rather than after the fact. Two port-specific gaps it has to close: PHP cannot decode an empty map (`{}` and `[]` are both `[]` after `json_decode`, and struct's corpus has **272** of them against fib's zero), and struct/php models absence with a `stdClass` singleton where omni uses `Absent`. |
+| [voxgig/struct#92](https://github.com/voxgig/struct/pull/92) | Merged. struct's **php** port onto omni, and by a distance the most productive swap so far: **seventeen** library defects, on top of the migration itself. struct is now **5 of 24**. Entries executing went 1045 → 1349. |
 
 [voxgig/omni#8](https://github.com/voxgig/omni/pull/8) merged 2026-08-19: the
 python compat shim, `voxgig_omni/compat/struct.py`, its TypeScript peer, and
@@ -38,17 +40,25 @@ rewriting real nulls in `args`/`in`/`ctx` — until that lands, the model's null
 row is unimplementable and any corpus distinction between zero and null has to
 declare `{null: false}`.
 
-**2. Keep migrating ports.** `ruby` (voxgig/struct#88) and `go`
-(voxgig/struct#89) have both landed, so the next undone swap with a present
-toolchain and no external coupling is `php`, then `lua` — the latter also
-closing the skip filter under register 4.12.
+**2. Keep migrating ports.** `ruby` (voxgig/struct#88), `go`
+(voxgig/struct#89) and `php` (voxgig/struct#92) have all landed, so the next
+undone swap with a present toolchain and no external coupling is `lua` — which
+also closes the skip filter under register 4.12.
 
-go is the one to read before starting another: it needed an omni fix
-(#13), **two struct-side library fixes** (#90) and a module split (4.13),
-none of which were visible until the corpus actually ran. Its runner had
-been dropping 108 of 1362 entry-executions. Any port whose runner filters
-rather than fails should be budgeted the same way — `lua` (17 skipped) and
-`csharp` (86 dropped) are the two known cases.
+php is the one to read before starting another, and it displaces go as the
+cautionary tale. Its tests never used a runner at all: a hand-rolled loop that
+understood four entry fields meant **350 of 1395 entries never ran**, and
+fifteen test methods were `assertTrue(true)` behind a TODO — passing while
+asserting nothing, which is worse than an absent test because it reads as
+coverage. Running the corpus properly surfaced **seventeen** library defects,
+including `transform` swallowing every error it collected — the *same* defect
+struct#90 fixed in go, found the same way, in a second port independently.
+**Check the next port for that one directly rather than waiting for it.**
+
+The budgeting rule generalises: any port whose runner filters entries rather
+than failing on them, or whose suite contains vacuous assertions, is
+overstating itself. `lua` (17 skipped) and `csharp` (86 dropped) are the known
+filter cases; nobody has yet audited the ports for stub tests.
 `typescript` is *not* next despite omni's side being ready
 (`typescript/compat/struct.ts`, shipped in #8): struct's swap has not been
 written, and `@voxgig/sdkgen` copies the version-stamped TS runner, which is

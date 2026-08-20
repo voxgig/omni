@@ -2,7 +2,7 @@
 
 omni's goal: be the single multi-language test-spec utility of the voxgig
 ecosystem. `voxgig/sekreto` already runs every port's conformance suite
-through omni; `voxgig/struct` is to replace its in-situ runners with omni - 4 of 24
+through omni; `voxgig/struct` is to replace its in-situ runners with omni - 5 of 24
 done, 20 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
 checkout world. This document is the plan; the live status is the register
 in [`progress.md`](progress.md), which changes in the same commit as the
