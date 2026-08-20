@@ -143,7 +143,16 @@ function M.fixjson(val, donull)
     if donull then
       return u.NULLMARK
     end
-    return u.NULL
+    -- Canonical returns the value UNCHANGED here (Runner.ts: `return donull ?
+    -- NULLMARK : val`), which keeps undefined distinct from null. Returning
+    -- u.NULL instead asserted "this is a JSON null" about an ABSENT value, so
+    -- a subject that returned nothing could never match an entry with no
+    -- `out`: deepequal requires both sides absent, and NULL is not absent.
+    -- A raw Lua nil normalises to ABSENT because a nil cannot sit in a table.
+    if nil == val then
+      return u.ABSENT
+    end
+    return val
   end
 
   if u.islist(val) then
