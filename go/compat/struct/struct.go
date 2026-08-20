@@ -89,7 +89,7 @@ func MakeRunner(testfile string, client any) func(name string, store any) (*RunP
 				subject = Subjectify(testsubject)
 			}
 
-			if err := pack.RunSetFlags(testspec, omniflags(flags), subject); nil != err {
+			if err := pack.RunSetFlags(fixnums(testspec), omniflags(flags), subject); nil != err {
 				t.Error(err.Error())
 			}
 		}
@@ -284,6 +284,62 @@ func findfield(val reflect.Value, name string) reflect.Value {
 	return reflect.Value{}
 }
 
+// fixnums reproduces the Float64 branch of struct's own `fixJSON`
+// (`go/testutil/runner.go`, before the swap): an integral JSON number
+// becomes a Go `int`.
+//
+// Go is the only port where this matters, and it is not cosmetic. struct's
+// Go API is written in `int` - `Typename(t int)`, `Flatten(list, depths
+// ...int)`, `Stringify(val, maxlen ...int)`, `Merge(val, maxdepths ...int)`
+// - and struct's test file destructures entries itself, doing
+// `m["depth"].(int)` on the way in. omni's Go runner keeps JSON numbers as
+// `float64`, which is right for its own value model but hands struct a type
+// its API and its tests both reject: a direct subject fails `callarg` with
+// "not assignable to parameter type int", and a destructuring closure
+// panics outright with "interface conversion: interface {} is float64, not
+// int".
+//
+// So the shim normalises where struct's runner did, and on both sides for
+// the same reason struct's did: `fixJSON` ran over the whole group, results
+// included. Normalising only the spec would leave an `int` expectation
+// compared against a `float64` result, which omni's deepequal correctly
+// refuses to conflate.
+//
+// Non-integral numbers are left alone, and so are numbers that are already
+// an integer type. Nothing outside the Float64 branch is touched.
+func fixnums(val any) any {
+	switch value := val.(type) {
+	case float64:
+		if value == float64(int(value)) {
+			return int(value)
+		}
+		return val
+
+	case float32:
+		if float64(value) == float64(int(value)) {
+			return int(value)
+		}
+		return val
+
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for key, entry := range value {
+			out[key] = fixnums(entry)
+		}
+		return out
+
+	case []any:
+		out := make([]any, len(value))
+		for index, entry := range value {
+			out[index] = fixnums(entry)
+		}
+		return out
+
+	default:
+		return val
+	}
+}
+
 // Subjectify adapts any Go function to omni's calling convention, so that
 // a struct test can keep passing the library function itself as the
 // subject. Missing arguments become the parameter's zero value, and a
@@ -339,10 +395,10 @@ func Subjectify(fn any) Subject {
 		case 0:
 			return nil, nil
 		case 1:
-			return out[0].Interface(), nil
+			return fixnums(out[0].Interface()), nil
 		case 2:
 			err, _ := out[1].Interface().(error)
-			return out[0].Interface(), err
+			return fixnums(out[0].Interface()), err
 		default:
 			return nil, fmt.Errorf("structcompat: subject returns too many values (%d)", len(out))
 		}
