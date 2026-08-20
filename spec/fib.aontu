@@ -6,8 +6,8 @@
 # JSON directly, so no port needs a Node toolchain to run its tests. Edit
 # this file, run `npm run build-spec` in tools/, and commit both.
 #
-# fib is the reference scenario: a function simple enough that all 11 ports
-# implement it identically, exercising every feature of the shared runner —
+# fib is the reference scenario: a function simple enough that all 23
+# implementations implement it identically, exercising every feature of the shared runner —
 # scalar in/out, list out, positional args, map out, null handling, error
 # matching, partial matching, and named clients.
 

@@ -8,7 +8,9 @@ existed), then attacked from four directions: lua semantics, the fixed-arity
 languages, sentinel soundness, and corpus ergonomics. Claims below marked
 *measured* were produced by running code.
 
-Status: designed, not started. Register item 4.2 is its first prerequisite.
+Status: designed; the first prerequisite is under way. Register item 4.2 is
+that prerequisite — one of its four sentinel-channel defects is closed
+(voxgig/omni#9), three remain, and nothing in the model itself has started.
 
 
 ## The problem
@@ -23,8 +25,13 @@ The corpus has been trying to express **three** states with two spellings.
 | absent | slot does not exist | key missing | `__EXISTS__` / `haskey` |
 
 The evidence that this is real, not theoretical: voxgig/struct's corpus has
-seventeen entries meaning *call the subject with no arguments*, each sitting
-directly beside an `in: null` sibling with a **different** expected result.
+seventeen entries meaning *call the subject with no arguments*. Fourteen sit
+directly beside an `in: null` sibling — and in `struct/minor/typify` that
+sibling expects a **different** result (`typify()` is `1073741824`,
+`typify(null)` is `4194432`), which is the pair that proves the two calls are
+not the same call. The other thirteen agree today only because their subjects
+are predicates that cannot tell the states apart; they are latent, not
+settled.
 struct's own in-situ runners read those seventeen **five** different ways —
 python passes zero arguments, typescript/php/go pass one absent value, ruby
 passes a `VoxgigStruct::UNDEF` sentinel, lua filters the entries out entirely,
@@ -75,9 +82,18 @@ Four rules:
 1. **One vocabulary, both directions.** The same markers work in `out`.
    Without this the input side is unobservable — `fixjson(undefined)` and
    `fixjson(null)` both currently produce `"__NULL__"`, so the corpus could
-   create a state it can never assert. This also fixes the **142 of 1397**
+   create a state it can never assert. This also fixes the **85 of 1397**
    struct entries that omit `out` and mean "null or absent, flag depending" —
    the identical sin on the output side.
+
+   *Not* all 142 no-`out` entries: **57 of them carry `err`**, and canonical
+   `checkentry` rejects an entry holding both (`Runner.ts`: `if (null !=
+   entry.err && undefined !== entry.out) throw ... 'entry has both err and
+   out'`). Adding `out` to those would make the corpus invalid, not explicit.
+   The rule is **`out` required only when `err` is absent** — 85 entries to
+   fix, 57 already saying exactly what they mean. (Measured over
+   `struct/build/test/test.json`: 1397 entries, 142 without `out`, 57 of those
+   with a non-null `err`.)
 2. **One capability, not three.** Keep only `undef-distinct`: the port's value
    model has a no-value distinct from null.
 3. **Skips are a ratchet, not a menu.** A port declaring
@@ -89,9 +105,16 @@ Four rules:
    is a contradiction. It is why `{in: null}` means different things in
    `minor/isnode` and `minor/typify` today.
 
-This is **spec format version 2**. Verified: `requires` is not in
-`ENTRYFIELDS`, so every version-1 runner rejects it outright
+This is **spec format version 2**. Verified: no entry-level capability field
+is in `ENTRYFIELDS`, so every version-1 runner rejects one outright
 (`omni: arity[0]: unknown entry field: requires`).
+
+**Name it `needs:`, not `requires`.** `requires` is already taken — it is the
+top-level `OMNI.requires` capability list, parsed and checked against
+`CAPABILITIES` in `typescript/src/Runner.ts`. This document's own Sequence
+says `needs:`, and register 4.7 says "a `requires` capability"; three
+spellings for two different things is how the collision starts. `needs:` is
+the entry-level one.
 
 
 ## What the stress tests killed
@@ -159,13 +182,24 @@ that seam if the container case ever needs it — not today.
 2. **Fix the sentinel channel.** One of four done (voxgig/omni#9). Next:
    `__RAW__` as a symmetric whole-value escape, then stop `fixjson` rewriting
    real nulls in `args`/`in`/`ctx`. Pin each with a fib entry that goes red.
-3. **Fix struct/lua's argument channel** when that port migrates — explicit
-   `args.n` and `table.unpack(args, 1, args.n)`. A live correctness bug there,
-   currently masked by its skip filter.
+3. ~~**Fix struct/lua's argument channel** — explicit `args.n` and
+   `table.unpack(args, 1, args.n)`.~~ **Withdrawn: that fix is a no-op.**
+   `table.unpack({nil})` does yield zero values, but for a *fixed-arity* Lua
+   function `f(table.unpack({nil}))` and `f(nil)` are the same call — only a
+   vararg body using `select('#', ...)` can distinguish them, and
+   `struct/lua/src/struct.lua` never calls `select(`. What is real is the skip
+   filter at `struct/lua/test/runner.lua:96-105`, which drops the seventeen
+   zero-argument entries outright. Simulated against the library, sixteen
+   would pass; exactly one — `minor/typify` — fails, because Lua has no
+   undefined distinct from null at the value level. **So it is step 4's
+   problem, not a channel bug**: delete the filter as part of the lua
+   migration and let `undef-distinct` decide it. Measurement in
+   `../plan/status.md`.
 4. **Add `provider.undef()` and the `undef-distinct` capability.** Canonical
    first, then all 23 ports. Twenty-one wire an existing representation; go and
    lua declare or implement.
-5. **Mint spec version 2 and migrate the corpora.** Mandatory `out`, the marker
+5. **Mint spec version 2 and migrate the corpora.** `out` required unless the
+   entry carries `err` (see rule 1 — 85 entries, not 142), the marker
    vocabulary in both directions, the `null` flag retired, entry-level
    `needs:`. Then resume the struct migration — the divergences it surfaces
    will finally have one right answer.
