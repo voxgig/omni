@@ -232,6 +232,25 @@ fn badspec() -> Json {
                     ])]),
                 )]),
             ),
+            // A subject returning the literal string "__UNDEF__" as
+            // ordinary data must not satisfy an __UNDEF__ (absent)
+            // assertion - the sentinel never accepts its own literal.
+            (
+                "wrongundef",
+                Json::map(vec![(
+                    "set",
+                    Json::list(vec![Json::map(vec![
+                        ("in", Json::Num(6.0)),
+                        (
+                            "match",
+                            Json::map(vec![(
+                                "out",
+                                Json::map(vec![("a", Json::str("__UNDEF__"))]),
+                            )]),
+                        ),
+                    ])]),
+                )]),
+            ),
             // An empty-string want is not a wildcard substring match.
             (
                 "emptystr",
@@ -280,6 +299,12 @@ fn runner_detects_failures() {
     expectfail("nullonabsent", &infosub);
     // An empty-string match leaf is not a wildcard.
     expectfail("emptystr", &infosub);
+
+    // The literal string "__UNDEF__" returned as data does not satisfy an
+    // __UNDEF__ (absent) assertion.
+    let undefsub: Subject =
+        Rc::new(|_args: &[Json]| Ok(Json::map(vec![("a", Json::str("__UNDEF__"))])));
+    expectfail("wrongundef", &undefsub);
 }
 
 #[test]

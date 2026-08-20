@@ -842,8 +842,15 @@ matchcheck label index entry check base path = case check of
     bad reason expected actual =
       throwIO (failure label index entry (reason ++ place) (Just expected) (Just actual))
 
+    -- The sentinels are tested BEFORE the identity check below.
+    -- Otherwise a subject returning the literal string "__UNDEF__"
+    -- satisfies an assertion that the key is absent - two mutually
+    -- exclusive states passing one check. A sentinel that accepts its own
+    -- literal is not a sentinel. (NULLMARK still accepts NULLMARK: under
+    -- the default null flag a real null has already been normalised to
+    -- it, so the two are genuinely indistinguishable here - that one
+    -- needs a raw-value escape, not an ordering change.)
     checkleaf leaf
-      | deepequal leaf baseval = pure ()
       -- Explicitly absent: satisfied only by a genuinely missing key,
       -- never by a present null (the distinction the sentinels keep).
       | asstr leaf == Just undefmark =
@@ -860,6 +867,9 @@ matchcheck label index entry check base path = case check of
           if not (isabsent baseval)
             then pure ()
             else bad "expected present at " "present" "absent"
+      -- Identical values match. This sits below the sentinel branches on
+      -- purpose - see the note above.
+      | deepequal leaf baseval = pure ()
       -- A concrete expectation never matches a missing key - a match
       -- leaf against an absent value must fail, not substring-match
       -- "undefined".

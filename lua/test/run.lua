@@ -72,6 +72,12 @@ end
 -- The context-group subject: reports what the runner delivered - the
 -- contextify mark and the attached client - as plain data, so the spec can
 -- pin both with an ordinary `out` comparison in every port.
+-- A subject that returns the literal string "__UNDEF__" as ordinary data,
+-- to prove the absent sentinel no longer accepts its own literal.
+local function FIBUNDEF(_n)
+  return u.map({ a = '__UNDEF__' })
+end
+
 local function FIBCTX(ctx)
   return u.map({
     n = u.get(ctx, 'n'),
@@ -128,6 +134,11 @@ local function badspec()
       -- __NULL__ (present null) must not be satisfied by an absent key.
       nullonabsent = u.map({ set = u.list({
         u.map({ ['in'] = 6, match = u.map({ out = u.map({ nope = '__NULL__' }) }) }),
+      }) }),
+      -- A literal "__UNDEF__" in the data must not satisfy the absent
+      -- sentinel: the sentinel is tested before the identity check.
+      wrongundef = u.map({ set = u.list({
+        u.map({ ['in'] = 6, match = u.map({ out = u.map({ a = '__UNDEF__' }) }) }),
       }) }),
       -- An empty-string want is not a wildcard substring match.
       emptystr = u.map({ set = u.list({
@@ -221,6 +232,8 @@ testcase('__NULL__ does not match an absent key',
   function() expectfail('nullonabsent', FIBINFO) end)
 testcase('an empty-string match leaf is not a wildcard',
   function() expectfail('emptystr', FIBINFO) end)
+testcase('__UNDEF__ does not match a literal "__UNDEF__" in the data',
+  function() expectfail('wrongundef', FIBUNDEF) end)
 
 testcase('rejects an unsupported spec version', function()
   expectmsg(function()

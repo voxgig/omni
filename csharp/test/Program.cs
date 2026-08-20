@@ -43,6 +43,11 @@ internal static class Program
     private static readonly Subject FIBRANGE = args => Fib.FibRange(args[0], args[1]);
     private static readonly Subject FIBINFO = args => Fib.FibInfo(args[0]);
 
+    // A subject that returns the literal string "__UNDEF__" as ordinary
+    // data, to prove the sentinel is not satisfied by its own literal.
+    private static readonly Subject FIBUNDEFLITERAL = args =>
+        new Dictionary<string, object> { ["n"] = args[0], ["a"] = Util.UNDEFMARK };
+
     // The context-group subject: reports what the runner delivered - the
     // contextify mark and the attached client - as plain data, so the spec
     // can pin both with an ordinary `out` comparison in every port.
@@ -146,7 +151,11 @@ internal static class Program
                     Map("in", 6.0, "match", Map("out", Map("nope", "__NULL__"))))),
                 // An empty-string match leaf must not substring-match anything.
                 "emptystr", Map("set", List(
-                    Map("in", 6.0, "match", Map("out", Map("label", "")))))));
+                    Map("in", 6.0, "match", Map("out", Map("label", ""))))),
+                // __UNDEF__ (absent) must not be satisfied by a subject
+                // returning the literal string "__UNDEF__" as ordinary data.
+                "wrongundef", Map("set", List(
+                    Map("in", 6.0, "match", Map("out", Map("a", "__UNDEF__")))))));
     }
 
     private static IDictionary<string, object> Map(params object[] pairs)
@@ -273,6 +282,8 @@ internal static class Program
         TestCase("__UNDEF__ does not match present null", () => ExpectFail("undefonnull", FIBINFO));
         TestCase("__NULL__ does not match absent key", () => ExpectFail("nullonabsent", FIBINFO));
         TestCase("an empty-string match leaf is not a wildcard", () => ExpectFail("emptystr", FIBINFO));
+        TestCase("__UNDEF__ does not match a literal \"__UNDEF__\" in the data",
+            () => ExpectFail("wrongundef", FIBUNDEFLITERAL));
         TestCase("reports entry index and id", CheckMessage);
 
         TestCase("rejects an unsupported spec version", () =>

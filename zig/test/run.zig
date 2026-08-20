@@ -117,6 +117,19 @@ fn callFibCtx(_: *const omni.Subject, args: []const Json) omni.SubjectResult {
 
 const FIBCTX = omni.Subject{ .call = callFibCtx };
 
+// Returns the UNDEFMARK string as ordinary data. The __UNDEF__ sentinel
+// asserts a key is absent, so it must reject this - otherwise two mutually
+// exclusive states (absent, and present-with-that-text) pass one check.
+fn callFibUndefLit(_: *const omni.Subject, _: []const Json) omni.SubjectResult {
+    const out = omni.jmap(ALLOC, &.{
+        .{ "a", omni.jstr(omni.UNDEFMARK) },
+    }) catch return .{ .err = "omni: out of memory" };
+
+    return .{ .ok = out };
+}
+
+const FIBUNDEFLIT = omni.Subject{ .call = callFibUndefLit };
+
 // ---- provider --------------------------------------------------------
 
 // The provider hosts the system under test. `shift` offsets the Fibonacci
@@ -258,6 +271,20 @@ fn badspec(alloc: std.mem.Allocator) !Json {
                         .{ "match", try omni.jmap(alloc, &.{
                             .{ "out", try omni.jmap(alloc, &.{
                                 .{ "prev", omni.jstr("__UNDEF__") },
+                            }) },
+                        }) },
+                    }),
+                }) },
+            }) },
+            // __UNDEF__ (absent) must not be satisfied by a subject that
+            // returns the literal string "__UNDEF__" as ordinary data.
+            .{ "wrongundef", try omni.jmap(alloc, &.{
+                .{ "set", try omni.jlist(alloc, &.{
+                    try omni.jmap(alloc, &.{
+                        .{ "in", omni.jnum(1) },
+                        .{ "match", try omni.jmap(alloc, &.{
+                            .{ "out", try omni.jmap(alloc, &.{
+                                .{ "a", omni.jstr("__UNDEF__") },
                             }) },
                         }) },
                     }),
@@ -652,6 +679,7 @@ pub fn main(init: std.process.Init) !void {
     try expectfail("detects absent key", "missing", &FIBINFO);
     try expectfail("a concrete match leaf does not match a missing key", "matchabsent", &FIBINFO);
     try expectfail("__UNDEF__ does not match a present null", "undefonnull", &FIBINFO);
+    try expectfail("__UNDEF__ does not match its own literal", "wrongundef", &FIBUNDEFLIT);
     try expectfail("__NULL__ does not match an absent key", "nullonabsent", &FIBINFO);
     try expectfail("an empty-string match leaf is not a wildcard", "emptystr", &FIBINFO);
 

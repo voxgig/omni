@@ -10,7 +10,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use Test::More tests => 28;
+use Test::More tests => 29;
 
 use Voxgig::Omni::Runner qw(makeRunner);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -51,6 +51,10 @@ my $FIB      = sub { fib( $_[0] ) };
 my $FIBSEQ   = sub { fibseq( $_[0] ) };
 my $FIBRANGE = sub { fibrange( $_[0], $_[1] ) };
 my $FIBINFO  = sub { fibinfo( $_[0] ) };
+
+# A subject that returns the literal string "__UNDEF__" as ordinary data,
+# not as a sentinel - the runner must not treat it as "key absent".
+my $FIBLITUNDEF = sub { return { a => '__UNDEF__' } };
 
 # The context-group subject: reports what the runner delivered - the
 # contextify mark and the attached client - as plain data, so the spec can
@@ -116,6 +120,11 @@ my $BADSPEC = {
 
         # An empty-string want is not a wildcard substring match.
         emptystr => { set => [ { 'in' => 6, match => { out => { label => '' } } } ] },
+
+        # A subject returning the literal "__UNDEF__" as ordinary data must
+        # not satisfy an assertion that the key is absent - a sentinel that
+        # accepts its own literal is not a sentinel.
+        wrongundef => { set => [ { 'in' => 1, match => { out => { a => '__UNDEF__' } } } ] },
     }
 };
 
@@ -135,6 +144,8 @@ ok( expectfail( 'matchabsent',  $FIBINFO ), 'a concrete match leaf does not matc
 ok( expectfail( 'undefonnull',  $FIBINFO ), '__UNDEF__ does not match a present null' );
 ok( expectfail( 'nullonabsent', $FIBINFO ), '__NULL__ does not match an absent key' );
 ok( expectfail( 'emptystr',     $FIBINFO ), 'an empty-string match leaf is not a wildcard' );
+ok( expectfail( 'wrongundef',   $FIBLITUNDEF ),
+    'the literal "__UNDEF__" as data does not satisfy __UNDEF__' );
 
 # makeRunner refuses a spec version it cannot faithfully run before ever
 # returning a runner - fail fast, at load time.

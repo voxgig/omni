@@ -101,6 +101,10 @@ $fibrange = fn($s, $e) => Fib::fibrange($s, $e);
 $fibinfo = fn($n) => Fib::fibinfo($n);
 $fibctxsubject = fn($ctx) => fibctx($ctx);
 
+// Returns the sentinel spelling as ordinary data, to prove __UNDEF__ (absent)
+// is not satisfied by a subject that literally returns "__UNDEF__".
+$undefsubject = fn($n) => ['a' => '__UNDEF__'];
+
 $R = (Runner::makeRunner(specfile('fib.json'), fibprovider(0)))('fib');
 $spec = $R['spec'];
 $runset = $R['runset'];
@@ -124,6 +128,9 @@ const BADSPEC = [
         'wrongout' => ['set' => [['in' => 5, 'out' => 5], ['in' => 6, 'out' => 999]]],
         'wrongerr' => ['set' => [['in' => 1, 'err' => 'never happens']]],
         'wrongmatch' => ['set' => [['in' => 6, 'match' => ['out' => 999]]]],
+        // __UNDEF__ asserts the key is absent, so it must not be satisfied
+        // by a subject returning the literal string "__UNDEF__" as data.
+        'wrongundef' => ['set' => [['in' => 6, 'match' => ['out' => ['a' => '__UNDEF__']]]]],
         'missing' => ['set' => [['in' => 6, 'match' => ['out' => ['nope' => '__EXISTS__']]]]],
         // A concrete match leaf against a missing key must fail, not
         // substring-match the stringified absent value.
@@ -151,6 +158,7 @@ function expectfail(string $setname, callable $subject): void
 testcase('detects wrong result', fn() => expectfail('wrongout', $fib));
 testcase('detects missing error', fn() => expectfail('wrongerr', $fib));
 testcase('detects failed match', fn() => expectfail('wrongmatch', $fib));
+testcase('__UNDEF__ does not match the literal string "__UNDEF__"', fn() => expectfail('wrongundef', $undefsubject));
 testcase('detects absent key', fn() => expectfail('missing', $fibinfo));
 testcase('a concrete match leaf does not match a missing key', fn() => expectfail('matchabsent', $fibinfo));
 testcase('__UNDEF__ does not match a present null', fn() => expectfail('undefonnull', $fibinfo));

@@ -42,6 +42,10 @@ dynamic FIBRANGE(List<dynamic> args) => fibrange(args[0], args[1]);
 dynamic FIBINFO(List<dynamic> args) => fibinfo(args[0]);
 dynamic FIBCTX(List<dynamic> args) => fibctx(args[0]);
 
+// A subject that returns the literal string "__UNDEF__" as ordinary data,
+// so the negative suite can prove the sentinel is not satisfied by it.
+dynamic FIBUNDEFLIT(List<dynamic> args) => {'a': '__UNDEF__', 'val': fib(args[0])};
+
 // The context-group subject: reports what the runner delivered - the
 // contextify mark and the attached client - as plain data, so the spec can
 // pin both with an ordinary `out` comparison in every port.
@@ -159,6 +163,19 @@ final Map<String, dynamic> BADSPEC = {
           'in': 6,
           'match': {
             'out': {'nope': '__NULL__'}
+          }
+        },
+      ]
+    },
+    // A subject returning the literal string "__UNDEF__" as ordinary data
+    // must not satisfy __UNDEF__ (absent) - a sentinel that accepts its own
+    // literal is not a sentinel.
+    'wrongundef': {
+      'set': [
+        {
+          'in': 6,
+          'match': {
+            'out': {'a': '__UNDEF__'}
           }
         },
       ]
@@ -403,6 +420,8 @@ void main(List<String> args) {
       () => expectfail('undefonnull', FIBINFO));
   testcase('__NULL__ does not match an absent key',
       () => expectfail('nullonabsent', FIBINFO));
+  testcase('__UNDEF__ does not match its own literal string',
+      () => expectfail('wrongundef', FIBUNDEFLIT));
   testcase('an empty-string match leaf is not a wildcard',
       () => expectfail('emptystr', FIBINFO));
   testcase('reports entry index and id', checkmessage);

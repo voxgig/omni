@@ -82,6 +82,23 @@ static omni_result subject_fibctx(omni_subject *self, omni_json **args, size_t n
   return out;
 }
 
+/* Returns the sentinel text "__UNDEF__" as ordinary string data, so the
+ * negative test can prove that a __UNDEF__ match leaf is not satisfied by
+ * a subject that merely echoes the literal. */
+static omni_result subject_undefliteral(omni_subject *self, omni_json **args, size_t nargs) {
+  omni_result out;
+
+  (void)self;
+  (void)args;
+  (void)nargs;
+
+  out.err = NULL;
+  out.val = omni_map(POOL);
+  omni_map_set(out.val, "a", omni_str(POOL, OMNI_UNDEFMARK));
+
+  return out;
+}
+
 static omni_subject *makesubject(omni_result (*call)(omni_subject *, omni_json **, size_t),
                                  void *data) {
   omni_subject *subject = (omni_subject *)omni_pool_alloc(POOL, sizeof(omni_subject));
@@ -332,6 +349,24 @@ static omni_json *badspec(void) {
   omni_list_push(set, entry);
   omni_map_set(group, "set", set);
   omni_map_set(fibgroup, "emptystr", group);
+
+  /* wrongundef: __UNDEF__ asserts the key is ABSENT, so a subject that
+   * returns the literal string "__UNDEF__" as data must not satisfy it -
+   * otherwise two mutually exclusive states pass one assertion. */
+  group = omni_map(POOL);
+  set = omni_list(POOL);
+  entry = omni_map(POOL);
+  omni_map_set(entry, "in", omni_num(POOL, 6));
+  {
+    omni_json *inner = omni_map(POOL);
+    omni_json *check = omni_map(POOL);
+    omni_map_set(inner, "a", omni_str(POOL, OMNI_UNDEFMARK));
+    omni_map_set(check, "out", inner);
+    omni_map_set(entry, "match", check);
+  }
+  omni_list_push(set, entry);
+  omni_map_set(group, "set", set);
+  omni_map_set(fibgroup, "wrongundef", group);
 
   omni_map_set(spec, "fib", fibgroup);
 
@@ -772,6 +807,8 @@ int main(int argc, char **argv) {
   expectfail("detects absent key", "missing", makesubject(subject_fibinfo, NULL));
   expectfail("a concrete match leaf does not match a missing key", "matchabsent",
              makesubject(subject_fibinfo, NULL));
+  expectfail("__UNDEF__ does not match its own literal", "wrongundef",
+             makesubject(subject_undefliteral, NULL));
   expectfail("__UNDEF__ does not match a present null", "undefonnull",
              makesubject(subject_fibinfo, NULL));
   expectfail("__NULL__ does not match an absent key", "nullonabsent",
