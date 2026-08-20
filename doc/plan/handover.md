@@ -1,12 +1,17 @@
-# Handover — where the adoption work stopped
+# Handover — what the migration decided, and what it cost
 
-Companion to [`adoption.md`](adoption.md) (the plan) and
-[`progress.md`](progress.md) (the register). The register says *what* the
-status of each item is; this file says *where the work physically
-stopped* and what a new session needs in front of it to carry on. Delete
-sections as they are consumed.
+The durable residue of the adoption work: the one open decision it turned
+up, and the things a landed port taught that the register rows are too
+short to carry. Companion to [`adoption.md`](adoption.md) (the plan) and
+[`progress.md`](progress.md) (the register).
 
-Last updated: 2026-08-18.
+**This is not the live snapshot.** What is in flight right now, what is
+blocked on a human, and what to pick up first is
+[`status.md`](status.md) — read that first. This file only accumulates
+what stays true after an item lands. Delete a section once its lesson has
+been absorbed somewhere better.
+
+Last updated: 2026-08-20.
 
 
 ## 1. What has landed
@@ -15,23 +20,38 @@ Last updated: 2026-08-18.
 |---|---|
 | voxgig/omni#5 | C1 spec versioning (`OMNI: {version, requires}`), strict entry validation, the `context` group and the `err.name` pin, across the canonical TypeScript and all 23 ports. |
 | voxgig/omni#6 | The spec-format shape moved from JSON Schema to aontu (`spec/def/omni-spec.aontu`, `make spec-check`); the ajv dependency dropped. |
-| voxgig/struct#84 | The **javascript** port migrated to omni. Its in-situ runner is deleted; `javascript/test/omni.js` resolves the local checkout. 95/95 — the same 95 the old runner passed. |
+| voxgig/omni#8 | The python compat shim, `voxgig_omni/compat/struct.py`, and its TypeScript peer `typescript/compat/struct.ts`. |
+| voxgig/omni#9 | The sentinels tested before the identity check in `match`, canonical and all 23 ports, each pinned by a `wrongundef` negative case. |
+| voxgig/struct#84 | The **javascript** port migrated to omni. In-situ runner deleted; `javascript/test/omni.js` resolves the local checkout. 95/95 — the same 95 the old runner passed. |
+| voxgig/struct#85 | The `slice` bool/number bug (§4). |
+| voxgig/struct#86 | The **python** port migrated. 100 tests, OK, 3 pre-existing skips. Takes struct to **2 of 24**. |
 
 omni's `make struct-compat` gate runs struct's javascript suite against
 omni on every omni PR. It is the only cross-repo gate that exists, and it
 covers that one port.
 
 
-## 2. The blocking decision (register 4.12, model review A6)
+## 2. The open decision (register 4.12, model review A6)
 
-**omni cannot express "call the subject with no arguments."** An entry
-with no `in`/`args`/`ctx` calls the subject with a single *absent* value
-(`resolveargs` → `args = [clone(entry.in)]`, DOCS §2.2).
+**An entry that omits `in`, `args` and `ctx` is called with one *absent*
+argument, not with none.** `resolveargs` falls through to
+`args = [clone(entry.in)]` (DOCS §2.2), so the implicit form silently
+acquires an argument the author did not write.
 
-This is invisible in JavaScript, where `f()` and `f(undefined)` bind
-identically — which is why 23 ports agreed on it. It is visible anywhere
-with default parameters. struct's corpus has two adjacent entries in
-`struct/minor/typify` that exist to tell the two calls apart:
+The gap is that ambiguity, not an inexpressible operation: `args: []` does
+produce a genuine zero-argument call, under omni's runner and under
+struct's own. What has no portable spelling is the *distinction* — and
+`args: []` is not it. An authored empty list shortens the argument vector,
+which the fixed-arity ports index: five of nine omni adapters break,
+`omni/go` reporting `index out of range [0] with length 0` and `omni/rust`
+aborting the process outright. It was tried in struct and reverted
+(voxgig/struct 932a84d). See
+[`../design/absence-model.md`](../design/absence-model.md).
+
+The ambiguity is invisible in JavaScript, where `f()` and `f(undefined)`
+bind identically — which is why 23 ports agreed on the rule. It is visible
+anywhere with default parameters. struct's corpus has two adjacent entries
+in `struct/minor/typify` that exist to tell the two calls apart:
 
 ```
  9  {"in": null, "out": 4194432}     -> typify(None)
@@ -39,88 +59,85 @@ with default parameters. struct's corpus has two adjacent entries in
 ```
 
 struct's Python `typify` carries a `_TYPIFY_NO_ARG` sentinel default for
-exactly this. struct's own runner calls with `args = []`; omni calls with
-one absent value; entry 10 fails.
+exactly this. struct's own python runner called with `args = []`; omni
+calls with one absent value; entry 10 failed on the swap.
 
-Measured blast radius:
+Measured blast radius — entries carrying none of `in`/`args`/`ctx`:
 
-| Corpus | Entries with no `in`/`args`/`ctx` | Total |
+| Corpus | Implicit entries | Total |
 |---|---|---|
 | omni `spec/fib.json` | **0** | 68 |
 | sekreto `spec/sekreto.json` | **0** | 110 |
 | struct `build/test/test.json` | **17** | 1397 |
 
-So changing omni's rule cannot affect any spec omni or sekreto has
-authored. The 17 struct entries are listed in the review; only `typify#10`
-has a subject that can observe the difference today.
-
-**Option (a) — change omni's rule** (recommended). The implicit form means
-a zero-argument call; `in: null` and `args: [null]` remain the way to
-pass one null argument. Cost: canonical `Runner.ts` + 23 ports + DOCS §2.2
-+ a fib entry pinning it. No existing spec changes meaning.
+**Option (a) — change omni's rule.** The implicit form means a
+zero-argument call. Cost: canonical `Runner.ts` + 23 ports + DOCS §2.2 + a
+fib entry pinning it. No spec omni or sekreto has authored changes
+meaning: both have zero implicit entries. The **17 struct entries do
+change** — their invoked argument list goes from `[absent]` to `[]` — and
+that is the point of the change, not a side effect of it. Only
+`typify#10` has a subject that can observe the difference today; the other
+sixteen are latent.
 
 **Option (b) — keep the rule, make the corpus explicit.** Add `args: []`
-to `struct/minor/typify#10`. Cost: one line. But it edits the shared
-24-port contract to suit the runner, brushing struct's prime directive
-("a port that disagrees with the corpus is the thing that's wrong"), and
-it leaves the other sixteen implicit entries quietly reinterpreted —
-fixing the symptom that fails today and none of the latent ones.
+to `struct/minor/typify#10`. One line, and it fixes the entry that fails
+while leaving the other sixteen quietly reinterpreted. It also edits the
+shared 24-port contract to suit the runner, brushing struct's prime
+directive ("a port that disagrees with the corpus is the thing that's
+wrong") — and `args: []` is the spelling that breaks the fixed-arity
+adapters, so it cannot be the general answer.
 
-`args: []` was verified to produce a zero-argument call under **both**
-runners, so it is a safe expression of intent either way; the question is
-whether the *default* should have to be spelled out.
+**Option (c) — spell the state.** `in: '__UNDEF__'`, mapped by each port
+to its own no-value; 21 of the 23 already carry one. This is what the
+absence model settles on, and it needs the marker honoured in *input*
+position first, so it rides a spec version bump. It is the recommendation
+now; (a) and (b) are kept above because the register cites them.
 
-Until this is decided, the python migration cannot land.
+**A note on the one-null-argument case.** `in: null` and `args: [null]`
+pass a real null to the subject **only under `{null: false}`**. Under the
+default `null: true` flag, `fixjson` normalises the whole group — inputs
+included — so both spellings arrive as the *string* `"__NULL__"`
+(AGENTS.md, "Gotchas"; DOCS §2.5). Any zero-vs-null distinction written in
+the corpus has to say which flag its group runs under, or it is not
+implementable as documented. That `fixjson` rewrites real nulls in
+`args`/`in`/`ctx` is itself one of the four open sentinel-channel defects
+under register 4.2.
+
+The decision is no longer blocking: struct's python swap landed with the
+reading preserved in memory, per port, by `compat.struct.zeroargs`
+(voxgig/omni#8). That shim is a compat measure and does not scale — every
+port with default parameters meets the same wall.
 
 
-## 3. The python migration, ready to resume
-
-Written and working — **99 of 100 tests pass**, 3 skipped, one failure,
-and that failure is exactly §2:
-
-```
-omni: struct[10]: result mismatch
-  expected: 1073741824
-  actual:   4194432
-  entry:    {"out":1073741824}
-```
-
-Reproduce from a struct checkout with omni beside it:
-
-```
-cd struct/python && OMNI_HOME=/path/to/omni python3 -m unittest discover -s tests
-```
-
-### 3.1 What the migration consists of
-
-1. **`python/tests/omni.py`** (new) — checkout resolver *and* provider
-   adapter. Recorded verbatim in §6 below; it is not committed anywhere.
-2. **`python/tests/test_voxgig_struct.py`**, **`test_voxgig_client.py`** —
-   two import lines: `from runner import (` → `from omni import (`, and
-   `from .runner import (` → `from .omni import (`.
-3. **`python/tests/runner.py`** — delete once 1–2 are green.
-4. **`.github/workflows/build.yml`** — the `test-python` job has **no omni
-   checkout and no `OMNI_HOME`**. Without that wiring the swap fails at
-   import on all 12 matrix cells. Copy the two steps the `test-javascript`
-   job already has (`actions/checkout@v4` with `repository: voxgig/omni,
-   path: .omni`, and `OMNI_HOME: ${{ github.workspace }}/.omni` on the run
-   step). This is why the work was not pushed as-is.
-
-### 3.2 What it proved
+## 3. What the python migration proved
 
 DOCS §8.3 claims a provider adapter is "about 30 lines". The python one
-is the first non-JavaScript instance and the claim holds — the four hooks
+was the first non-JavaScript instance and the claim held — the four hooks
 are 12 lines; the rest is the resolver and comments. Two things the
 JavaScript port never exercised:
 
-- `runpack['client']` must be handed back as the **struct SDK**, not
-  omni's provider, because struct's test files reach through it for
-  `client.utility().struct`.
+- `runpack['client']` must be handed back as something struct's test files
+  can reach through for `client.utility().struct`. The shim satisfies both
+  sides with a dict subclass that is also attribute-addressable
+  (`compat.struct.Provider`), so neither omni's mapping access nor
+  struct's attribute access has to change.
 - struct's `walk` passes six arguments to a modifier where omni's takes
   three, so `nullModifier` needs a widening wrapper.
 
+At the point the decision in §2 was recorded the suite stood at **96
+passed, 3 skipped and 1 failed** of 100 — the single failure being
+`struct/minor/typify#10`. With `zeroargs` it is 100 tests, OK, 3
+pre-existing skips.
 
-## 4. The `slice` bug this uncovered (fixed, pushed separately)
+The CI wiring was the other half: struct's `test-python` job had no omni
+checkout and no `OMNI_HOME`, so the import swap would have failed on all
+12 matrix cells. Copying the two steps `test-javascript` already had
+needs the `workflow` OAuth scope, which the authoring credential lacks; a
+maintainer applied it as struct f581a4f. That scope is still the binding
+constraint elsewhere — see `status.md`.
+
+
+## 4. The `slice` bug this uncovered (voxgig/struct#85)
 
 Not an omni issue — a real divergence from struct's canonical TypeScript,
 found only because omni's `deepequal` refuses to conflate booleans with
@@ -139,143 +156,27 @@ Canonical guards with `S_number === typeof val`, and `typeof true` is
 `"boolean"`, so a boolean falls through to the container path and is
 returned unchanged.
 
-**struct's corpus cannot catch this in any port.** Its in-situ runner
-compares with plain `==`, under which `1 == True`. omni's `deepequal`
+**struct's corpus cannot catch this in any port.** Its in-situ runners
+compare with plain `==`, under which `1 == True`. omni's `deepequal`
 rejects it. That is an argument for the migration in its own right, and it
 suggests a corpus entry pinning `slice(true, 1) === true` once enough
 ports are migrated to run it honestly. Perl and Lua were checked and guard
 correctly; the other ports have not been audited for the same hazard.
 
 
-## 5. Next steps, in order
+## 5. Standing constraints
 
-1. **Decide 4.12** (§2). Everything in Phase 1 beyond JavaScript waits on
-   it, because every port with default parameters hits it.
-2. Land the python migration (§3), CI wiring included, and update the
-   register's python row.
-3. Continue Phase 1 port by port. **typescript is blocked** on
-   `@voxgig/sdkgen` (out of the current repository scope) — resolve the
-   `makeContext`/`contextify` drift and `ctx.utility` there first. `go`
-   and `ruby` are the natural next ones: toolchains present, no external
-   coupling.
-4. Phase 0 leftovers: 0.4 (single-source `build-spec.js` — sekreto's copy
-   has already needed a synchronized fix once) and 0.5 (pin the
-   struct-compat CI checkout; it currently floats on struct's default
-   branch, which is how struct#84's import change nearly broke omni's
-   gate).
-5. Phase 3.1 is a product call, not an implementation one: whether
-   `senecajs/Sekreto` is an independent TS/JS Sekreto or a Seneca plugin
-   wrapping `@voxgig/sekreto`. Nothing else in Phase 3 can start until it
-   is answered.
-
-
-## 6. `python/tests/omni.py`, verbatim
-
-Drop this into `struct/python/tests/omni.py` to resume §3.
-
-```python
-"""The shared test runner, from voxgig/omni.
-
-omni is consumed as a local checkout - it is deliberately not published to
-a package index (yet). The checkout is resolved the same way voxgig/sekreto's
-ports resolve it: $OMNI_HOME first, then sibling paths, taking the first
-directory that carries spec/fib.json. Set OMNI_HOME if yours lives elsewhere.
-Only the tests depend on omni; the library never does.
-
-This module is the python counterpart of javascript/test/omni.js, and it
-also carries the provider adapter that the JavaScript port gets from
-omni's javascript/compat/struct.js: it presents omni's runner behind
-struct's own `makeRunner(testfile, client)` API, so the test files change
-by one import line and nothing else.
-"""
-
-import os
-import sys
-from typing import Any
-
-_MARKER = os.path.join('spec', 'fib.json')
-
-
-def omnihome() -> str:
-    """The local voxgig/omni checkout."""
-    here = os.path.dirname(os.path.abspath(__file__))
-
-    candidates = []
-    if os.environ.get('OMNI_HOME'):
-        # Resolved against the cwd: a relative OMNI_HOME must not be left to
-        # resolve against this file instead.
-        candidates.append(os.path.abspath(os.environ['OMNI_HOME']))
-
-    candidates += [
-        os.path.abspath(os.path.join(here, '..', '..', '..', 'omni')),
-        os.path.abspath(os.path.join(here, '..', '..', '..', '..', 'omni')),
-        '/workspace/omni',
-        '/home/user/omni',
-    ]
-
-    for candidate in candidates:
-        if os.path.exists(os.path.join(candidate, _MARKER)):
-            return candidate
-
-    raise RuntimeError('struct: voxgig/omni checkout not found - set OMNI_HOME')
-
-
-sys.path.insert(0, os.path.join(omnihome(), 'python'))
-
-from voxgig_omni import makeRunner as _omni_makeRunner  # noqa: E402
-from voxgig_omni import nullmodifier as _omni_nullmodifier  # noqa: E402
-
-
-def _structprovider(sdk: Any) -> dict:
-    """Wrap a struct SDK as an omni provider.
-
-    The four hooks omni asks for, mapped onto the SDK struct's test harness
-    already exposes. omni's runner carries its own clone/walk/getpath, so
-    unlike struct's in-situ runner none of this reaches back into the
-    library under test.
-    """
-    utility = sdk.utility()
-
-    return {
-        # struct resolves a subject from the utility, or from utility.struct.
-        'subject': lambda name: getattr(
-            utility, name, getattr(utility.struct, name, None)
-        ),
-        # A DEF.client entry's options build another SDK, wrapped again.
-        'client': lambda options: _structprovider(sdk.tester(options)),
-        'contextify': utility.contextify,
-        # struct's inject mutates the options in place; omni ignores the
-        # return value, which is the same contract.
-        'inject': utility.struct.inject,
-    }
-
-
-def makeRunner(testfile: str, client: Any):
-    """struct's runner API, backed by omni.
-
-    `testfile` keeps struct's meaning: a path relative to this test
-    directory, not to the working directory.
-    """
-    specpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), testfile)
-    omnirunner = _omni_makeRunner(specpath, _structprovider(client))
-
-    def runner(name: str, store: Any = None) -> dict:
-        runpack = omnirunner(name, store)
-
-        # struct's test files reach through the returned client for the
-        # library under test (client.utility().struct), so hand back the SDK
-        # rather than omni's provider.
-        runpack['client'] = client
-
-        return runpack
-
-    return runner
-
-
-def nullModifier(val, key, parent, _state=None, _current=None, _store=None):
-    """struct's spelling of omni's nullmodifier.
-
-    struct's walk passes more arguments than omni's callback takes.
-    """
-    return _omni_nullmodifier(val, key, parent)
-```
+- **typescript is blocked downstream, not upstream.** omni's side shipped
+  in #8 (`typescript/compat/struct.ts`, `contextify` first and
+  `makeContext` as fallback). struct's swap has not been written; and
+  `@voxgig/sdkgen` copies the version-stamped TS runner, so it needs the
+  same swap and is outside the current repository scope.
+- **Phase 3.1 is a product call, not an implementation one:** whether
+  `senecajs/Sekreto` is an independent TS/JS Sekreto or a Seneca plugin
+  wrapping `@voxgig/sekreto`. Nothing else in Phase 3 can start until it
+  is answered.
+- **Phase 0 leftovers are cheap and keep biting.** 0.4 (single-source
+  `build-spec.js` — sekreto's copy has already needed a synchronized fix
+  once) and 0.5 (pin the struct-compat CI checkout; it floats on struct's
+  default branch, which is how struct#84's import change nearly broke
+  omni's gate).

@@ -121,14 +121,33 @@ The blast radius in the other direction is nil: neither `spec/fib.aontu`
 single entry with no `in`/`args`/`ctx`, so no omni-authored spec depends
 on the current reading.
 
+Note the framing: a zero-argument call is not inexpressible — `args: []`
+produces one under both runners. What has no portable spelling is the
+*distinction*, because an authored empty list shortens the argument
+vector and breaks five of nine fixed-arity adapters (`omni/go` panics,
+`omni/rust` aborts). And `in: null`/`args: [null]` pass a real null only
+under `{null: false}`: with the default flag `fixjson` rewrites nulls in
+`in`/`args`/`ctx` to the string `"__NULL__"` before the subject sees them
+(A1 / register 4.2).
+
 **Fix (decision required — see plan 4.12):** either **(a)** make the
-implicit form mean a zero-argument call, keeping `in: null` and
-`args: [null]` for the one-null-argument case — canonical + 23 ports +
-DOCS, and no existing spec changes meaning; or **(b)** keep the current
-reading and require a downstream corpus to write `args: []` where it
-means zero. (a) is recommended: an entry that declares no input should
-not have one invented for it, and (b) fixes the one entry that fails
-today while leaving the other sixteen quietly reinterpreted.
+implicit form mean a zero-argument call — canonical + 23 ports + DOCS.
+No spec omni or sekreto has authored changes meaning; the 17 struct
+entries do change, their invoked argument list going from `[absent]` to
+`[]`, which is the intent of the change rather than a side effect. Or
+**(b)** keep the current reading and require a downstream corpus to write
+`args: []` where it means zero — which fixes the one entry that fails
+today, leaves the other sixteen quietly reinterpreted, and puts the
+non-portable spelling into the shared contract. The standing
+recommendation is neither: spell the state as `in: '__UNDEF__'` per
+[`absence-model.md`](absence-model.md), which needs the marker honoured
+in input position and so rides a spec version bump.
+
+**Contained, not closed.** struct's python swap landed (voxgig/struct#86)
+with the seventeen entries held at struct's own reading by
+`voxgig_omni/compat/struct.py`'s `zeroargs`, in memory and for that port
+only. The corpus on disk is untouched. The shim is per-port and does not
+scale.
 
 ## B — Category and naming coherence
 

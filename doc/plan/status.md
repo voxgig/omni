@@ -1,43 +1,47 @@
 # Status — where the next session starts
 
 Live snapshot, 2026-08-20. The register in [`progress.md`](progress.md) is the
-per-item authority; this file says what is in flight right now, what is
-blocked on a human, and what to pick up first. Update it at the end of a
-session, or delete it once it goes stale — a wrong status file is worse than
-none.
+per-item authority and [`handover.md`](handover.md) is the durable record;
+this file says what is in flight right now, what is blocked on a human, and
+what to pick up first. Update it at the end of a session, or delete it once it
+goes stale — a wrong status file is worse than none.
 
 
 ## In flight
 
-| PR | State | What it is |
-|---|---|---|
-| [voxgig/omni#9](https://github.com/voxgig/omni/pull/9) | **green, 26/26** | Sentinels tested before the identity check in `match`. Canonical + all 22 ports + a `wrongundef` pin in each. Awaiting merge. |
-| [voxgig/struct#86](https://github.com/voxgig/struct/pull/86) | **green, 120/120** | struct's python port off its 353-line in-situ runner. Awaiting merge. Takes struct to **2 of 24** migrated. |
-| [voxgig/omni#7](https://github.com/voxgig/omni/pull/7) | open, stale | Docs-only, from an earlier session. **5 unresolved Codex threads, 2×P1.** See below. |
+Nothing. The three open items at the last snapshot have all landed:
+
+| PR | Outcome |
+|---|---|
+| [voxgig/omni#9](https://github.com/voxgig/omni/pull/9) | Merged. Sentinels tested before the identity check in `match`, canonical + all 23 ports, each pinned by a `wrongundef` negative case. Closes one of register 4.2's four channel defects. |
+| [voxgig/struct#86](https://github.com/voxgig/struct/pull/86) | Merged. struct's python port off its 353-line in-situ runner — 100 tests, OK, 3 pre-existing skips. struct is now **2 of 24** migrated. |
+| [voxgig/omni#7](https://github.com/voxgig/omni/pull/7) | Merged, after its five Codex threads were acted on and the note reconciled with what had landed since. |
 
 [voxgig/omni#8](https://github.com/voxgig/omni/pull/8) merged 2026-08-19: the
-python compat shim, `voxgig_omni/compat/struct.py`.
+python compat shim, `voxgig_omni/compat/struct.py`, its TypeScript peer, and
+the `zeroargs` containment for the seventeen no-argument entries.
 
 
 ## Pick up first
 
-**1. Merge #9 and #86.** Both green, nothing outstanding on either. #86 should
-merge first: it makes omni#7's P1 true rather than false (see below).
-
-**2. Fix and merge omni#7.** Its P1 is correct — it flips struct's python row
-to `IN PROGRESS` while nothing had merged in struct. Once #86 lands, python is
-genuinely `DONE` and the row should say so, citing voxgig/struct#86. The three
-P2s are cheap and correct: the note calls a zero-argument call *inexpressible*
-when `args: []` already expresses it (the real gap is that *omitting* all three
-fields defaults to one absent argument); it reports "99 of 100 passing" when
-the breakdown is 96 passed, 3 skipped, 1 failed; and it claims `in: null`
-passes a real null, which holds only under `{null: false}`. Do not resolve
-those threads without making the edits — they have not been acted on.
-
-**3. Continue the absence model.** Design and evidence:
+**1. The absence model.** Design and evidence:
 [`../design/absence-model.md`](../design/absence-model.md). Next concrete step
 is the `__RAW__` escape (register 4.2), because nothing can assert a literal
-sentinel until it exists, and the model leans on markers.
+sentinel until it exists, and the model leans on markers. Then stop `fixjson`
+rewriting real nulls in `args`/`in`/`ctx` — until that lands, the model's null
+row is unimplementable and any corpus distinction between zero and null has to
+declare `{null: false}`.
+
+**2. Get struct's CI wiring un-blocked, then keep migrating ports.** `go` and
+`ruby` are the natural next swaps — toolchains present, no external coupling.
+`typescript` is *not* next despite omni's side being ready
+(`typescript/compat/struct.ts`, shipped in #8): struct's swap has not been
+written, and `@voxgig/sdkgen` copies the version-stamped TS runner, which is
+outside the current repository scope.
+
+**3. Phase 0's two leftovers**, both cheap and both already having cost
+something: 0.4 single-source `build-spec.js`, and 0.5 pin the struct-compat CI
+checkout to a struct ref instead of floating on its default branch.
 
 
 ## Blocked on a human, not on work

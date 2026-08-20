@@ -7,8 +7,8 @@ PR. Statuses: `NOT STARTED`, `IN PROGRESS`, `DONE`, `DECISION NEEDED`
 (waiting on a call that is not the implementer's to make), `DECIDED-NO`
 (with a reason).
 
-Where the work stopped, and what a new session needs to resume it, is in
-[`handover.md`](handover.md).
+What is in flight right now is in [`status.md`](status.md); the decisions and
+lessons a landed item left behind are in [`handover.md`](handover.md).
 
 ## Phase 0 — make omni consumable and trustworthy
 
@@ -98,4 +98,4 @@ Findings and rationale:
 | 4.9 B-group naming coherence (aliases, strict section resolution, `options` short form) | NOT STARTED | |
 | 4.10 Shape check: cross-field rules once aontu supports them | NOT STARTED | `must()` and `length()` are absent in aontu 0.48.2 (Band B / sizing atoms). When they land, move one-of in/args/ctx, err-with-out and non-empty-set into `spec/def/omni-spec.aontu` so a malformed spec fails at build, not only at test. |
 | 4.11 Share the shape with downstream corpora | NOT STARTED | struct and sekreto author their own specs; decide how they import omni's shape across the local-checkout boundary (struct's corpus is legacy v0, so it needs a v0 variant or an opt-in). |
-| 4.12 Zero-argument calls (model review A6) | **DECISION NEEDED** | An entry with no `in`/`args`/`ctx` calls the subject with one absent value; struct's corpus uses that form to mean *no arguments*. Blocks the python migration. (a) change the rule — canonical + 23 ports + DOCS, zero effect on fib (0 implicit entries of 68) or sekreto (0 of 110); (b) require `args: []` downstream — one struct entry today, sixteen others left silently reinterpreted. (a) recommended. |
+| 4.12 Zero-argument calls (model review A6) | **DECISION NEEDED** | An entry carrying none of `in`/`args`/`ctx` is called with one *absent* argument (`resolveargs` → `args = [clone(entry.in)]`, DOCS §2.2); struct's corpus uses that form to mean *no arguments*, in 17 of its 1397 entries. No longer blocking — struct's python swap landed with the reading preserved in-memory by `compat.struct.zeroargs` (voxgig/omni#8) — but the shim is per-port and does not scale. Zero effect on fib (0 implicit entries of 68) or sekreto (0 of 110); the 17 struct entries change their invoked argument list either way. Superseded in approach by [`../design/absence-model.md`](../design/absence-model.md): the portable spelling is `in: '__UNDEF__'`, not `args: []` (which shortens the argument vector and breaks five of nine fixed-arity adapters) and not a silent default. Rides the spec version bump; 4.2 is its prerequisite. |
