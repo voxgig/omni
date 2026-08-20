@@ -38,9 +38,9 @@ Whether to add per-port gates is open — see 1.1 below.
 | javascript | DONE | In-situ runner deleted; test/omni.js resolves the local checkout. 95/95 through the shim — the same 95 the old runner passed. Merged as voxgig/struct#84. |
 | typescript | NOT STARTED | omni's side is ready — `typescript/compat/struct.ts` ships in voxgig/omni#8, resolving the `makeContext`/`contextify` drift (`contextify` first, `makeContext` as fallback). struct's own swap has not merged and no struct PR exists for it: `struct/typescript/test/runner.ts` is still the in-situ runner. @voxgig/sdkgen copies the version-stamped TS runner and needs the same swap. |
 | python | DONE | In-situ runner deleted; `tests/omni.py` resolves the local checkout and re-exports omni's python compat shim. 100 tests, OK, 3 pre-existing skips — against the unmodified corpus. Merged as voxgig/struct#86 (CI wiring — the omni checkout and `OMNI_HOME` the `test-python` job lacked — applied by a maintainer as struct f581a4f). The swap turned on 4.12: the seventeen no-argument entries are kept at struct's python reading by `compat.struct.zeroargs`, in memory and for this port only (voxgig/omni#8). It also exposed a real port bug in `slice` — Python's `bool` is a subclass of `int` — fixed as voxgig/struct#85. |
-| go | NOT STARTED | omni's side is ready: `go/compat/struct/struct.go` (voxgig/omni#8). Named with ruby as the next swap — toolchain present, no external coupling. Mind the two known struct/go defects first (silent corpus skips, and no undefined in its value domain). |
+| go | NOT STARTED | omni's side is ready: `go/compat/struct/struct.go` (voxgig/omni#8), completed by voxgig/omni#13 — the shim now reproduces struct's `fixJSON` integral-`float64`→`int` normalisation (eight subtests) and passes the port's own no-value for the seventeen implicit entries. struct-side swap open as voxgig/struct#89, gated on the two known struct/go defects (voxgig/struct#90: `Transform` swallowed collected errors; the port had no undefined in its value domain). |
 | php | NOT STARTED | |
-| ruby | NOT STARTED | omni's side is ready: `ruby/lib/voxgig_omni/compat/struct.rb` (voxgig/omni#8). Named with go as the next swap. |
+| ruby | NOT STARTED | omni's side is ready: `ruby/lib/voxgig_omni/compat/struct.rb` (voxgig/omni#8), completed by voxgig/omni#12 — `undefargs` supplies `VoxgigStruct::UNDEF` for the seventeen implicit entries, the input-side peer of python's `zeroargs`. Without it `minor/typify#10` is the single failure. struct-side swap open as voxgig/struct#88. |
 | lua | NOT STARTED | |
 | rust | NOT STARTED | |
 | c | NOT STARTED | |
@@ -93,7 +93,7 @@ Findings and rationale:
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |
 | 4.5 A4 `__EXACT__`/`__HAS__` match leaves | NOT STARTED | |
 | 4.6 C2 group-coverage check (`runcheck` + static) | NOT STARTED | |
-| 4.7 C3 skip/pending/only | NOT STARTED | Gated by a `requires` capability. |
+| 4.7 C3 skip/pending/only | NOT STARTED | Gated by the entry-level `needs:` field — **not** `requires`, which is already the top-level `OMNI.requires` capability list checked against `CAPABILITIES` in `Runner.ts`. Settled in `../design/absence-model.md`. |
 | 4.8 C4 declarative unpacking (`DEF.subject.<name>.unpack`) | NOT STARTED | |
 | 4.9 B-group naming coherence (aliases, strict section resolution, `options` short form) | NOT STARTED | |
 | 4.10 Shape check: cross-field rules once aontu supports them | NOT STARTED | `must()` and `length()` are absent in aontu 0.48.2 (Band B / sizing atoms). When they land, move one-of in/args/ctx, err-with-out and non-empty-set into `spec/def/omni-spec.aontu` so a malformed spec fails at build, not only at test. |

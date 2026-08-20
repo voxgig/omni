@@ -64,11 +64,26 @@ checkout to a struct ref instead of floating on its default branch.
   the `preinstalled` matrix carries no `timeout-minutes`, so adding
   `timeout-minutes: 15` turns a six-hour cancellation into a fast,
   obviously-infrastructural failure.
-- **Node 20 actions across all four repos.** station is off them
-  (checkout v4→v7, setup-node v4→v7, setup-go v5→v7, setup-python v5→v7,
-  setup-java v4→v5); **omni, struct and sekreto are not.** GitHub is already
-  forcing them onto Node 24 with a deprecation warning on every run, so this
-  is a countdown, not a preference.
+- ~~**Node 20 actions across all four repos.**~~ **Done, all four**
+  (2026-08-20): station, omni, struct and sekreto are on Node-24-capable
+  generations — checkout v7, setup-node v7, setup-go v7, setup-python v7,
+  setup-java v5, setup-dotnet v5 — and every reference in all four repos is
+  now pinned to a full-length commit SHA with the tag in a trailing comment.
+
+  **The rule that cost the most to learn: SHA pinning is transitive.** The
+  org requires it, and the requirement reaches *inside* composite actions.
+  A composite whose own `action.yml` says `uses: actions/cache/restore@v5` is
+  refused even when your workflow pins the composite itself:
+
+      The action actions/cache/restore@v5 is not allowed in voxgig/struct
+      because all actions must be pinned to a full-length commit SHA.
+
+  So a third-party composite is only usable if its internals are pinned too;
+  `leanprover/lean-action` was not, and struct now installs elan directly with
+  a per-platform SHA-256 check. Before adding any third-party action, read its
+  `action.yml` at the SHA you intend to pin. A run refused for this reason
+  fails at *startup*, with no job log — the failure looks infrastructural and
+  is not.
 
 - **The `workflow` scope generally.** It blocked the `test-python` CI change on
   struct#86 (a maintainer applied it as f581a4f) and it was what kept station's
@@ -80,14 +95,30 @@ checkout to a struct ref instead of floating on its default branch.
 **In omni** — the three remaining sentinel-channel defects are in register
 4.2's notes, with evidence. Separately, **the 2026-08 *code* review
 (`../design/review-2026-08.md`, OM-1..OM-5) has no register rows at all** —
-only the *model* review's A/B/C findings became Phase 4 items. Two of its
-findings are still open and measurable: **OM-2**, where the depth-limit fix
-landed in only 2 of the 10 in-tree JSON parsers (c and rust have a guard;
-clojure, cpp, elixir, java, kotlin, lua, scala and swift have none), and
-**OM-5**, catastrophic regex backtracking, with no step limit or memoisation
-in the reference engine (`rust/src/regex.rs`) or its lua peer. Either give
-them register rows or record why they are `DECIDED-NO`; leaving them in a
-design note only is how they get rediscovered.
+only the *model* review's A/B/C findings became Phase 4 items. **Four** of its five
+findings still carry open, measurable work:
+
+- **OM-2** — the depth-limit fix landed in only 2 of the 10 in-tree JSON
+  parsers (c and rust have a guard; clojure, cpp, elixir, java, kotlin, lua,
+  scala and swift have none).
+- **OM-3** — `check_parity.py` still verifies names, not behaviour:
+  `defined()` runs `re.findall(r'[A-Za-z_][A-Za-z0-9_\-]*', text)` over raw
+  source (`tools/check_parity.py:136-150`), so it matches identifiers inside
+  comments and strings and does no semantic checking at all. A port whose
+  `deepequal` was `return true` still passes `make parity`.
+- **OM-4** — partly closed. Swift's `errify` name and the Swift/Elixir/Clojure
+  `client`-on-`ctx` gap were fixed by voxgig/omni#5, and python's NaN
+  `deepequal` with it (`python/voxgig_omni/util.py:114-115` returns true for
+  two NaNs). Still open: NaN deep-equality in ruby, php and clojure (ruby
+  `a == b`, php `(float)$a === (float)$b` — both false for NaN), Go flag
+  coercion, and the narrower error-capture scope in Go/Java/Swift/Elixir/
+  Clojure.
+- **OM-5** — catastrophic regex backtracking, with no step limit or
+  memoisation in the reference engine (`rust/src/regex.rs`) or its lua peer.
+
+Only **OM-1** is closed outright. Either give the four register rows or
+record why they are `DECIDED-NO`; leaving them in a design note only is how
+they get rediscovered.
 
 **In voxgig/struct**, all pre-existing and all masked today:
 
@@ -131,6 +162,9 @@ design note only is how they get rediscovered.
   problem (register 4.12 / `undef-distinct`), not an unpack bug. **Fix it as
   part of the lua migration** by deleting the filter and implementing or
   declaring `undef-distinct`, not by rewriting the unpack.
+  `../design/absence-model.md`'s Sequence step 3 prescribed the unpack
+  rewrite; it is corrected in the same commit as this paragraph, so the two
+  documents no longer send the lua migration in opposite directions.
 
   Note omni/lua is *not* affected — it carries tagged `json.NULL`/`json.ABSENT`
   so no bare nil ever reaches the args list. Verified by probing all four

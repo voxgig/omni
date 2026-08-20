@@ -107,8 +107,10 @@ out safely:
    `/…/` strings).
 6. **C2 - group-coverage check**: canonical `runcheck` + a static
    `check_coverage.py`, so an omitted group cannot stay silently green.
-7. **C3 - skip/pending/only**: entry-level `skip`/`pending` (gated by a
-   `requires` capability) and an `only` flag for single-entry debugging.
+7. **C3 - skip/pending/only**: entry-level `skip`/`pending` (gated by the
+   entry-level `needs:` field - not `requires`, which is the top-level
+   `OMNI.requires` capability list; see `../design/absence-model.md`) and an
+   `only` flag for single-entry debugging.
 8. **C4 - declarative unpacking**: `DEF.subject.<name>.unpack` so ports
    stop hand-writing the same destructuring adapters per language.
 9. **B-group naming coherence** (aliases, section-resolution strictness,

@@ -215,7 +215,9 @@ One failure per compile-run cycle per port; per-port variance and
 in-progress work cannot be expressed in the spec; no single-entry run.
 **Fix:** `{all: true}` collect-mode; `{only: [...]}` by index or id;
 entry-level `skip`/`pending` gated by a `requires` capability (which is
-why C1 lands first).
+why C1 lands first). *Name settled since:* the entry-level field is
+`needs:` — `requires` is the top-level `OMNI.requires` capability list. See
+`absence-model.md`.
 
 ### C4 (medium) — The entry→signature mapping is duplicated per language
 Multi-parameter subjects are tested by packing a map into `in` and
