@@ -75,9 +75,35 @@ final class Struct
         };
     }
 
-    /** Convert NULLMARK sentinels back into real nulls. struct's own signature. */
-    public static function nullModifier($val, $key, array &$parent): void
+    /**
+     * Convert NULLMARK sentinels back into real nulls.
+     *
+     * struct's own modifier declared `array &$parent`, which is too narrow:
+     * this port's `inject` walks `stdClass` nodes as well as arrays, and hands
+     * whichever it is straight to the modifier. The strict hint raised
+     *
+     *     Argument #3 ($parent) must be of type array, stdClass given
+     *
+     * the first time a modifier actually ran. It never had before, because an
+     * array-shaped injdef was silently demoted to plain store data and the
+     * `modify` hook was dropped on the floor - so the declaration was never
+     * tested. omni's own `nullmodifier` assumes array access too, hence the
+     * object branch here rather than a straight delegation.
+     *
+     * The trailing parameters are struct's: its test files pass a five-argument
+     * closure, and PHP would otherwise reject the extra arguments.
+     */
+    public static function nullModifier($val, $key, &$parent = null, $state = null, $store = null): void
     {
+        if (is_object($parent) && !($parent instanceof \ArrayAccess)) {
+            if (Util::NULLMARK === $val) {
+                $parent->{$key} = null;
+            } elseif (is_string($val)) {
+                $parent->{$key} = str_replace(Util::NULLMARK, 'null', $val);
+            }
+            return;
+        }
+
         Runner::nullmodifier($val, $key, $parent);
     }
 
