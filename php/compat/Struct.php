@@ -34,6 +34,9 @@ final class Struct
     /** Root of omni's PHP port, used to skip its own frames when resolving a caller-relative path. */
     private const OMNIDIR = __DIR__ . '/..';
 
+    /** Stands in for an empty map between loadspec and the call boundary. */
+    public const EMPTYMAPMARK = '__STRUCTCOMPAT_EMPTYMAP__';
+
     /** The entry keys that supply an argument list. An entry with none of them is implicit. */
     private const ARGKEYS = ['in', 'args', 'ctx'];
 
@@ -46,7 +49,7 @@ final class Struct
 
         $provider = self::structprovider($client);
         $sentinel = self::structundef($client);
-        $runner = Runner::makeRunner($specpath, $provider);
+        $runner = Runner::makeRunner(self::loadspec($specpath), $provider);
 
         return function (?string $name = null, $store = null) use ($runner, $provider, $sentinel): array {
             $runpack = $runner($name, null === $store ? [] : $store);
@@ -55,7 +58,7 @@ final class Struct
 
             $runsetflags = function ($testspec, ?array $flags = [], $testsubject = null) use ($omniflags, $sentinel): void {
                 $omniflags(
-                    self::undefargs($testspec, $sentinel),
+                    self::undefargs(self::emptymaps($testspec), $sentinel),
                     $flags ?? [],
                     self::wrapsubject($testsubject, $sentinel)
                 );
@@ -73,6 +76,165 @@ final class Struct
                 'client' => $provider,
             ];
         };
+    }
+
+    /**
+     * Load the spec so that an empty map survives.
+     *
+     * PHP is the one port that cannot tell `{}` from `[]` after
+     * `json_decode($json, true)`: both become `[]`, and `array_is_list([])` is
+     * true, so an empty map arrives as an empty LIST. omni's runner decodes
+     * exactly that way, which is fine for its own corpus - `spec/fib.json` has
+     * no empty maps at all - and wrong for struct's, which has 272.
+     *
+     * It matters because struct/php models maps as `stdClass` (its `ismap`
+     * accepts `stdClass` and rejects `[]`), so the collapse changes what the
+     * subject is actually asked:
+     *
+     *     merge([['a' => 1], []])                    => []         wrong
+     *     merge([(object)['a' => 1], new stdClass])  => {"a": 1}   right
+     *
+     *     validate([], '`$MAP`')           => "Expected map, but found list"
+     *     validate(new stdClass, '`$MAP`') => ok
+     *
+     * So the spec is decoded with objects preserved and then converted to
+     * omni's array model, with the single exception of an empty map, which
+     * stays a `stdClass`. Nothing downstream objects: `fixjson` and `clone`
+     * pass a non-array through untouched, and omni's `deepequal` already
+     * declines to distinguish an empty list from an empty map
+     * (`islist($a) !== islist($b) && 0 < count($a)`).
+     *
+     * A non-empty map is left as an associative array, which is unambiguous
+     * in both models and keeps the runner on its normal path.
+     */
+    public static function loadspec(string $path)
+    {
+        $text = file_get_contents($path);
+        if (false === $text) {
+            throw new \RuntimeException('struct compat: cannot read spec: ' . $path);
+        }
+
+        return self::mapempty(json_decode($text, false, 512, JSON_THROW_ON_ERROR));
+    }
+
+    /** Objects to arrays; an empty object becomes the marker. */
+    private static function mapempty($val)
+    {
+        if ($val instanceof \stdClass) {
+            $vars = get_object_vars($val);
+            if (0 === count($vars)) {
+                return self::EMPTYMAPMARK;
+            }
+
+            $out = [];
+            foreach ($vars as $key => $subval) {
+                $out[$key] = self::mapempty($subval);
+            }
+            return $out;
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::mapempty($subval);
+            }
+            return $out;
+        }
+
+        return $val;
+    }
+
+    /**
+     * Resolve the empty-map marker, differently on each side of the call.
+     *
+     * In an argument (`in`, `args`, `ctx`) it becomes a real `stdClass`, which
+     * is what struct/php means by an empty map. Everywhere else - `out`, `err`,
+     * `match` - it becomes `[]`, because the result side is normalised back to
+     * arrays by `structfix`, and `[]` is what the comparison will see.
+     *
+     * Keeping it a plain string until this point is what makes it safe: omni's
+     * `fixjson`, `clone`, `stringify` and error formatting all handle a string,
+     * and none of them handle a `stdClass` - `stringify` raises "Object of
+     * class stdClass could not be converted to string" and `handleerror`
+     * declares `array $entry`.
+     */
+    public static function emptymaps($testspec)
+    {
+        if (!Util::ismap($testspec)) {
+            return $testspec;
+        }
+
+        $set = $testspec['set'] ?? null;
+        if (!Util::islist($set)) {
+            return $testspec;
+        }
+
+        $patched = [];
+        foreach ($set as $entry) {
+            // A whole entry may be the marker - a degenerate `{}` entry. omni
+            // declares `array $entry`, so it has to be an array by here.
+            if (self::EMPTYMAPMARK === $entry) {
+                $entry = [];
+            }
+
+            if (Util::ismap($entry)) {
+                foreach ($entry as $key => $val) {
+                    // Argument positions keep the marker: it is resolved at the
+                    // call boundary, inside the subject wrapper, so omni never
+                    // sees anything but a string.
+                    if (in_array($key, self::ARGKEYS, true)) {
+                        continue;
+                    }
+                    $entry[$key] = self::unmark($val);
+                }
+            }
+            $patched[] = $entry;
+        }
+
+        $out = $testspec;
+        $out['set'] = $patched;
+        return $out;
+    }
+
+    /**
+     * Result side: the marker becomes `[]`.
+     *
+     * `structfix` normalises a returned map back to an array, so `[]` is what
+     * the comparison will actually see for an empty map.
+     */
+    private static function unmark($val)
+    {
+        if (self::EMPTYMAPMARK === $val) {
+            return [];
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::unmark($subval);
+            }
+            return $out;
+        }
+
+        return $val;
+    }
+
+    /** Argument side: the marker becomes a real empty map. */
+    private static function emptymapargs($val)
+    {
+        if (self::EMPTYMAPMARK === $val) {
+            return new \stdClass();
+        }
+
+        if (is_array($val)) {
+            $out = [];
+            foreach ($val as $key => $subval) {
+                $out[$key] = self::emptymapargs($subval);
+            }
+            return $out;
+        }
+
+        return $val;
     }
 
     /**
@@ -290,6 +452,7 @@ final class Struct
         }
 
         return function (...$args) use ($subject, $sentinel) {
+            $args = self::emptymapargs($args);
             return self::structfix($subject(...$args), $sentinel);
         };
     }
