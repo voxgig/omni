@@ -388,12 +388,23 @@ sub checkresult {
         $matched = 1;
     }
 
-    my $out = $entry->{out};
+    # Same conflation as resolveargs: an entry with NO `out` expects an ABSENT
+    # result, and one with `out: null` expects a null. Reading the key without
+    # asking whether it exists made both undef, so a subject that correctly
+    # returned nothing was compared against null and marked wrong. Canonical
+    # gets this for free - `entry.out` on a missing key IS undefined, which is
+    # also how TypeScript spells absent.
+    #
+    # (Under `null: true` this never fires - resolveentry has already put
+    # NULLMARK there.)
+    my $out = exists $entry->{out} ? $entry->{out} : ABSENT;
 
     return if deepequal( $res, $out );
 
     # NOTE: a match with no explicit out is a complete check on its own.
-    return if $matched && ( !defined $out || ( !ref($out) && $out eq NULLMARK ) );
+    # `null == out` in canonical is true of undefined too, so absent counts.
+    return if $matched
+      && ( !defined $out || isabsent($out) || ( !ref($out) && $out eq NULLMARK ) );
 
     die fail( $flags, $index, $entry, 'result mismatch', stringify($out), stringify($res) );
 }

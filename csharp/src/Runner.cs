@@ -632,7 +632,21 @@ namespace Voxgig.Omni
                 matched = true;
             }
 
-            object outval = entry.ContainsKey("out") ? entry["out"] : null;
+            // Same conflation as ResolveArgs: an entry with NO `out` expects an
+            // absent result, and one with `out: null` expects a null. Answering
+            // null for both compared a subject that correctly returned nothing
+            // against null and marked it wrong. Canonical gets this for free -
+            // `entry.out` on a missing key IS undefined, which is also how
+            // TypeScript spells absent.
+            //
+            // This half was missing while FixJson stopped collapsing absent
+            // into null (#23), and the two must agree: with only FixJson fixed,
+            // a subject that returned absent produced `res` absent and `out`
+            // null, so `minor/clone#13` failed.
+            //
+            // (Under `null: true` this never fires - ResolveEntry has already
+            // put NULLMARK there.)
+            object outval = entry.ContainsKey("out") ? entry["out"] : Absent.Mark;
 
             if (Util.DeepEqual(res, outval))
             {
@@ -640,7 +654,8 @@ namespace Voxgig.Omni
             }
 
             // NOTE: a match with no explicit out is a complete check on its own.
-            if (matched && (Util.NULLMARK.Equals(outval) || null == outval))
+            // `null == out` in canonical is true of undefined too, so absent counts.
+            if (matched && (Util.NULLMARK.Equals(outval) || null == outval || Util.IsAbsent(outval)))
             {
                 return;
             }
