@@ -488,7 +488,14 @@ public final class Runner {
         args = new Object[] {rawargs};
       }
     } else {
-      args = new Object[] {Util.clone(entry.get("in"))};
+      // containsKey, not get: a Java Map cannot tell a missing key from one
+      // holding null, and the corpus needs the difference. An entry carrying
+      // none of `in`/`args`/`ctx` is called with one ABSENT argument, not
+      // null - `typify()` is 1073741824 where `typify(null)` is 4194432.
+      args =
+          new Object[] {
+            entry.containsKey("in") ? Util.clone(entry.get("in")) : Json.ABSENT
+          };
     }
 
     if ((hasctx || hasargs) && 0 < args.length && Util.ismap(args[0])) {
@@ -515,7 +522,12 @@ public final class Runner {
   @SuppressWarnings("unchecked")
   static Object fixjsonval(Object val, boolean donull) {
     if (null == val || Util.isabsent(val)) {
-      return donull ? NULLMARK : null;
+      // Canonical returns the value UNCHANGED when donull is false
+      // (typescript/src/Runner.ts): absent stays absent and null stays null.
+      // Answering null for both collapsed two states the corpus
+      // distinguishes. Same defect omni-lua and omni-rust carried
+      // (voxgig/omni#17, #23).
+      return donull ? NULLMARK : val;
     }
 
     if (val instanceof Throwable) {
@@ -633,7 +645,14 @@ public final class Runner {
       matched = true;
     }
 
-    Object out = entry.get("out");
+    // Same conflation as resolveargs: an entry with NO `out` expects an absent
+    // result, and one with `out: null` expects a null. Reading it with get()
+    // made both null, so a subject that correctly returned nothing was
+    // compared against null and marked wrong.
+    //
+    // (Under `null: true` this never fires - resolveentry has already put
+    // NULLMARK there.)
+    Object out = entry.containsKey("out") ? entry.get("out") : Json.ABSENT;
 
     if (Util.deepequal(res, out)) {
       return;

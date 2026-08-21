@@ -119,7 +119,12 @@ fun resolveversion(alltests: Json): Int {
 /** Nulls (and absent values) become NULLMARK. Always a fresh copy. */
 fun fixjson(val_: Json, donull: Boolean): Json {
     if (val_.isnone) {
-        return if (donull) Json.str(NULLMARK) else Json.Null
+        // Canonical returns the value UNCHANGED when donull is false
+        // (typescript/src/Runner.ts): absent stays absent and null stays null.
+        // Answering Json.Null for both collapsed two states the corpus
+        // distinguishes. Same defect omni-lua and omni-rust carried
+        // (voxgig/omni#17, #23).
+        return if (donull) Json.str(NULLMARK) else val_
     }
 
     if (val_ is Json.JList) {

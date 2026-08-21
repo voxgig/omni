@@ -21,6 +21,20 @@ use crate::util::{
 /// JSON values; an error is reported as its message.
 pub type Subject = Rc<dyn Fn(&[Json]) -> Result<Json, String>>;
 
+/// A subject that may MUTATE its arguments, which `match.args` can then
+/// assert on. `minor/setpath` is the case in point: eight of its nine entries
+/// assert that the store was rewritten in place.
+///
+/// Separate from `Subject` rather than replacing it, because omni's Rust API
+/// has consumers outside this repository (voxgig/sekreto vendors it) and a
+/// signature change would break them for a capability most subjects do not
+/// need. A port that only reads its arguments keeps using `Subject`.
+///
+/// Dynamic-language ports have no equivalent: their shims write the mutation
+/// back into omni's own object after the call, because the value is shared.
+/// A Rust consumer holds a converted COPY and cannot.
+pub type SubjectArgs = Rc<dyn Fn(&mut [Json]) -> Result<Json, String>>;
+
 /// Run-time options for a set of test entries.
 #[derive(Clone, Debug)]
 pub struct Flags {
@@ -332,6 +346,27 @@ impl RunPack {
         flags: &Flags,
         subject: Option<&Subject>,
     ) -> Result<(), OmniError> {
+        self.drive(testspec, flags, subject, None)
+    }
+
+    /// Run one set of test entries whose subject may mutate its arguments.
+    /// Everything else is identical to `runsetflags`.
+    pub fn runsetflags_args(
+        &self,
+        testspec: &Json,
+        flags: &Flags,
+        subject: &SubjectArgs,
+    ) -> Result<(), OmniError> {
+        self.drive(testspec, flags, None, Some(subject))
+    }
+
+    fn drive(
+        &self,
+        testspec: &Json,
+        flags: &Flags,
+        subject: Option<&Subject>,
+        argsubject: Option<&SubjectArgs>,
+    ) -> Result<(), OmniError> {
         let mut useflags = flags.clone();
         if useflags.name.is_none() {
             useflags.name = Some(if self.name.is_empty() {
@@ -343,8 +378,15 @@ impl RunPack {
 
         let label = useflags.name.clone().unwrap_or_else(|| "set".to_string());
 
+        // The client path always resolves an ordinary Subject; an args-taking
+        // subject is used only for entries that name no client, which is
+        // every entry the corpus asserts `match.args` on.
+        let fallback: Subject = Rc::new(|_args: &[Json]| {
+            Err("omni: no test subject".to_string())
+        });
         let usesubject = match subject.cloned().or_else(|| self.subject.clone()) {
             Some(found) => found,
+            None if argsubject.is_some() => fallback,
             None => {
                 return Err(OmniError::new(format!(
                     "omni: no test subject for: {}",
@@ -372,9 +414,14 @@ impl RunPack {
             let mut entry = resolveentry(rawentry.clone(), &useflags);
 
             let (client, entrysubject) = self.resolvetestpack(&entry, &usesubject)?;
-            let args = self.resolveargs(&mut entry, &client);
+            let mut args = self.resolveargs(&mut entry, &client);
 
-            match entrysubject(&args) {
+            let called = match argsubject {
+                Some(mutable) if entry.get("client").asstr().is_none() => mutable(&mut args),
+                _ => entrysubject(&args),
+            };
+
+            match called {
                 Err(message) => {
                     handleerror(&useflags, index, &entry, &message)?;
                 }
@@ -479,11 +526,21 @@ pub fn fixjson(val: &Json, flags: &Flags) -> Json {
 
 fn fixjsonval(val: &Json, donull: bool) -> Json {
     match val {
+        // Canonical returns the value UNCHANGED when donull is false
+        // (typescript/src/Runner.ts): `undefined` stays undefined and `null`
+        // stays null. Answering Json::Null for both collapsed two states the
+        // corpus distinguishes - an absent result became indistinguishable
+        // from a null one, so a subject that returned nothing could never
+        // match an entry with no `out`.
+        //
+        // Same defect omni-lua carried (voxgig/omni#17). Only ports whose
+        // model has a SEPARATE absent value can express it; the rest have
+        // nothing to lose here.
         Json::Absent | Json::Null => {
             if donull {
                 Json::str(NULLMARK)
             } else {
-                Json::Null
+                val.clone()
             }
         }
         Json::List(list) => Json::List(list.iter().map(|e| fixjsonval(e, donull)).collect()),

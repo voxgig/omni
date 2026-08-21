@@ -107,7 +107,12 @@ object Runner:
 
   /** Nulls (and absent values) become NULLMARK. Always a fresh copy. */
   def fixjson(value: Json, donull: Boolean): Json =
-    if value.isnone then (if donull then Json.str(NULLMARK) else Json.Null)
+    // Canonical returns the value UNCHANGED when donull is false
+    // (typescript/src/Runner.ts): absent stays absent and null stays null.
+    // Answering Json.Null for both collapsed two states the corpus
+    // distinguishes. Same defect omni-lua and omni-rust carried
+    // (voxgig/omni#17, #23).
+    if value.isnone then (if donull then Json.str(NULLMARK) else value)
     else
       value match
         case Json.JList(entries) => Json.JList(entries.map(fixjson(_, donull)))

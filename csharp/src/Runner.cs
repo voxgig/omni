@@ -510,7 +510,7 @@ namespace Voxgig.Omni
         {
             if (null == val || Util.IsAbsent(val))
             {
-                return donull ? Util.NULLMARK : null;
+                return donull ? (object)Util.NULLMARK : val;
             }
 
             if (val is Exception err)
