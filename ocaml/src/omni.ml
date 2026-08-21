@@ -623,6 +623,21 @@ let regex_find pattern text =
    reported by raising. *)
 type subject = json list -> json
 
+(* A subject that may MUTATE its arguments, which `match.args` can then assert
+   on. `minor/setpath` is the case in point: eight of its nine entries assert
+   that the store was rewritten in place, and `merge/integrity` all six.
+
+   OCaml's `json` is immutable, so a consumer holding a converted copy has no
+   way to write through a `json list`. The arguments arrive as an ARRAY it may
+   overwrite in place, and the runner reads it back after the call.
+
+   Separate from `subject` rather than replacing it: a signature change would
+   break every consumer for a capability most subjects do not need. omni-rust
+   and omni-cpp carry the same pair, for the same reason. Dynamic-language
+   ports need neither - their shims write the mutation back into omni's own
+   object, because the value is shared. *)
+type subject_args = json array -> json
+
 (* Run-time options for a set of test entries. *)
 type flags = { null : bool; name : string option }
 
@@ -712,7 +727,14 @@ let resolvespec name alltests =
 
 (* Nulls (and absent values) become NULLMARK. Always a fresh copy. *)
 let rec fixjson value donull =
-  if isnone value then if donull then Str nullmark else Null
+  (* Canonical returns the value UNCHANGED when donull is false
+     (typescript/src/Runner.ts): absent stays absent and null stays null.
+     Answering Null for both collapsed two states the corpus distinguishes, so
+     a subject that correctly returned nothing was compared against null and
+     marked wrong - `minor/clone#13`, `minor/getprop#4`, `minor/getelem#9`.
+     Same defect the other ports carried (#17, #23, #25); this one was missed
+     because no consumer had exercised it. *)
+  if isnone value then (if donull then Str nullmark else value)
   else
     match value with
     | JList entries -> JList (List.map (fun entry -> fixjson entry donull) entries)
@@ -965,6 +987,9 @@ type runpack = {
   set : string -> json;
   runset : json -> subject option -> unit;
   runsetflags : json -> flags -> subject option -> unit;
+  (* Everything runsetflags does, for a subject that may rewrite its
+     arguments. See `subject_args`. *)
+  runsetflags_args : json -> flags -> subject_args -> unit;
   defsubject : subject option;
   client : provider;
 }
@@ -1002,16 +1027,17 @@ let make_runner_spec alltests (provider : provider) =
 
    let defsubject = resolvesubject name provider in
 
-   let runsetflags testspec flags testsubject =
+   let drive testspec flags testsubject (argsubject : subject_args option) =
      let label =
        match flags.name with Some text -> text | None -> if name = "" then "set" else name
      in
 
      let usesubject =
-       match (testsubject, defsubject) with
-       | Some found, _ -> found
-       | None, Some found -> found
-       | None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
+       match (argsubject, testsubject, defsubject) with
+       | Some _, _, _ -> None
+       | None, Some found, _ -> Some found
+       | None, None, Some found -> Some found
+       | None, None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
      in
 
      let testspecmap = fixjson testspec flags.null in
@@ -1037,13 +1063,14 @@ let make_runner_spec alltests (provider : provider) =
          in
 
          let entrysubject =
-           match asstr (jget entry "client") with
-           | Some clientname -> (
+           match (usesubject, asstr (jget entry "client")) with
+           | None, _ -> None
+           | Some found, None -> Some found
+           | Some found, Some clientname -> (
              match List.assoc_opt clientname clients with
              | None -> raise (Omni_error ("omni: unknown client: " ^ clientname))
              | Some client -> (
-               match resolvesubject name client with Some found -> found | None -> usesubject))
-           | None -> usesubject
+               match resolvesubject name client with Some other -> Some other | None -> Some found))
          in
 
          (* Build the argument list: `ctx`, `args`, or `in`. *)
@@ -1074,8 +1101,20 @@ let make_runner_spec alltests (provider : provider) =
            else (args, entry)
          in
 
-         match entrysubject args with
-         | res ->
+         (* An args-subject may overwrite its argument array; the runner reads
+            it back so `match.args` sees what the subject actually did. *)
+         let invoke () =
+           match (argsubject, entrysubject) with
+           | Some call, _ ->
+             let cells = Array.of_list args in
+             let res = call cells in
+             (Array.to_list cells, res)
+           | None, Some call -> (args, call args)
+           | None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
+         in
+
+         match invoke () with
+         | args, res ->
            let fixed = fixjson res flags.null in
            checkresult label index (jset entry "res" fixed) args fixed
          | exception Omni_error message -> raise (Omni_error message)
@@ -1083,11 +1122,17 @@ let make_runner_spec alltests (provider : provider) =
        testset
    in
 
+   let runsetflags testspec flags testsubject = drive testspec flags testsubject None in
+   let runsetflags_args testspec flags argsubject =
+     drive testspec flags None (Some argsubject)
+   in
+
    {
      spec;
      set = (fun setname -> jget spec setname);
      runset = (fun testspec testsubject -> runsetflags testspec default_flags testsubject);
      runsetflags;
+     runsetflags_args;
      defsubject;
      client = provider;
    }
