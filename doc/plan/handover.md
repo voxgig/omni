@@ -11,7 +11,7 @@ blocked on a human, and what to pick up first is
 what stays true after an item lands. Delete a section once its lesson has
 been absorbed somewhere better.
 
-Last updated: 2026-08-20.
+Last updated: 2026-08-21.
 
 
 ## 1. What has landed
@@ -34,6 +34,11 @@ Last updated: 2026-08-20.
 | voxgig/omni#17, #19 | The **lua** compat shim and the five defects its consumer proved. #17 also fixed omni-lua's `fixjson`, which asserted "JSON null" about an absent value. #19's are worth reading as a set: they are all *value-model translation* bugs, which is what a shim mostly is. The one that generalises past lua is register 4.15 — a shim must not need its own `src/` on the consumer's module path, because that shadows the consumer's same-named modules and fails silently. |
 | voxgig/struct#93 | `NOVAL`, struct/lua's no-value, following struct/go's sentinel of the same name. The argument side of the one-nil problem. |
 | voxgig/struct#94 | The **lua** port migrated. 554-line in-situ runner deleted; 85 tests, 85 passing; entries executing 1342 → 1352 over 72 groups. Takes struct to **6 of 24**. The old runner skipped seventeen entries outright, and six new ones are dropped **by entry, with guards that fire if the corpus shifts**, rather than four groups being marked pending — a cheaper and more honest containment than php's group-level `markTestIncomplete`, and the pattern to prefer from here. The result side of the one-nil problem was settled by measurement, not argument: 43 entries lost one way, 6 the other. |
+| voxgig/struct#95, #99 + voxgig/omni#24 | The **csharp** port migrated, and the clearest instance yet of a driver that could not fail: the old `CorpusScoreboard` reported **1300/1300** while asserting nothing. #99 + omni#24 are a pair fixing two *vacuous passes* — `GetProp(val, key)` defaults `alt` to null where canonical defaults it to undefined, and the runner had the mirror-image defect (an entry with no `out` also read as null), so both sides collapsed and matched. Fixed at the call site: forty-two internal call sites rely on that default, and `HasKey` is literally `GetProp(val, key) != null`. |
+| voxgig/omni#23, #25, #26, #27, #28, #32, #33 | The `fixjson` absent/null collapse, closed port by port. Canonical returns the value UNCHANGED when `donull` is false; these ports rewrote absent to null, so a subject that correctly returned nothing could not be asserted. In lean it was not a bug but a *type*: `fixjson : Json → Json` could not express absent at all, and #33 widened it to `Val`. php and python still collapse it, both needing a paired consumer change. |
+| voxgig/omni#25–#34 | `runsetflags_args` (spelled `runsetFlagsArgs` / `runsetflagsargs` / `:runsetflags-args` per port), now in **ten** omni ports: rust, cpp, ocaml, elixir, haskell, clojure, scala, swift, lean, zig. A value-typed port's subject cannot write through omni's immutable argument list, so the subject returns `(args, result)` and the runner converts back. It is load-bearing, not defensive: `minor/setpath` asserts an in-place store rewrite in 8 of its 9 entries and `merge/integrity` in all 6, and deleting the entry point fails exactly those. omni-zig's landed with a self-test rather than a consumer, since struct/zig is blocked. |
+| voxgig/struct#96–#111 | The remaining **fifteen** ports migrated, open as drafts: typescript (#96), rust (#97), java (#98), perl (#100), c (#101), cpp (#102), kotlin (#103), ocaml (#104), elixir (#105), haskell (#106), dart (#107), clojure (#108), scala (#109), swift (#110), lean (#111). With the seven merged that is **22 of 24**; see §5 and §6 for what they had in common. |
+| voxgig/struct#112 | Why **zig** and **boru** are not migrated, measured rather than asserted. zig: struct/zig pins Zig 0.13 and omni-zig needs 0.16, which is 89 `.init(allocator)` sites, 146 `.append(` sites and a moved `std.StringArrayHashMap` across 5,201 lines — a port upgrade, not a test swap. boru: omni has no boru port to migrate onto. |
 
 omni's `make struct-compat` gate runs struct's javascript suite against
 omni on every omni PR. It is the only cross-repo gate that exists, and it
@@ -173,7 +178,59 @@ ports are migrated to run it honestly. Perl and Lua were checked and guard
 correctly; the other ports have not been audited for the same hazard.
 
 
-## 5. Standing constraints
+## 5. The driver that could not fail
+
+Five of the sixteen ports had a corpus driver that reported success
+without asserting anything, and no two looked alike:
+
+- **csharp** — `CorpusScoreboard` printed `1300/1300` and returned.
+- **java** — 59 JUnit `DynamicTest`s that never asserted.
+- **kotlin** — 72 of the same.
+- **c**, **cpp** — `main` returned 0 whatever happened.
+
+Three more asserted, but only over part of the corpus:
+
+- **swift** — 1244 of 1358 entries: all 59 `err:` entries skipped, all 15
+  `match:` blocks ignored, absent folded into null, six groups absent.
+- **zig** — `runner.zig` had `if (err_field != null) continue;`.
+- **php** (already recorded above) — 350 of 1395 entries unrun.
+
+**The lesson is not "those drivers were bad".** It is that a per-port
+driver has no external check on its own coverage, so the failure mode is
+silent and looks identical to success — a green suite is evidence about
+the *driver*, not the library. Every one of these was invisible until the
+corpus ran through a shared runner that counts what it executed. That is
+the argument for the whole programme, and it is worth restating whenever a
+port proposes keeping its own driver: **a suite that cannot fail is
+indistinguishable from one that passes.**
+
+The corollary for review: when a swap changes the reported number, the
+number to compare is *entries executed*, not tests passed. Several ports'
+test counts went **down** while their coverage went up.
+
+
+## 6. `getprop`'s default `alt` is not `getelem`'s
+
+Found independently in **five** ports — csharp, c, ocaml, scala, lean —
+which makes it a canonical-reading trap, not a port bug:
+
+- `getprop(val, key)` omits `alt` only when the **key** is absent
+  (`undefined === vin.alt`), so an explicit `alt: null` is passed through.
+- `getelem` omits a null alt too (`null == vin.alt`).
+
+A port that defaults `alt` to its own null in both answers *null* where
+canonical answers *absent*, and the corpus tells them apart under
+`null: false`. `minor/getprop#51` is the entry that separates the two
+rules; `minor/getprop#4` and `minor/getelem#9` are the ones that fail.
+
+Fix it at the call site, not by changing the port's default — every port
+that hit this had dozens of internal callers relying on the null default,
+and in csharp `HasKey` *is* `GetProp(val, key) != null`.
+
+Unchecked in **zig** and **boru**, the two ports still on in-situ runners.
+
+
+## 7. Standing constraints
 
 - **typescript is blocked downstream, not upstream.** omni's side shipped
   in #8 (`typescript/compat/struct.ts`, `contextify` first and
