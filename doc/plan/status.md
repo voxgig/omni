@@ -1,6 +1,6 @@
 # Status — where the next session starts
 
-Live snapshot, 2026-08-20. The register in [`progress.md`](progress.md) is the
+Live snapshot, 2026-08-21. The register in [`progress.md`](progress.md) is the
 per-item authority and [`handover.md`](handover.md) is the durable record;
 this file says what is in flight right now, what is blocked on a human, and
 what to pick up first. Update it at the end of a session, or delete it once it
@@ -9,7 +9,7 @@ goes stale — a wrong status file is worse than none.
 
 ## In flight
 
-Nothing. The three open items at the last snapshot have all landed:
+Nothing open. What has landed since this file was started, newest last:
 
 | PR | Outcome |
 |---|---|
@@ -24,6 +24,10 @@ Nothing. The three open items at the last snapshot have all landed:
 | [voxgig/struct#89](https://github.com/voxgig/struct/pull/89) | Merged. struct's **go** port off its 985-line in-situ runner — 105 subtests, 0 failures. struct is now **4 of 24** migrated. Its harness became a nested module so omni cannot reach the library's build (register 4.13). |
 | [voxgig/omni#16](https://github.com/voxgig/omni/pull/16) | Merged. The **php** compat shim - the fifth, and the first written with its consumer in hand rather than after the fact. Two port-specific gaps it has to close: PHP cannot decode an empty map (`{}` and `[]` are both `[]` after `json_decode`, and struct's corpus has **272** of them against fib's zero), and struct/php models absence with a `stdClass` singleton where omni uses `Absent`. |
 | [voxgig/struct#92](https://github.com/voxgig/struct/pull/92) | Merged. struct's **php** port onto omni, and by a distance the most productive swap so far: **seventeen** library defects, on top of the migration itself. struct is now **5 of 24**. Entries executing went 1045 → 1349. |
+| [voxgig/omni#17](https://github.com/voxgig/omni/pull/17) | Merged. The **lua** compat shim — the sixth — plus a real omni-lua bug it surfaced: `fixjson` returned `u.NULL` for an *absent* value where canonical returns the value unchanged, so under `{null: false}` an absent result was indistinguishable from a null one and every such group was unmatchable. Lua is the only port where that could bite: it is the only one whose model has separate ABSENT and NULL sentinels, because a Lua `nil` cannot be stored in a table. |
+| [voxgig/struct#93](https://github.com/voxgig/struct/pull/93) | Merged. `NOVAL` gives struct/lua a no-value, so `typify()` answers 1073741824 where `typify(null)` answers 4194432. Recognised **ahead of** the normal dispatch — a Lua sentinel is a table, so the ordinary path would class it as a map — and collapsed to `nil` by `denoval` at the entry of the thirteen functions the corpus's no-argument entries reach. Follows struct/go's sentinel of the same name rather than inventing a second convention. |
+| [voxgig/omni#19](https://github.com/voxgig/omni/pull/19) | Merged. Five fixes the lua swap found once the **full** corpus ran through the shim rather than a probe: omni's `src/` shadowing a consumer's same-named modules (register 4.15), an unmarked `{}` classed as a list when struct's own rules make it a map, omni's NULL sentinel in a list slot where the port wants the string `"null"`, a mutated argument invisible because `tostruct` handed the subject a copy, and a bare `nil` result read as NULL where the corpus costs 43 entries for that and 6 for the other reading. |
+| [voxgig/struct#94](https://github.com/voxgig/struct/pull/94) | Merged. struct's **lua** port onto omni. struct is now **6 of 24**. Entries executing 1342 → 1352 over 72 groups — the old runner silently skipped seventeen. |
 
 [voxgig/omni#8](https://github.com/voxgig/omni/pull/8) merged 2026-08-19: the
 python compat shim, `voxgig_omni/compat/struct.py`, its TypeScript peer, and
@@ -41,9 +45,11 @@ row is unimplementable and any corpus distinction between zero and null has to
 declare `{null: false}`.
 
 **2. Keep migrating ports.** `ruby` (voxgig/struct#88), `go`
-(voxgig/struct#89) and `php` (voxgig/struct#92) have all landed, so the next
-undone swap with a present toolchain and no external coupling is `lua` — which
-also closes the skip filter under register 4.12.
+(voxgig/struct#89), `php` (voxgig/struct#92) and `lua` (voxgig/struct#94) have
+all landed, so **6 of 24** are migrated. `csharp` is the next one worth doing
+on evidence rather than convenience: it is the last known entry-filtering
+runner (86 dropped, see below), and every port whose runner filters rather
+than fails has so far been hiding something.
 
 php is the one to read before starting another, and it displaces go as the
 cautionary tale. Its tests never used a runner at all: a hand-rolled loop that
@@ -57,8 +63,10 @@ struct#90 fixed in go, found the same way, in a second port independently.
 
 The budgeting rule generalises: any port whose runner filters entries rather
 than failing on them, or whose suite contains vacuous assertions, is
-overstating itself. `lua` (17 skipped) and `csharp` (86 dropped) are the known
-filter cases; nobody has yet audited the ports for stub tests.
+overstating itself. `csharp` (86 dropped) is now the only known
+filter case — `lua`'s 17 closed with voxgig/struct#94, and the swap did
+surface a real port defect inside them, as go's and php's had. Nobody has yet
+audited the ports for stub tests.
 `typescript` is *not* next despite omni's side being ready
 (`typescript/compat/struct.ts`, shipped in #8): struct's swap has not been
 written, and `@voxgig/sdkgen` copies the version-stamped TS runner, which is
@@ -165,7 +173,7 @@ they get rediscovered.
   85 that carry neither `out` nor `err`, plus one `err` entry in
   `transform.format` that goes through `RunSet`. The inverted `null` flag
   default is confirmed.
-- **struct/lua skips 17 entries; it does not truncate calls.** The earlier
+- ~~**struct/lua skips 17 entries; it does not truncate calls.**~~ **Closed 2026-08-21** by voxgig/struct#94; kept because the mechanism is the durable part and the correction cost a session. The earlier
   note here had the mechanism backwards, and acting on it would have wasted a
   session. `table.unpack({nil})` does yield zero values (confirmed on lua5.4),
   but for a fixed-arity Lua function `f(table.unpack({nil}))` and `f(nil)` are
