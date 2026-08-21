@@ -63,7 +63,9 @@ go went further and needed **struct-side library changes** too
 behind 108 dropped entry-executions. Budget for that on any port whose
 runner filters entries rather than failing on them: the swap does not just
 move the runner, it runs code the port has never run. lua's skip filter (17
-entries) and csharp's no-`out` drop (86) are the two known remaining cases.
+entries) closed with voxgig/struct#94 — and, as with go and php, real defects
+were sitting inside what it dropped. csharp's no-`out` drop (86) is the one
+known remaining case.
 
 A third cost, specific to compiled languages with a module system: keeping
 the omni import out of the *library's* build. struct/go needed its harness
