@@ -163,12 +163,26 @@ Only **OM-1** is closed outright. Either give the four register rows or
 record why they are `DECIDED-NO`; leaving them in a design note only is how
 they get rediscovered.
 
-**omni-lean's map is sorted, not insertion-ordered.** `Lean.Json.obj` is a
-tree keyed by string, so omni-lean cannot preserve key order the way every
-other port now does (swift was the last to be fixed, voxgig/omni#32). It does
-not bite the current corpora — `deepequal` is order-independent and no spec
-asserts a serialised key order — but any future `__EXACT__`-style leaf that
-compares rendered JSON would fail there and nowhere else.
+**Three omni ports lose key order: lean, rust and elixir.** I recorded this
+for lean first and the Codex review on voxgig/struct#97 and #105 found the
+other two, reported as consumer-side bridge bugs. They are not — the loss is
+in omni's own value model, and no bridge can undo it:
+
+- **lean** — `Lean.Json.obj` is a tree keyed by string.
+- **rust** — `Json::Map(BTreeMap<String, Json>)` (`rust/src/json.rs:20`).
+- **elixir** — a plain BEAM `%{}` (`elixir/lib/json.ex:27,52`).
+
+A consumer bridge cannot fix any of them: the spec data is already reordered
+when the subject receives it, and the result is reordered again before
+`deepequal` sees it. **swift had exactly this and it was fixed in omni, not in
+the consumer** — voxgig/omni#32 turned `Json.map` into an insertion-ordered
+association list throughout. That is the shape of the fix for these three.
+
+It does not bite the current corpora — `deepequal` is order-independent and no
+spec asserts a serialised key order — but it means the migrated rust, elixir
+and lean suites cannot detect a `keysof`/`items`/`jsonify` ordering regression,
+and any future `__EXACT__`-style leaf comparing rendered JSON would fail in
+those three and nowhere else. Worth a register row if it is to be fixed.
 
 **In voxgig/struct** — the entry-dropping defects this file used to list are
 now closed by the migrations that found them:
