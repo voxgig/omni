@@ -16,27 +16,28 @@ goes stale — a wrong status file is worse than none.
 
 | PR | Port | State |
 |---|---|---|
-| [#96](https://github.com/voxgig/struct/pull/96) | typescript | draft |
-| [#97](https://github.com/voxgig/struct/pull/97) | rust | draft |
-| [#98](https://github.com/voxgig/struct/pull/98) | java | draft |
-| [#100](https://github.com/voxgig/struct/pull/100) | perl | draft |
-| [#101](https://github.com/voxgig/struct/pull/101) | c | draft |
-| [#102](https://github.com/voxgig/struct/pull/102) | cpp | draft |
-| [#103](https://github.com/voxgig/struct/pull/103) | kotlin | draft |
-| [#104](https://github.com/voxgig/struct/pull/104) | ocaml | draft |
-| [#105](https://github.com/voxgig/struct/pull/105) | elixir | draft |
-| [#106](https://github.com/voxgig/struct/pull/106) | haskell | draft |
-| [#107](https://github.com/voxgig/struct/pull/107) | dart | draft |
-| [#108](https://github.com/voxgig/struct/pull/108) | clojure | draft |
-| [#109](https://github.com/voxgig/struct/pull/109) | scala | draft |
-| [#110](https://github.com/voxgig/struct/pull/110) | swift | draft |
-| [#111](https://github.com/voxgig/struct/pull/111) | lean | draft |
-| [#112](https://github.com/voxgig/struct/pull/112) | — | draft; the zig/boru blocker note |
+| [#96](https://github.com/voxgig/struct/pull/96) | typescript | open |
+| [#97](https://github.com/voxgig/struct/pull/97) | rust | open |
+| [#98](https://github.com/voxgig/struct/pull/98) | java | open |
+| [#100](https://github.com/voxgig/struct/pull/100) | perl | open |
+| [#101](https://github.com/voxgig/struct/pull/101) | c | open |
+| [#102](https://github.com/voxgig/struct/pull/102) | cpp | open |
+| [#103](https://github.com/voxgig/struct/pull/103) | kotlin | open |
+| [#104](https://github.com/voxgig/struct/pull/104) | ocaml | open |
+| [#105](https://github.com/voxgig/struct/pull/105) | elixir | open |
+| [#106](https://github.com/voxgig/struct/pull/106) | haskell | open |
+| [#107](https://github.com/voxgig/struct/pull/107) | dart | open |
+| [#108](https://github.com/voxgig/struct/pull/108) | clojure | open |
+| [#109](https://github.com/voxgig/struct/pull/109) | scala | open |
+| [#110](https://github.com/voxgig/struct/pull/110) | swift | open |
+| [#111](https://github.com/voxgig/struct/pull/111) | lean | open |
+| [#112](https://github.com/voxgig/struct/pull/112) | — | open; the zig/boru blocker note |
 
-With the seven merged (javascript #84, python #86, ruby #88, go #89, php #92,
-lua #94, csharp #95) that is **22 of 24 ports migrated**, and the remaining
-two — zig and boru — are blocked for reasons measured in #112, not for want
-of effort. What landed and what each swap cost is in
+**Seven are merged** (javascript #84, python #86, ruby #88, go #89, php #92,
+lua #94, csharp #95); the fifteen above are written, green and open but NOT
+merged, so the register still counts them `IN PROGRESS`. That is 22 of 24 with
+a migration written, 7 of 24 landed. The remaining two — zig and boru — are
+blocked for reasons measured in #112, not for want of effort. What landed and what each swap cost is in
 [`handover.md`](handover.md) §1; the two findings that recurred across ports
 are §5 (drivers that could not fail) and §6 (getprop's default `alt`).
 
@@ -219,10 +220,10 @@ outright**, five of nine fixed-arity adapters. The portable spelling is
   inflicted failure that looked exactly like a real one. Use a worktree, or
   wait.
 - **Toolchains installed this session**, taking local verification from 11
-  ports to 22: zig 0.13.0 and 0.16.0, dart 3.13.1, Clojure CLI 1.12.1.1550,
+  ports to **17**: zig 0.13.0 and 0.16.0, dart 3.13.1, Clojure CLI 1.12.1.1550,
   scala-cli 1.5.0 (needs `JAVA_OPTS` pointing at the CCR truststore),
   swift 6.0.2, and elan with Lean 4.32.1 and 4.16.0. `apt-get` is available
-  and root, which covers lua5.4, ocaml and ghc in a couple of minutes.
+  and root, which covers lua5.4, ocaml and ghc in a couple of minutes, for 20. The remaining four - csharp, kotlin, php-on-Windows and boru - were verified by CI only, not locally.
 - **`make test` cannot distinguish a missing toolchain from a real failure.**
   A pristine checkout reports `FAILED: lua csharp kotlin …` where every one is
   exit 127. Budget for the confusion, or check `command -v` first.
