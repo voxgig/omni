@@ -16,7 +16,15 @@ public indirect enum Json {
   case num(Double)
   case str(String)
   case list([Json])
-  case map([String: Json])
+  // An INSERTION-ORDERED association list, not a Swift Dictionary. JSON
+  // objects are unordered by the letter of the spec, but a runner is a
+  // measuring instrument: a consumer whose own maps are ordered (and every
+  // struct port's are) reads back `keysof`, `items`, `stringify` and walk
+  // order from the order the spec author wrote. A Dictionary silently
+  // reshuffles them, and the failure looks like a library bug rather than a
+  // runner one. omni-haskell and omni-ocaml carry the same association list;
+  // omni-scala a ListMap; omni-clojure an array-map.
+  case map([(String, Json)])
   // A live Provider reference, attached to a contextified map argument by
   // the runner (see RunPack.resolveargs) so a subject can reach the
   // client that owns it - the Swift analogue of canonical's
@@ -74,7 +82,7 @@ public indirect enum Json {
     return nil
   }
 
-  public var asmap: [String: Json]? {
+  public var asmap: [(String, Json)]? {
     if case .map(let val) = self { return val }
     return nil
   }
@@ -93,8 +101,10 @@ public indirect enum Json {
 
   /// Read a map entry. Returns `.absent` when missing.
   public func get(_ key: String) -> Json {
-    if case .map(let val) = self, let entry = val[key] {
-      return entry
+    if case .map(let val) = self {
+      for (entrykey, entry) in val where entrykey == key {
+        return entry
+      }
     }
     return .absent
   }
@@ -102,23 +112,32 @@ public indirect enum Json {
   /// Is a map key present at all (even with a null value)?
   public func has(_ key: String) -> Bool {
     if case .map(let val) = self {
-      return nil != val[key]
+      return val.contains { $0.0 == key }
     }
     return false
   }
 
-  /// Set a map entry (no-op for non-maps).
+  /// Set a map entry (no-op for non-maps). Re-assigning an existing key
+  /// keeps its POSITION, the way every port's ordered map behaves.
   public mutating func set(_ key: String, _ val: Json) {
     if case .map(var entries) = self {
-      entries[key] = val
+      if let at = entries.firstIndex(where: { $0.0 == key }) {
+        entries[at] = (key, val)
+      } else {
+        entries.append((key, val))
+      }
       self = .map(entries)
     }
   }
 
   public static func mapOf(_ entries: [(String, Json)]) -> Json {
-    var out: [String: Json] = [:]
+    var out: [(String, Json)] = []
     for (key, val) in entries {
-      out[key] = val
+      if let at = out.firstIndex(where: { $0.0 == key }) {
+        out[at] = (key, val)
+      } else {
+        out.append((key, val))
+      }
     }
     return .map(out)
   }
@@ -190,7 +209,7 @@ public indirect enum Json {
   }
 
   private static func parsemap(_ chars: inout [Character], _ pos: inout Int) throws -> Json {
-    var out: [String: Json] = [:]
+    var out: [(String, Json)] = []
     pos += 1  // {
 
     skipws(chars, &pos)
@@ -210,7 +229,12 @@ public indirect enum Json {
       pos += 1
 
       skipws(chars, &pos)
-      out[key] = try parseval(&chars, &pos)
+      let entry = try parseval(&chars, &pos)
+      if let at = out.firstIndex(where: { $0.0 == key }) {
+        out[at] = (key, entry)
+      } else {
+        out.append((key, entry))
+      }
       skipws(chars, &pos)
 
       guard pos < chars.count else {
