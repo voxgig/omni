@@ -659,7 +659,8 @@ public final class Runner {
     }
 
     // NOTE: a match with no explicit out is a complete check on its own.
-    if (matched && (NULLMARK.equals(out) || null == out)) {
+    // `null == out` in canonical is true of undefined too, so absent counts.
+    if (matched && (NULLMARK.equals(out) || null == out || Util.isabsent(out))) {
       return;
     }
 
