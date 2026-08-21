@@ -17,6 +17,7 @@ module Omni
     Provider (..),
     RunPack (..),
     Subject,
+    SubjectArgs,
     OmniError (..),
     nullmark,
     undefmark,
@@ -594,6 +595,21 @@ regexFind pattern text = case regexParse pattern of
 -- reported by throwing.
 type Subject = [Json] -> IO Json
 
+-- | A subject that may REPLACE its arguments, which @match.args@ can then
+-- assert on. @minor/setpath@ is the case in point: eight of its nine entries
+-- assert that the store was rewritten in place, and @merge/integrity@ all six.
+--
+-- Haskell's 'Json' is immutable, so a consumer holding a converted copy has no
+-- way to write through the argument list even when its own nodes are mutable
+-- (struct/haskell keeps them in 'IORef' cells). Returning the arguments
+-- alongside the result is the only channel there is.
+--
+-- Separate from 'Subject' rather than replacing it: a signature change would
+-- break every consumer for a capability most subjects do not need. omni-rust,
+-- omni-cpp, omni-ocaml and omni-elixir carry the same pair, for the same
+-- reason.
+type SubjectArgs = [Json] -> IO ([Json], Json)
+
 -- | Run-time options for a set of test entries.
 data Flags = Flags {flagNull :: Bool, flagName :: Maybe String}
 
@@ -626,6 +642,9 @@ data RunPack = RunPack
     packSet :: String -> Json,
     runset :: Json -> Maybe Subject -> IO (),
     runsetFlags :: Json -> Flags -> Maybe Subject -> IO (),
+    -- | Everything 'runsetFlags' does, for a subject that may replace its
+    -- arguments. See 'SubjectArgs'.
+    runsetFlagsArgs :: Json -> Flags -> SubjectArgs -> IO (),
     packSubject :: Maybe Subject,
     packClient :: Provider
   }
@@ -751,7 +770,13 @@ resolvespec name alltests
 -- | Nulls (and absent values) become NULLMARK. Always a fresh copy.
 fixjson :: Json -> Bool -> Json
 fixjson value donull
-  | isnone value = if donull then Str nullmark else Null
+  -- Canonical returns the value UNCHANGED when donull is false
+  -- (typescript/src/Runner.ts): absent stays absent and null stays null.
+  -- Answering Null for both collapsed two states the corpus distinguishes,
+  -- so a subject that correctly returned nothing was compared against null
+  -- and marked wrong. Same defect the other ports carried (#17, #23, #25,
+  -- #26, #27); this one was missed because no consumer had exercised it.
+  | isnone value = if donull then Str nullmark else value
   | otherwise = case value of
       JList entries -> JList (map (`fixjson` donull) entries)
       JMap entries -> JMap (map (\(key, entry) -> (key, fixjson entry donull)) entries)
@@ -990,12 +1015,19 @@ makeRunnerSpec alltests provider name = do
         Just resolve | not (null name) -> resolve name
         _ -> Nothing
 
-      runsetflags testspec flags testsubject = do
+      runsetflags testspec flags testsubject =
+        drive testspec flags testsubject Nothing
+
+      runsetflagsargs testspec flags argsubject =
+        drive testspec flags Nothing (Just argsubject)
+
+      drive testspec flags testsubject argsubject = do
         let label = fromMaybe (if null name then "set" else name) (flagName flags)
 
-        subject <- case (testsubject, defsubject) of
-          (Just found, _) -> pure found
-          (Nothing, Just found) -> pure found
+        subject <- case (argsubject, testsubject, defsubject) of
+          (Just _, _, _) -> pure Nothing
+          (Nothing, Just found, _) -> pure (Just found)
+          (Nothing, Nothing, Just found) -> pure (Just found)
           _ -> throwIO (OmniError ("omni: no test subject for: " ++ label))
 
         let testspecmap = fixjson testspec (flagNull flags)
@@ -1008,9 +1040,9 @@ makeRunnerSpec alltests provider name = do
           then checkset label testspec testset
           else pure ()
 
-        mapM_ (runentry label subject clients flags) (zip [0 ..] testset)
+        mapM_ (runentry label subject argsubject clients flags) (zip [0 ..] testset)
 
-      runentry label subject clients' flags (index, rawentry) = do
+      runentry label subject argsubject clients' flags (index, rawentry) = do
         if not (ismap rawentry)
           then throwIO (OmniError ("omni: " ++ label ++ "[" ++ show index ++ "]: entry is not a map"))
           else pure ()
@@ -1021,13 +1053,14 @@ makeRunnerSpec alltests provider name = do
                 then jset rawentry "out" (Str nullmark)
                 else rawentry
 
-        entrysubject <- case asstr (jget entry0 "client") of
-          Just clientname -> case lookup clientname clients' of
+        entrysubject <- case (subject, asstr (jget entry0 "client")) of
+          (Nothing, _) -> pure Nothing
+          (Just found, Just clientname) -> case lookup clientname clients' of
             Nothing -> throwIO (OmniError ("omni: unknown client: " ++ clientname))
             Just client -> case providerSubject client of
-              Just resolve -> pure (fromMaybe subject (resolve name))
-              Nothing -> pure subject
-          Nothing -> pure subject
+              Just resolve -> pure (Just (fromMaybe found (resolve name)))
+              Nothing -> pure (Just found)
+          (Just found, Nothing) -> pure (Just found)
 
         -- Build the argument list: `ctx`, `args`, or `in`.
         let hasctx = jhas entry0 "ctx"
@@ -1054,12 +1087,20 @@ makeRunnerSpec alltests provider name = do
                    in (first : tail args0, jset entry0 "ctx" first)
                 else (args0, entry0)
 
-        outcome <- try (entrysubject args)
+        -- An args-subject returns its arguments alongside the result, so
+        -- `match.args` sees what the subject actually did with them.
+        let invoke = case (argsubject, entrysubject) of
+              (Just call, _) -> call args
+              (Nothing, Just call) -> (,) args <$> call args
+              (Nothing, Nothing) ->
+                throwIO (OmniError ("omni: no test subject for: " ++ label))
+
+        outcome <- try invoke
 
         case outcome of
-          Right rawres -> do
+          Right (callargs, rawres) -> do
             let res = fixjson rawres (flagNull flags)
-            checkresult label index (jset entry "res" res) args res
+            checkresult label index (jset entry "res" res) callargs res
           Left err -> case fromOmni err of
             Just omnierr -> throwIO omnierr
             Nothing -> handleerror label index entry (errmessage err)
@@ -1070,6 +1111,7 @@ makeRunnerSpec alltests provider name = do
         packSet = jget spec,
         runset = \testspec testsubject -> runsetflags testspec defaultFlags testsubject,
         runsetFlags = runsetflags,
+        runsetFlagsArgs = runsetflagsargs,
         packSubject = defsubject,
         packClient = provider
       }
