@@ -26,10 +26,10 @@ public func getpath(_ val: Json, _ path: [String]) -> Json {
       }
       current = entries[index]
     case .map(let entries):
-      guard let entry = entries[part] else {
+      guard let found = entries.first(where: { $0.0 == part }) else {
         return .absent
       }
-      current = entry
+      current = found.1
     default:
       return .absent
     }
@@ -50,9 +50,9 @@ public func walk(_ val: Json, _ apply: (Json, [String]) -> Json, _ path: [String
     }
     next = .list(out)
   case .map(let entries):
-    var out: [String: Json] = [:]
+    var out: [(String, Json)] = []
     for (key, entry) in entries {
-      out[key] = walk(entry, apply, path + [key])
+      out.append((key, walk(entry, apply, path + [key])))
     }
     next = .map(out)
   default:
@@ -76,10 +76,14 @@ public func deepequal(_ a: Json, _ b: Json) -> Bool {
       return false
     }
     return true
+  // Order-independent, like every other port's deepequal: two maps with the
+  // same entries are equal however they were written.
   case (.map(let x), .map(let y)):
     if x.count != y.count { return false }
     for (key, val) in x {
-      guard let other = y[key], deepequal(val, other) else { return false }
+      guard let other = y.first(where: { $0.0 == key }), deepequal(val, other.1) else {
+        return false
+      }
     }
     return true
   default:
@@ -130,9 +134,11 @@ public func jsonstr(_ val: Json) -> String {
   case .num(let entry): return numstr(entry)
   case .str(let text): return quote(text)
   case .list(let entries): return "[" + entries.map(jsonstr).joined(separator: ",") + "]"
+  // Insertion order, not sorted: the map now carries the order the spec
+  // author wrote, and a failure message that reorders it is harder to read
+  // against the source.
   case .map(let entries):
-    let keys = entries.keys.sorted()
-    return "{" + keys.map { quote($0) + ":" + jsonstr(entries[$0]!) }.joined(separator: ",") + "}"
+    return "{" + entries.map { quote($0.0) + ":" + jsonstr($0.1) }.joined(separator: ",") + "}"
   // Never authored in a spec (see Json.provider) - rendered only if a
   // failure message happens to reach into it.
   case .provider: return quote("<provider>")

@@ -9,6 +9,21 @@ import Foundation
 /// reported by throwing.
 public typealias Subject = ([Json]) throws -> Json
 
+/// A subject that may REPLACE its arguments, which `match.args` can then
+/// assert on. `minor/setpath` is the case in point: eight of its nine entries
+/// assert that the store was rewritten in place, and `merge/integrity` all
+/// six.
+///
+/// `Json` is an enum with value semantics, so a consumer holding a converted
+/// copy has no way to write through the argument list even when its own nodes
+/// are mutable (struct/swift's `VMap` / `VList` are classes). Returning the
+/// arguments alongside the result is the only channel there is.
+///
+/// Separate from `Subject` rather than replacing it: a signature change would
+/// break every consumer for a capability most subjects do not need. omni-rust,
+/// -cpp, -ocaml, -elixir, -haskell, -clojure and -scala carry the same pair.
+public typealias SubjectArgs = ([Json]) throws -> ([Json], Json)
+
 /// A test failure (or a malformed spec). Distinct from an error thrown by
 /// the subject under test, which is a candidate for an `err` expectation.
 public struct OmniError: Error, CustomStringConvertible {
@@ -137,7 +152,13 @@ public func resolvespec(_ name: String, _ alltests: Json) -> Json {
 /// Nulls (and absent values) become NULLMARK. Always a fresh copy.
 public func fixjson(_ val: Json, _ donull: Bool) -> Json {
   if val.isnone {
-    return donull ? .str(NULLMARK) : .null
+    // Canonical returns the value UNCHANGED when donull is false
+    // (typescript/src/Runner.ts): absent stays absent and null stays null.
+    // Answering .null for both collapsed two states the corpus distinguishes,
+    // so a subject that correctly returned nothing was compared against null
+    // and marked wrong. Same defect the other ports carried (#17, #23, #25,
+    // #26, #27, #28).
+    return donull ? .str(NULLMARK) : val
   }
 
   if case .list(let entries) = val {
@@ -145,9 +166,9 @@ public func fixjson(_ val: Json, _ donull: Bool) -> Json {
   }
 
   if case .map(let entries) = val {
-    var out: [String: Json] = [:]
+    var out: [(String, Json)] = []
     for (key, entry) in entries {
-      out[key] = fixjson(entry, donull)
+      out.append((key, fixjson(entry, donull)))
     }
     return .map(out)
   }
@@ -260,14 +281,32 @@ public final class RunPack {
 
   /// Run one set of test entries with flags.
   public func runsetflags(_ testspec: Json, _ flags: Flags, _ testsubject: Subject? = nil) throws {
+    try drive(testspec, flags, testsubject, nil)
+  }
+
+  /// Everything `runsetflags` does, for a subject that may replace its
+  /// arguments. See `SubjectArgs`.
+  public func runsetflagsargs(_ testspec: Json, _ flags: Flags, _ argsubject: @escaping SubjectArgs)
+    throws
+  {
+    try drive(testspec, flags, nil, argsubject)
+  }
+
+  private func drive(
+    _ testspec: Json, _ flags: Flags, _ testsubject: Subject?, _ argsubject: SubjectArgs?
+  ) throws {
     var useflags = flags
     if nil == useflags.name {
       useflags.name = name.isEmpty ? "set" : name
     }
     let label = useflags.name ?? "set"
 
-    guard let usesubject = testsubject ?? subject else {
-      throw OmniError("omni: no test subject for: \(label)")
+    var usesubject: Subject? = nil
+    if nil == argsubject {
+      guard let found = testsubject ?? subject else {
+        throw OmniError("omni: no test subject for: \(label)")
+      }
+      usesubject = found
     }
 
     let testspecmap = fixjson(testspec, useflags.null)
@@ -302,16 +341,25 @@ public final class RunPack {
           throw OmniError("omni: unknown client: \(clientname)", entry)
         }
         entryclient = found
-        if let clientsubject = found.subject?(name) {
+        if nil != entrysubject, let clientsubject = found.subject?(name) {
           entrysubject = clientsubject
         }
       }
 
       let args = resolveargs(&entry, entryclient)
 
+      // An args-subject returns its arguments alongside the result, so
+      // `match.args` sees what the subject actually did with them.
+      var callargs = args
       var res: Json
       do {
-        res = try entrysubject(args)
+        if let call = argsubject {
+          (callargs, res) = try call(args)
+        } else if let call = entrysubject {
+          res = try call(args)
+        } else {
+          throw OmniError("omni: no test subject for: \(label)")
+        }
       } catch let omnierr as OmniError {
         throw omnierr
       } catch {
@@ -322,7 +370,7 @@ public final class RunPack {
       res = fixjson(res, useflags.null)
       entry.set("res", res)
 
-      try checkresult(useflags, index, entry, args, res)
+      try checkresult(useflags, index, entry, callargs, res)
     }
   }
 
@@ -396,7 +444,7 @@ public final class RunPack {
       throw fail(flags, index, entry, "entry is not a map")
     }
 
-    for key in fields.keys.sorted() {
+    for key in fields.map({ $0.0 }).sorted() {
       if !ENTRYFIELDS.contains(key) {
         throw fail(flags, index, entry, "unknown entry field: " + key)
       }
@@ -599,10 +647,10 @@ public final class RunPack {
       message += "\n  actual:   \(actual)"
     }
 
-    var summary: [String: Json] = [:]
+    var summary: [(String, Json)] = []
     if case .map(let entries) = entry {
       for (key, val) in entries where "res" != key && "thrown" != key && "ctx" != key {
-        summary[key] = val
+        summary.append((key, val))
       }
     }
     message += "\n  entry:    \(stringify(.map(summary)))"
@@ -637,7 +685,7 @@ public final class Runner {
       for (clientname, cdef) in entries {
         var copts = cdef.get("test").get("options")
         if copts.isabsent {
-          copts = .map([:])
+          copts = .map([])
         }
         if let inject = provider.inject, store.ismap {
           copts = inject(copts, store)
