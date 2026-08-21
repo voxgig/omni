@@ -391,7 +391,13 @@ class RunPack {
       final rawargs = entry['args'];
       args = rawargs is List ? List<dynamic>.from(rawargs) : [rawargs];
     } else {
-      args = [clone(entry['in'])];
+      // ABSENT, not null, when the entry supplies no `in`: Dart's `entry['in']`
+      // answers null for a missing key and for an authored `in: null` alike,
+      // and the corpus distinguishes them - struct's `minor/typify` has both
+      // `{in: null, out: <T_null>}` and `{out: <T_noval>}` (register 4.12).
+      // The typed ports get this for free because their map read returns their
+      // own absent marker; the dynamic ones have to say it (as canonical does).
+      args = [clone(entry.containsKey('in') ? entry['in'] : ABSENT)];
     }
 
     if ((hasctx || hasargs) && args.isNotEmpty && ismap(args[0])) {
