@@ -83,7 +83,13 @@
 ;; Nulls (and absent values) become NULLMARK. Always a fresh copy.
 (defn fixjson [val donull]
   (cond
-    (u/isnone val) (if donull u/NULLMARK nil)
+    ;; Canonical returns the value UNCHANGED when donull is false
+    ;; (typescript/src/Runner.ts): absent stays absent and nil stays nil.
+    ;; Answering nil for both collapsed two states the corpus distinguishes,
+    ;; so a subject that correctly returned nothing was compared against null
+    ;; and marked wrong. Same defect the other ports carried (#17, #23, #25,
+    ;; #26, #27, #28).
+    (u/isnone val) (if donull u/NULLMARK val)
     (u/islist val) (vec (map #(fixjson % donull) val))
     (u/ismap val) (reduce-kv (fn [out key entry] (assoc out key (fixjson entry donull)))
                              (array-map)
@@ -299,7 +305,14 @@
         args (cond
                hasctx [(get entry "ctx")]
                hasargs (let [raw (get entry "args")] (if (u/islist raw) (vec raw) [raw]))
-               :else [(u/clone (get entry "in"))])]
+               ;; ABSENT, not nil, when the entry supplies no `in`: a Clojure
+               ;; map read answers nil for a missing key and for an authored
+               ;; `in: null` alike, and the corpus distinguishes them -
+               ;; struct's `minor/typify` has both `{in: null, out: <T_null>}`
+               ;; and `{out: <T_noval>}` (register 4.12). The typed ports get
+               ;; this for free because their map read returns their own
+               ;; absent marker; the dynamic ones have to say it.
+               :else [(u/clone (if (contains? entry "in") (get entry "in") u/ABSENT))])]
 
     (if (and (or hasctx hasargs) (seq args) (u/ismap (first args)))
       (let [contextify (:contextify provider)
@@ -311,7 +324,12 @@
         [(assoc args 0 first-arg) (assoc entry "ctx" first-arg)])
       [args entry])))
 
-(defn- run-set-flags [runpack testspec flags testsubject]
+;; `argsmode` true means the subject returns `[args result]` rather than just
+;; a result, so `match.args` can see what it did with its arguments. Clojure's
+;; own data is immutable and a consumer's nodes are its own (struct/clojure
+;; keeps java.util.LinkedHashMap / ArrayList), so returning them alongside the
+;; result is the only channel there is. See `runsetflags-args`.
+(defn- run-set-flags [runpack testspec flags testsubject & [argsmode]]
   (let [{:keys [spec subject provider clients name specversion]} runpack
         donull (if (contains? flags :null) (boolean (:null flags)) true)
         label (or (:name flags) (if (string/blank? name) "set" name))
@@ -349,9 +367,12 @@
               [args withctx] (resolveargs entry provider (or client provider))]
 
           (try
-            (let [res (fixjson (entrysubject args) donull)
+            (let [outcome (entrysubject args)
+                  callargs (if argsmode (vec (first outcome)) args)
+                  rawres (if argsmode (second outcome) outcome)
+                  res (fixjson rawres donull)
                   done (assoc withctx "res" res)]
-              (checkresult label index done args res))
+              (checkresult label index done callargs res))
             (catch Throwable err
               (if (omni-error? err)
                 (throw err)
@@ -365,6 +386,14 @@
            :set (fn [setname] (get spec setname))
            :runsetflags (fn [testspec flags testsubject]
                           (run-set-flags runpack testspec flags testsubject))
+           ;; Everything :runsetflags does, for a subject that returns
+           ;; `[args result]`. Separate from :runsetflags rather than
+           ;; replacing it, so no consumer breaks for a capability most
+           ;; subjects do not need. omni-rust, -cpp, -ocaml, -elixir and
+           ;; -haskell carry the same second entry point (#23, #25, #26,
+           ;; #27, #28).
+           :runsetflags-args (fn [testspec flags testsubject]
+                               (run-set-flags runpack testspec flags testsubject true))
            :runset (fn [testspec testsubject]
                      (run-set-flags runpack testspec {} testsubject)))))
 
