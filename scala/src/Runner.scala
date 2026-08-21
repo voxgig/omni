@@ -17,6 +17,23 @@ import Util.*
   */
 type Subject = List[Json] => Json
 
+/** A subject that may REPLACE its arguments, which `match.args` can then
+  * assert on. `minor/setpath` is the case in point: eight of its nine entries
+  * assert that the store was rewritten in place, and `merge/integrity` all
+  * six.
+  *
+  * This port's [[Json]] is an immutable value model, so a consumer holding a
+  * converted copy has no way to write through the argument list even when its
+  * own nodes are mutable (struct/scala's are `ArrayBuffer` / `LinkedHashMap`).
+  * Returning the arguments alongside the result is the only channel there is.
+  *
+  * Separate from [[Subject]] rather than replacing it: a signature change
+  * would break every consumer for a capability most subjects do not need.
+  * omni-rust, -cpp, -ocaml, -elixir, -haskell and -clojure carry the same
+  * pair, for the same reason.
+  */
+type SubjectArgs = List[Json] => (List[Json], Json)
+
 /** A test failure (or a malformed spec). Distinct from an exception thrown
   * by the subject under test, which is a candidate for an `err` expectation.
   */
@@ -208,11 +225,28 @@ class RunPack(
 
   /** Run one set of test entries with flags. */
   def runsetflags(testspec: Json, flags: Flags, testsubject: Option[Subject] = None): Unit =
+    drive(testspec, flags, testsubject, None)
+
+  /** Everything [[runsetflags]] does, for a subject that may replace its
+    * arguments. See [[SubjectArgs]].
+    */
+  def runsetflagsargs(testspec: Json, flags: Flags, argsubject: SubjectArgs): Unit =
+    drive(testspec, flags, None, Some(argsubject))
+
+  private def drive(
+      testspec: Json,
+      flags: Flags,
+      testsubject: Option[Subject],
+      argsubject: Option[SubjectArgs],
+  ): Unit =
     val label = flags.name.getOrElse(if name.isEmpty then "set" else name)
 
-    val usesubject = testsubject.orElse(subject).getOrElse {
-      throw OmniError(s"omni: no test subject for: $label")
-    }
+    val usesubject = argsubject match
+      case Some(_) => None
+      case None =>
+        Some(testsubject.orElse(subject).getOrElse {
+          throw OmniError(s"omni: no test subject for: $label")
+        })
 
     val testspecmap = Runner.fixjson(testspec, flags.nulls)
     val testset = testspecmap.get("set").aslist.getOrElse {
@@ -244,18 +278,25 @@ class RunPack(
           throw OmniError(s"omni: unknown client: $clientname", entry),
         )
         entryclient = found
-        found.subject.flatMap(_(name)).foreach { clientsubject =>
-          entrysubject = clientsubject
-        }
+        if entrysubject.isDefined then
+          found.subject.flatMap(_(name)).foreach { clientsubject =>
+            entrysubject = Some(clientsubject)
+          }
       }
 
       val (args, withctx) = resolveargs(entry, entryclient)
       entry = withctx
 
       try
-        val res = Runner.fixjson(entrysubject(args), flags.nulls)
+        // An args-subject returns its arguments alongside the result, so
+        // `match.args` sees what the subject actually did with them.
+        val (callargs, rawres) = (argsubject, entrysubject) match
+          case (Some(call), _) => call(args)
+          case (None, Some(call)) => (args, call(args))
+          case (None, None) => throw OmniError(s"omni: no test subject for: $label")
+        val res = Runner.fixjson(rawres, flags.nulls)
         entry = entry.set("res", res)
-        checkresult(label, index, entry, args, res)
+        checkresult(label, index, entry, callargs, res)
       catch
         case omnierr: OmniError => throw omnierr
         case NonFatal(err)      => handleerror(label, index, entry, err)
