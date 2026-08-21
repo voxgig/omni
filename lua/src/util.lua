@@ -3,7 +3,18 @@
 -- Self-contained by design: the omni runner must be able to test *any*
 -- library, including libraries that provide these same operations.
 
-local json = require('json')
+-- Sibling modules are required RELATIVE to this one, so omni's `src/` never
+-- has to be on a consumer's package.path. omni's own harness requires bare
+-- names (`require('util')`) and gets an empty prefix; the struct compat shim
+-- requires `src.util` and gets `src.`, which then finds `src.json`.
+--
+-- A bare `require('json')` here would force a consumer to add omni's `src/`
+-- to package.path -- and that shadows the consumer's OWN modules of the same
+-- name. It bit exactly that way: omni ships `src/regex.lua`, struct/lua ships
+-- `src/regex.lua`, and struct's regex silently became omni's.
+local _prefix = (...):match('^(.*%.)[^.]*$') or ''
+
+local json = require(_prefix .. 'json')
 
 local M = {}
 
