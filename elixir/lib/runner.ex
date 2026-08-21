@@ -158,7 +158,13 @@ defmodule Voxgig.Omni.Runner do
   @doc "Nulls (and absent values) become NULLMARK. Always a fresh copy."
   def fixjson(val, donull) do
     cond do
-      U.isnone(val) -> if donull, do: U.nullmark(), else: nil
+      # Canonical returns the value UNCHANGED when donull is false
+      # (typescript/src/Runner.ts): absent stays absent and nil stays nil.
+      # Answering nil for both collapsed two states the corpus distinguishes,
+      # so a subject that correctly returned nothing was compared against null
+      # and marked wrong. Same defect the other ports carried (#17, #23, #25,
+      # #26); this one was missed because no consumer had exercised it.
+      U.isnone(val) -> if donull, do: U.nullmark(), else: val
       U.islist(val) -> Enum.map(val, &fixjson(&1, donull))
       U.ismap(val) -> Map.new(val, fn {key, entry} -> {key, fixjson(entry, donull)} end)
       true -> val
@@ -245,20 +251,21 @@ defmodule Voxgig.Omni.Runner do
           resolve -> resolve.(name)
         end
 
+      runpack = %{
+        spec: spec,
+        subject: subject,
+        provider: provider,
+        clients: clients,
+        name: name,
+        specversion: specversion
+      }
+
       runsetflags = fn testspec, flags, testsubject ->
-        run_set_flags(
-          %{
-            spec: spec,
-            subject: subject,
-            provider: provider,
-            clients: clients,
-            name: name,
-            specversion: specversion
-          },
-          testspec,
-          flags,
-          testsubject
-        )
+        run_set_flags(runpack, testspec, flags, testsubject, false)
+      end
+
+      runsetflags_args = fn testspec, flags, testsubject ->
+        run_set_flags(runpack, testspec, flags, testsubject, true)
       end
 
       %{
@@ -267,6 +274,7 @@ defmodule Voxgig.Omni.Runner do
         client: provider,
         set: fn setname -> U.get(spec, setname) end,
         runsetflags: runsetflags,
+        runsetflags_args: runsetflags_args,
         runset: fn testspec, testsubject -> runsetflags.(testspec, %{}, testsubject) end
       }
     end
@@ -295,7 +303,16 @@ defmodule Voxgig.Omni.Runner do
     end
   end
 
-  defp run_set_flags(runpack, testspec, flags, testsubject) do
+  # `argsmode` selects the subject contract: a plain subject returns the
+  # result, while an ARGS subject returns `{args, result}`.
+  #
+  # `match.args` asserts an IN-PLACE rewrite - `minor/setpath` in eight of its
+  # nine entries, `merge/integrity` in all six - and nothing on the BEAM is
+  # mutable, so a consumer holding a converted copy cannot write through the
+  # argument list. Returning it is the only channel there is. omni-rust,
+  # omni-cpp and omni-ocaml carry the same second entry point, for the same
+  # reason; the dynamic ports need none, because the value is shared.
+  defp run_set_flags(runpack, testspec, flags, testsubject, argsmode) do
     donull = Map.get(flags, :null, true)
     label = Map.get(flags, :name) || if("" == runpack.name, do: "set", else: runpack.name)
 
@@ -323,11 +340,11 @@ defmodule Voxgig.Omni.Runner do
         raise OmniError, message: "omni: #{label}[#{index}]: entry is not a map"
       end
 
-      run_entry(runpack, label, index, rawentry, donull, usesubject)
+      run_entry(runpack, label, index, rawentry, donull, usesubject, argsmode)
     end)
   end
 
-  defp run_entry(runpack, label, index, rawentry, donull, usesubject) do
+  defp run_entry(runpack, label, index, rawentry, donull, usesubject, argsmode) do
     # An entry with no `out` expects a null (or absent) result.
     entry =
       if donull and U.isnone(U.get(rawentry, "out")) do
@@ -340,15 +357,19 @@ defmodule Voxgig.Omni.Runner do
     {args, entry} = resolveargs(runpack, entry, testpack)
 
     try do
-      {:ok, testpack.subject.(args)}
+      if argsmode do
+        {:ok, testpack.subject.(args)}
+      else
+        {:ok, {args, testpack.subject.(args)}}
+      end
     rescue
       omnierr in OmniError -> reraise(omnierr, __STACKTRACE__)
       err -> {:error, err}
     end
     |> case do
-      {:ok, rawres} ->
+      {:ok, {callargs, rawres}} ->
         res = fixjson(rawres, donull)
-        checkresult(label, index, Map.put(entry, "res", res), args, res)
+        checkresult(label, index, Map.put(entry, "res", res), callargs, res)
 
       {:error, err} ->
         handleerror(label, index, entry, err)
