@@ -384,6 +384,31 @@ pub const Subject = struct {
     data: ?*const anyopaque = null,
 };
 
+/// What an args-subject returns: the arguments it ended up with, alongside
+/// the value - or the message of a failure.
+pub const SubjectArgsResult = union(enum) {
+    ok: struct { args: []const Json, res: Json },
+    err: []const u8,
+};
+
+/// A subject that may REPLACE its arguments, which `match.args` can then
+/// assert on. `minor/setpath` is the case in point: eight of its nine entries
+/// assert that the store was rewritten in place, and `merge/integrity` all
+/// six.
+///
+/// A consumer whose value model is not `std.json.Value` has to convert, and a
+/// conversion is a copy: whatever it does to its own nodes is invisible here.
+/// Returning the arguments alongside the result is the only channel there is.
+///
+/// Separate from `Subject` rather than replacing it: a signature change would
+/// break every consumer for a capability most subjects do not need. omni-rust,
+/// -cpp, -ocaml, -elixir, -haskell, -clojure, -scala, -swift and -lean carry
+/// the same pair, for the same reason.
+pub const SubjectArgs = struct {
+    call: *const fn (self: *const SubjectArgs, args: []const Json) SubjectArgsResult,
+    data: ?*const anyopaque = null,
+};
+
 /// The host of the system under test. Every hook is optional.
 pub const Provider = struct {
     subject: ?*const fn (self: *const Provider, name: []const u8) ?*const Subject = null,
@@ -631,11 +656,35 @@ pub const RunPack = struct {
         flags: Flags,
         subject: ?*const Subject,
     ) !?[]const u8 {
+        return self.drive(testspec, flags, subject, null);
+    }
+
+    /// Everything `runsetflags` does, for a subject that may replace its
+    /// arguments. See `SubjectArgs`.
+    pub fn runsetflagsargs(
+        self: *const RunPack,
+        testspec: Maybe,
+        flags: Flags,
+        argsubject: *const SubjectArgs,
+    ) !?[]const u8 {
+        return self.drive(testspec, flags, null, argsubject);
+    }
+
+    fn drive(
+        self: *const RunPack,
+        testspec: Maybe,
+        flags: Flags,
+        subject: ?*const Subject,
+        argsubject: ?*const SubjectArgs,
+    ) !?[]const u8 {
         const alloc = self.alloc;
         const label = flags.name orelse (if (0 == self.name.len) "set" else self.name);
 
-        const usesubject = subject orelse self.subject orelse
-            return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
+        const usesubject: ?*const Subject = if (null != argsubject)
+            null
+        else
+            subject orelse self.subject orelse
+                return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
 
         const testspecmap = try fixjson(alloc, testspec, flags.null_);
         const testset = jget(testspecmap, "set") orelse
@@ -670,9 +719,9 @@ pub const RunPack = struct {
                 entry = try jset(alloc, entry, "out", jstr(NULLMARK));
             }
 
-            var entrysubject = usesubject;
+            var entrysubject: ?*const Subject = usesubject;
 
-            if (asstr(jget(entry, "client"))) |clientname| {
+            if (null != entrysubject) if (asstr(jget(entry, "client"))) |clientname| {
                 var found: ?*const Provider = null;
                 for (self.clientnames, 0..) |candidate, at| {
                     if (std.mem.eql(u8, candidate, clientname)) {
@@ -688,7 +737,7 @@ pub const RunPack = struct {
                         entrysubject = clientsubject;
                     }
                 }
-            }
+            };
 
             // Build the argument list: `ctx`, `args`, or `in`.
             var args: std.ArrayList(Json) = .empty;
@@ -727,19 +776,30 @@ pub const RunPack = struct {
                 entry = try jset(alloc, entry, "ctx", first);
             }
 
-            const result = entrysubject.call(entrysubject, args.items);
+            // An args-subject returns its arguments alongside the result, so
+            // `match.args` sees what the subject actually did with them.
+            const outcome: SubjectArgsResult = if (argsubject) |call|
+                call.call(call, args.items)
+            else if (entrysubject) |call| switch (call.call(call, args.items)) {
+                .ok => |value| SubjectArgsResult{ .ok = .{ .args = args.items, .res = value } },
+                .err => |message| SubjectArgsResult{ .err = message },
+            } else return try std.fmt.allocPrint(
+                alloc,
+                "omni: no test subject for: {s}",
+                .{label},
+            );
 
-            switch (result) {
+            switch (outcome) {
                 .err => |message| {
                     if (try self.handleerror(label, index, entry, message)) |failure| {
                         return failure;
                     }
                 },
-                .ok => |rawres| {
-                    const res = try fixjson(alloc, rawres, flags.null_);
+                .ok => |call| {
+                    const res = try fixjson(alloc, call.res, flags.null_);
                     entry = try jset(alloc, entry, "res", res);
 
-                    if (try self.checkresult(label, index, entry, args.items, res)) |failure| {
+                    if (try self.checkresult(label, index, entry, call.args, res)) |failure| {
                         return failure;
                     }
                 },

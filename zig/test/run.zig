@@ -204,119 +204,174 @@ fn rungroup(pack: *const omni.RunPack, name: []const u8, subject: *const omni.Su
     report(name, try pack.runsetflags(pack.set(name), flags, subject));
 }
 
-// The runner must fail when the subject is wrong - otherwise a green suite
-// means nothing.
-fn badspec(alloc: std.mem.Allocator) !Json {
-    return omni.jmap(alloc, &.{
-        .{ "fib", try omni.jmap(alloc, &.{
-            .{ "wrongout", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(5) },
-                        .{ "out", omni.jnum(5) },
-                    }),
-                    try omni.jmap(alloc, &.{
+// An args-subject: it hands back the arguments it was given, so a consumer
+// that converts into its own value model can show the runner what it did with
+// them. This one rewrites the argument to prove the runner reads the RETURNED
+// list rather than the one it passed in - `match.args` is the assertion that
+// depends on it.
+const ARGSMARK = "argsmark";
+
+fn fibargs(_: *const omni.SubjectArgs, args: []const omni.Json) omni.SubjectArgsResult {
+    const value = switch (FIB.call(&FIB, args)) {
+        .ok => |found| found,
+        .err => |message| return .{ .err = message },
+    };
+
+    const back = ALLOC.alloc(omni.Json, args.len) catch return .{ .err = "out of memory" };
+    for (args, 0..) |_, at| {
+        back[at] = omni.jstr(ARGSMARK);
+    }
+
+    return .{ .ok = .{ .args = back, .res = value } };
+}
+
+const FIBARGS = omni.SubjectArgs{ .call = fibargs };
+
+// `runsetflagsargs` runs the same entries the plain subject does, and the
+// arguments the subject hands back are the ones `match.args` sees.
+fn checkargssubject() !void {
+    const label = "an args-subject replaces what match.args sees";
+    if (!wanted(label)) {
+        return;
+    }
+
+    const spec = try omni.jmap(ALLOC, &.{
+        .{ "fib", try omni.jmap(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{
+                .{ "set", try omni.jlist(ALLOC, &.{
+                    try omni.jmap(ALLOC, &.{
                         .{ "in", omni.jnum(6) },
-                        .{ "out", omni.jnum(999) },
-                    }),
-                }) },
-            }) },
-            .{ "wrongerr", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(1) },
-                        .{ "err", omni.jstr("never happens") },
-                    }),
-                }) },
-            }) },
-            .{ "wrongmatch", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(6) },
-                        .{ "match", try omni.jmap(alloc, &.{.{ "out", omni.jnum(999) }}) },
-                    }),
-                }) },
-            }) },
-            .{ "missing", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(6) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{
-                                .{ "nope", omni.jstr("__EXISTS__") },
-                            }) },
-                        }) },
-                    }),
-                }) },
-            }) },
-            // A concrete match leaf against a missing key must fail, not
-            // substring-match the text "undefined".
-            .{ "matchabsent", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(6) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{
-                                .{ "nope", omni.jstr("fine") },
-                            }) },
-                        }) },
-                    }),
-                }) },
-            }) },
-            // __UNDEF__ (absent) must not be satisfied by a present null.
-            .{ "undefonnull", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(0) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{
-                                .{ "prev", omni.jstr("__UNDEF__") },
-                            }) },
-                        }) },
-                    }),
-                }) },
-            }) },
-            // __UNDEF__ (absent) must not be satisfied by a subject that
-            // returns the literal string "__UNDEF__" as ordinary data.
-            .{ "wrongundef", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(1) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{
-                                .{ "a", omni.jstr("__UNDEF__") },
-                            }) },
-                        }) },
-                    }),
-                }) },
-            }) },
-            // __NULL__ (present null) must not be satisfied by an absent key.
-            .{ "nullonabsent", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(6) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{
-                                .{ "nope", omni.jstr("__NULL__") },
-                            }) },
-                        }) },
-                    }),
-                }) },
-            }) },
-            // An empty-string leaf matches only an empty string, not "anything".
-            .{ "emptystr", try omni.jmap(alloc, &.{
-                .{ "set", try omni.jlist(alloc, &.{
-                    try omni.jmap(alloc, &.{
-                        .{ "in", omni.jnum(6) },
-                        .{ "match", try omni.jmap(alloc, &.{
-                            .{ "out", try omni.jmap(alloc, &.{
-                                .{ "label", omni.jstr("") },
-                            }) },
+                        .{ "out", omni.jnum(8) },
+                        .{ "match", try omni.jmap(ALLOC, &.{
+                            .{ "args", try omni.jlist(ALLOC, &.{omni.jstr(ARGSMARK)}) },
                         }) },
                     }),
                 }) },
             }) },
         }) },
+    });
+
+    const runner = try omni.makeRunnerSpec(ALLOC, spec, &omni.Provider{});
+    const pack = try runner.runner("fib", null);
+    report(label, try pack.runsetflagsargs(pack.set("g"), .{}, &FIBARGS));
+}
+
+// The runner must fail when the subject is wrong - otherwise a green suite
+// means nothing.
+fn badspec(alloc: std.mem.Allocator) !Json {
+    return omni.jmap(alloc, &.{
+        .{
+            "fib",
+            try omni.jmap(alloc, &.{
+                .{ "wrongout", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(5) },
+                            .{ "out", omni.jnum(5) },
+                        }),
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(6) },
+                            .{ "out", omni.jnum(999) },
+                        }),
+                    }) },
+                }) },
+                .{ "wrongerr", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(1) },
+                            .{ "err", omni.jstr("never happens") },
+                        }),
+                    }) },
+                }) },
+                .{ "wrongmatch", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(6) },
+                            .{ "match", try omni.jmap(alloc, &.{.{ "out", omni.jnum(999) }}) },
+                        }),
+                    }) },
+                }) },
+                .{ "missing", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(6) },
+                            .{ "match", try omni.jmap(alloc, &.{
+                                .{ "out", try omni.jmap(alloc, &.{
+                                    .{ "nope", omni.jstr("__EXISTS__") },
+                                }) },
+                            }) },
+                        }),
+                    }) },
+                }) },
+                // A concrete match leaf against a missing key must fail, not
+                // substring-match the text "undefined".
+                .{ "matchabsent", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(6) },
+                            .{ "match", try omni.jmap(alloc, &.{
+                                .{ "out", try omni.jmap(alloc, &.{
+                                    .{ "nope", omni.jstr("fine") },
+                                }) },
+                            }) },
+                        }),
+                    }) },
+                }) },
+                // __UNDEF__ (absent) must not be satisfied by a present null.
+                .{ "undefonnull", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(0) },
+                            .{ "match", try omni.jmap(alloc, &.{
+                                .{ "out", try omni.jmap(alloc, &.{
+                                    .{ "prev", omni.jstr("__UNDEF__") },
+                                }) },
+                            }) },
+                        }),
+                    }) },
+                }) },
+                // __UNDEF__ (absent) must not be satisfied by a subject that
+                // returns the literal string "__UNDEF__" as ordinary data.
+                .{ "wrongundef", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(1) },
+                            .{ "match", try omni.jmap(alloc, &.{
+                                .{ "out", try omni.jmap(alloc, &.{
+                                    .{ "a", omni.jstr("__UNDEF__") },
+                                }) },
+                            }) },
+                        }),
+                    }) },
+                }) },
+                // __NULL__ (present null) must not be satisfied by an absent key.
+                .{ "nullonabsent", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(6) },
+                            .{ "match", try omni.jmap(alloc, &.{
+                                .{ "out", try omni.jmap(alloc, &.{
+                                    .{ "nope", omni.jstr("__NULL__") },
+                                }) },
+                            }) },
+                        }),
+                    }) },
+                }) },
+                // An empty-string leaf matches only an empty string, not "anything".
+                .{ "emptystr", try omni.jmap(alloc, &.{
+                    .{ "set", try omni.jlist(alloc, &.{
+                        try omni.jmap(alloc, &.{
+                            .{ "in", omni.jnum(6) },
+                            .{ "match", try omni.jmap(alloc, &.{
+                                .{ "out", try omni.jmap(alloc, &.{
+                                    .{ "label", omni.jstr("") },
+                                }) },
+                            }) },
+                        }),
+                    }) },
+                }) },
+            }),
+        },
     });
 }
 
@@ -506,9 +561,9 @@ fn checknullomni() !void {
     const nullblock = try omni.jmap(ALLOC, &.{
         .{ "OMNI", Json{ .null = {} } },
         .{ "fib", try omni.jmap(ALLOC, &.{
-            .{ "g", try omni.jmap(ALLOC, &.{ .{ "set", try omni.jlist(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{.{ "set", try omni.jlist(ALLOC, &.{
                 try omni.jmap(ALLOC, &.{ .{ "in", omni.jnum(1) }, .{ "out", omni.jnum(1) } }),
-            }) } }) },
+            }) }}) },
         }) },
     });
 
@@ -532,9 +587,9 @@ fn checknullomni() !void {
             .{ "requires", Json{ .null = {} } },
         }) },
         .{ "fib", try omni.jmap(ALLOC, &.{
-            .{ "g", try omni.jmap(ALLOC, &.{ .{ "set", try omni.jlist(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{.{ "set", try omni.jlist(ALLOC, &.{
                 try omni.jmap(ALLOC, &.{ .{ "in", omni.jnum(1) }, .{ "out", omni.jnum(1) } }),
-            }) } }) },
+            }) }}) },
         }) },
     });
 
@@ -554,9 +609,9 @@ fn checknullomni() !void {
 
     const absent = try omni.jmap(ALLOC, &.{
         .{ "fib", try omni.jmap(ALLOC, &.{
-            .{ "g", try omni.jmap(ALLOC, &.{ .{ "set", try omni.jlist(ALLOC, &.{
+            .{ "g", try omni.jmap(ALLOC, &.{.{ "set", try omni.jlist(ALLOC, &.{
                 try omni.jmap(ALLOC, &.{ .{ "in", omni.jnum(1) }, .{ "out", omni.jnum(1) } }),
-            }) } }) },
+            }) }}) },
         }) },
     });
 
@@ -574,51 +629,51 @@ fn checknullomni() !void {
 fn specunknownfield(alloc: std.mem.Allocator) anyerror!Json {
     return omni.jmap(alloc, &.{
         .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
-        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+        .{ "fib", try omni.jmap(alloc, &.{.{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{
             try omni.jmap(alloc, &.{
                 .{ "in", omni.jnum(6) },
                 .{ "matches", try omni.jmap(alloc, &.{.{ "out", omni.jnum(999) }}) },
             }),
-        }) } }) } }) },
+        }) }}) }}) },
     });
 }
 
 fn specmultiargsources(alloc: std.mem.Allocator) anyerror!Json {
     return omni.jmap(alloc, &.{
         .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
-        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+        .{ "fib", try omni.jmap(alloc, &.{.{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{
             try omni.jmap(alloc, &.{
                 .{ "in", omni.jnum(5) },
                 .{ "args", try omni.jlist(alloc, &.{omni.jnum(5)}) },
                 .{ "out", omni.jnum(5) },
             }),
-        }) } }) } }) },
+        }) }}) }}) },
     });
 }
 
 fn specerrandout(alloc: std.mem.Allocator) anyerror!Json {
     return omni.jmap(alloc, &.{
         .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
-        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+        .{ "fib", try omni.jmap(alloc, &.{.{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{
             try omni.jmap(alloc, &.{
                 .{ "in", omni.jnum(-1) },
                 .{ "err", omni.jbool(true) },
                 .{ "out", omni.jnum(5) },
             }),
-        }) } }) } }) },
+        }) }}) }}) },
     });
 }
 
 fn specnullid(alloc: std.mem.Allocator) anyerror!Json {
     return omni.jmap(alloc, &.{
         .{ "OMNI", try omni.jmap(alloc, &.{.{ "version", omni.jnum(1) }}) },
-        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+        .{ "fib", try omni.jmap(alloc, &.{.{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{
             try omni.jmap(alloc, &.{
                 .{ "in", omni.jnum(1) },
                 .{ "out", omni.jnum(1) },
                 .{ "id", Json{ .null = {} } },
             }),
-        }) } }) } }) },
+        }) }}) }}) },
     });
 }
 
@@ -637,13 +692,13 @@ fn specemptysets(alloc: std.mem.Allocator) anyerror!Json {
 
 fn speclegacyunknownfield(alloc: std.mem.Allocator) anyerror!Json {
     return omni.jmap(alloc, &.{
-        .{ "fib", try omni.jmap(alloc, &.{ .{ "g", try omni.jmap(alloc, &.{ .{ "set", try omni.jlist(alloc, &.{
+        .{ "fib", try omni.jmap(alloc, &.{.{ "g", try omni.jmap(alloc, &.{.{ "set", try omni.jlist(alloc, &.{
             try omni.jmap(alloc, &.{
                 .{ "in", omni.jnum(6) },
                 .{ "matches", try omni.jmap(alloc, &.{.{ "out", omni.jnum(999) }}) },
                 .{ "out", omni.jnum(8) },
             }),
-        }) } }) } }) },
+        }) }}) }}) },
     });
 }
 
@@ -672,6 +727,7 @@ pub fn main(init: std.process.Init) !void {
     try rungroup(&pack, "matchinfo", &FIBINFO, .{});
     try rungroup(&pack, "client", &FIB, .{});
     try rungroup(&pack, "context", &FIBCTX, .{});
+    try checkargssubject();
 
     try expectfail("detects wrong result", "wrongout", &FIB);
     try expectfail("detects missing error", "wrongerr", &FIB);
