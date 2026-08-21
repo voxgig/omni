@@ -32,8 +32,11 @@
 -- the file this shim replaces. A bare `require('runner')` picks up whichever
 -- comes first on package.path, which is luck, not design.
 --
--- `src/util.lua` still does a bare `require('json')` internally, so the
--- resolver keeps omni's `lua/src/` on the path for that.
+-- `src/util.lua` and `src/runner.lua` resolve their OWN siblings relative to
+-- themselves (see the `_prefix` line at the top of each), so `src.util` here
+-- pulls in `src.json` and `src.regex`. A consumer therefore needs only
+-- `<omni>/lua/?.lua` on package.path - never omni's `src/`, which would
+-- shadow the consumer's modules of the same name.
 local u = require('src.util')
 local Runner = require('src.runner')
 
@@ -64,9 +67,8 @@ M.JSON_NULL = u.NULL
 local ARRAYMT = { __jsontype = 'array' }
 local OBJECTMT = { __jsontype = 'object' }
 
---- omni's model -> struct's. Returns a second value: false when the argument
---- was omni's NULL, which has to become a real `nil` and so cannot be
---- returned in-band.
+--- omni's model -> struct's.
+---
 --- Returns `(value, kind)` where kind is 'value', 'null' or 'absent'. Three
 --- states, not two: omni's NULL and ABSENT both become a Lua `nil`, but they
 --- are NOT interchangeable at the call boundary - an absent argument becomes
@@ -95,11 +97,19 @@ local function tostruct(val, seen)
   if islist then
     for index = 1, #val do
       local entry, kind = tostruct(val[index], seen)
-      -- A null INSIDE a list has to stay a slot, or the list shortens.
+      -- A null INSIDE a list has to stay a slot, or the list shortens - and
+      -- the slot is the STRING "null", which is what struct/lua's own runner
+      -- put there and what the port is written against:
+      --
+      --   "Preserve null in arrays as the string "null" to avoid nil holes.
+      --    Matches JS behavior where String(null) === "null"."
+      --
+      -- omni's NULL sentinel is a table, and the port reads a table as a map:
+      -- `$FORMAT` over a null answered `{}` instead of "NULL".
       if 'value' == kind then
         out[index] = entry
       else
-        out[index] = u.NULL
+        out[index] = 'null'
       end
     end
   else
@@ -129,8 +139,12 @@ local function toomni(val, seen)
   end
 
   -- struct marks with __jsontype and otherwise leaves the table plain, so an
-  -- unmarked table is classified the way struct's own `isarray` does it: a
-  -- table whose keys are all numeric is a list.
+  -- unmarked table is classified exactly the way struct/lua's own `islist`
+  -- does it: at least one key, and the numeric keys are 1..n with nothing
+  -- else. `count > 0` is the part that matters -- an unmarked EMPTY table is
+  -- a MAP to struct (`ismap({})` is true, `islist({})` is false, both by
+  -- construction), so calling it a list here turned every `{}` that came back
+  -- through merge, clone or transform into `[]`.
   local mt = getmetatable(val)
   local jsontype = mt and mt.__jsontype
   local islist
@@ -139,13 +153,19 @@ local function toomni(val, seen)
   elseif 'object' == jsontype then
     islist = false
   else
+    local count, max = 0, 0
     islist = true
     for key in pairs(val) do
       if 'number' ~= type(key) then
         islist = false
         break
       end
+      count = count + 1
+      if key > max then
+        max = key
+      end
     end
+    islist = islist and 0 < count and max == count
   end
 
   local out = islist and u.list({}) or u.map({})
@@ -162,6 +182,18 @@ local function toomni(val, seen)
   end
 
   return out
+end
+
+--- Replace the CONTENTS of an omni table with another's, keeping the original
+--- table's identity and its map/list metatable. Used to write an argument
+--- mutation back where omni can see it.
+local function splice(into, from)
+  for key in pairs(into) do
+    into[key] = nil
+  end
+  for key, value in pairs(from) do
+    into[key] = value
+  end
 end
 
 --- A subject that speaks struct's value model on the way in and omni's on the
@@ -203,12 +235,47 @@ local function wrapsubject(subject, noval)
     end
 
     local result = subject(table.unpack(converted, 1, count))
-    -- The port's no-value IS omni's absent; a plain `nil` is its null.
+
+    -- struct's functions MUTATE the node they are given - `setpath` rewrites
+    -- the store in place - and the corpus checks it, via `match.args`. But
+    -- `tostruct` built a copy, so the mutation landed on the copy and omni
+    -- compared the original, untouched: "match failed at args.0.store.x
+    -- expected 2 actual 1".
+    --
+    -- Splicing the result back keeps omni's own table identity, so its
+    -- map/list marking survives. Only tables are written back; a scalar
+    -- argument cannot have been mutated.
+    for index = 1, count do
+      local original, mutated = args[index], converted[index]
+      if
+        'table' == type(original)
+        and 'table' == type(mutated)
+        and u.NULL ~= original
+        and u.ABSENT ~= original
+      then
+        splice(original, toomni(mutated))
+      end
+    end
+    -- The port's no-value is omni's absent, explicitly.
     if nil ~= noval and noval == result then
       return u.ABSENT
     end
+    -- A plain `nil` back from struct/lua is ABSENT, not NULL.
+    --
+    -- The port has one `nil` for both, so the runner has to pick, and the
+    -- corpus decides which way. Measured entry by entry over minor.clone,
+    -- minor.getprop, minor.getelem and validate.basic: reading it as NULL
+    -- costs 43 entries (getprop 21 of 54, getelem 20 of 29 - every
+    -- missing-key and out-of-range case, where canonical answers undefined);
+    -- reading it as ABSENT costs 6 (the cases that return a genuine JSON
+    -- null: `clone(null)`, `getprop` returning a null `alt`, `$NULL`).
+    --
+    -- So ABSENT, and the six are named in struct/lua's own test file. This
+    -- also settles `clone()` with no argument -- the residual struct/go still
+    -- carries - without touching the port's public API, which returning the
+    -- NOVAL sentinel from `getprop` would have broken for every caller.
     if nil == result then
-      return u.NULL
+      return u.ABSENT
     end
     return toomni(result)
   end
