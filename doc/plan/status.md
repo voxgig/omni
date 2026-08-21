@@ -75,7 +75,7 @@ rewriting real nulls in `args`/`in`/`ctx`.
 
 The `fixjson` *absent/null* half is now closed in every port but **php and
 python**, both of which need a paired consumer change (voxgig/omni#17, #23,
-#25, #26, #27, #28, #32, #33). Those two are the remainder.
+\#25, #26, #27, #28, #32, #33). Those two are the remainder.
 
 **3. zig and boru.** zig needs struct/zig moved from Zig 0.13 to 0.16 first —
 89 `.init(allocator)` sites, 146 `.append(` sites and a moved
