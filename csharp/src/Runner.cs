@@ -192,7 +192,22 @@ namespace Voxgig.Omni
             }
             else
             {
-                args = new object[] { Util.Clone(entry.ContainsKey("in") ? entry["in"] : null) };
+                // An entry carrying none of `in`/`args`/`ctx` is called with one
+                // ABSENT argument, not with null. Canonical passes `undefined`
+                // there and the corpus leans on the difference: `typify()` is
+                // 1073741824 where `typify(null)` is 4194432.
+                //
+                // C# can say it - `Absent.Mark` is already this port's model for
+                // "no value" - where python and ruby cannot and contain it in
+                // their compat shims instead (register 4.12). Passing null here
+                // collapsed the two states before any consumer could see them.
+                //
+                // No existing consumer changes: fib has 0 implicit entries of 68
+                // and sekreto 0 of 110. struct's corpus has 17.
+                args = new object[]
+                {
+                    entry.ContainsKey("in") ? Util.Clone(entry["in"]) : Absent.Mark,
+                };
             }
 
             if ((hasctx || hasargs) && 0 < args.Length && Util.IsMap(args[0]))
