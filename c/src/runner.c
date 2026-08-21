@@ -349,8 +349,17 @@ static omni_subject *omni_resolvesubject(const char *name, omni_provider *provid
 static omni_json *omni_fixjson(omni_pool *pool, const omni_json *val, int donull) {
   size_t index;
 
+  /* Canonical returns the value UNCHANGED when donull is false
+     (typescript/src/Runner.ts): `undefined` stays undefined and `null` stays
+     null. Answering null for both collapsed two states the corpus
+     distinguishes, so a subject that returned nothing could not be told from
+     one that returned null. Same defect omni-lua and omni-rust carried
+     (voxgig/omni#17, #23). Still a fresh node, as the contract says. */
   if (omni_isabsent(val) || omni_isnull(val)) {
-    return donull ? omni_str(pool, OMNI_NULLMARK) : omni_null(pool);
+    if (donull) {
+      return omni_str(pool, OMNI_NULLMARK);
+    }
+    return omni_isabsent(val) ? omni_absent(pool) : omni_null(pool);
   }
 
   if (omni_islist(val)) {

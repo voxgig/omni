@@ -515,7 +515,12 @@ public final class Runner {
   @SuppressWarnings("unchecked")
   static Object fixjsonval(Object val, boolean donull) {
     if (null == val || Util.isabsent(val)) {
-      return donull ? NULLMARK : null;
+      // Canonical returns the value UNCHANGED when donull is false
+      // (typescript/src/Runner.ts): absent stays absent and null stays null.
+      // Answering null for both collapsed two states the corpus
+      // distinguishes. Same defect omni-lua and omni-rust carried
+      // (voxgig/omni#17, #23).
+      return donull ? NULLMARK : val;
     }
 
     if (val instanceof Throwable) {
