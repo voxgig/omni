@@ -38,7 +38,13 @@ inline Json getpath(const Json& val, const std::vector<std::string>& path) {
       if (index >= current.listval.size()) {
         return Json::absent();
       }
-      current = current.listval[index];
+      // NOT `current = current.listval[index]`. That is a self-assignment
+      // through a member of the object being assigned: copy-assignment
+      // overwrites `listval` while the right-hand side still lives inside it,
+      // and the following members are copied out of freed storage. The value
+      // came back with its map keys mangled. Copy out first, then assign.
+      Json next = current.listval[index];
+      current = next;
       continue;
     }
 

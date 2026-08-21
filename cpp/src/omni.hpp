@@ -30,6 +30,19 @@ namespace omni {
 // reported by throwing.
 using Subject = std::function<Json(const std::vector<Json>&)>;
 
+// A subject that may MUTATE its arguments, which `match.args` can then assert
+// on. `minor/setpath` is the case in point: eight of its nine entries assert
+// that the store was rewritten in place, and `merge/integrity` all six.
+//
+// Separate from `Subject` rather than replacing it, because a signature change
+// would break every consumer for a capability most subjects do not need. A
+// subject that only reads its arguments keeps using `Subject`.
+//
+// Dynamic-language ports have no equivalent: their shims write the mutation
+// back into omni's own object after the call, because the value is shared. A
+// C++ consumer holds a converted COPY and cannot - `Json` is a value type.
+using SubjectArgs = std::function<Json(std::vector<Json>&)>;
+
 // A test failure (or a malformed spec). Distinct from an exception thrown
 // by the subject under test, which is a candidate for an `err` expectation.
 class OmniError : public std::runtime_error {
@@ -120,7 +133,13 @@ inline int resolveversion(const Json& alltests) {
 // Nulls (and absent values) become NULLMARK. Always a fresh copy.
 inline Json fixjson(const Json& val, bool donull) {
   if (val.isnone()) {
-    return donull ? Json::str(NULLMARK) : Json::null();
+    // Canonical returns the value UNCHANGED when donull is false
+    // (typescript/src/Runner.ts): absent stays absent and null stays null.
+    // Answering null for both collapsed two states the corpus distinguishes,
+    // so a subject that correctly returned nothing was compared against null
+    // and marked wrong. Same defect the other ports carried (voxgig/omni#17,
+    // #23); this one was missed because no consumer had exercised it.
+    return donull ? Json::str(NULLMARK) : val;
   }
 
   if (val.islist()) {
@@ -322,6 +341,7 @@ inline void matchcheck(const Flags& flags, size_t index, const Json& entry, cons
   Json baseval = getpath(base, path);
   std::string where = path.empty() ? "<root>" : pathify(path);
 
+
   // The sentinels are tested BEFORE the identity check below. Otherwise
   // a subject returning the literal string "__UNDEF__" satisfies an
   // assertion that the key is absent - two mutually exclusive states
@@ -411,11 +431,26 @@ class RunPack {
   // Run one set of test entries with flags.
   void runsetflags(const Json& testspec, Flags flags,
                    const Subject& testsubject = nullptr) const {
+    const Subject& usesubject = testsubject ? testsubject : subject;
+    SubjectArgs wrapped;
+    if (usesubject) {
+      wrapped = [&usesubject](std::vector<Json>& args) { return usesubject(args); };
+    }
+    drive(testspec, flags, wrapped);
+  }
+
+  // Run one set of test entries whose subject may mutate its arguments.
+  // Everything else is identical to `runsetflags`.
+  void runsetflags_args(const Json& testspec, Flags flags, const SubjectArgs& testsubject) const {
+    drive(testspec, flags, testsubject);
+  }
+
+ private:
+  void drive(const Json& testspec, Flags flags, const SubjectArgs& usesubject) const {
     if (flags.name.empty()) {
       flags.name = name_.empty() ? "set" : name_;
     }
 
-    Subject usesubject = testsubject ? testsubject : subject;
     if (!usesubject) {
       throw OmniError("omni: no test subject for: " + flags.name);
     }
@@ -437,7 +472,7 @@ class RunPack {
 
       resolveentry(entry, flags);
 
-      Subject entrysubject = usesubject;
+      SubjectArgs entrysubject = usesubject;
       Json clientname = entry.get("client");
 
       if (clientname.isstr()) {
@@ -448,7 +483,7 @@ class RunPack {
         if (found->second->subject) {
           Subject clientsubject = found->second->subject(name_);
           if (clientsubject) {
-            entrysubject = clientsubject;
+            entrysubject = [clientsubject](std::vector<Json>& args) { return clientsubject(args); };
           }
         }
       }
@@ -472,7 +507,6 @@ class RunPack {
     }
   }
 
- private:
   std::shared_ptr<Provider> provider_;
   std::map<std::string, std::shared_ptr<Provider>> clients_;
   std::string name_;
