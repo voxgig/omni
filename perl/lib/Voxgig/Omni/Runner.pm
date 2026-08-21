@@ -257,7 +257,10 @@ sub resolveargs {
         $args = $entry->{args};
     }
     else {
-        $args = [ clone( $entry->{in} ) ];
+        # exists, not truth: an entry carrying none of `in`/`args`/`ctx` is
+        # called with one ABSENT argument, not undef. `typify()` is
+        # 1073741824 where `typify(null)` is 4194432.
+        $args = [ exists $entry->{in} ? clone( $entry->{in} ) : ABSENT ];
     }
 
     if ( ( exists $entry->{ctx} || exists $entry->{args} ) && 0 < scalar(@$args) ) {
@@ -286,7 +289,12 @@ sub fixjsonval {
     my ( $val, $donull ) = @_;
 
     if ( !defined $val || isabsent($val) ) {
-        return $donull ? NULLMARK : undef;
+        # Canonical returns the value UNCHANGED when donull is false
+        # (typescript/src/Runner.ts): absent stays absent and undef stays
+        # undef. Answering undef for both collapsed two states the corpus
+        # distinguishes. Same defect omni-lua and omni-rust carried
+        # (voxgig/omni#17, #23).
+        return $donull ? NULLMARK : $val;
     }
 
     return errify($val) if blessed($val) && $val->isa('Voxgig::Omni::OmniError');
