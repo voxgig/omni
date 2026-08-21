@@ -28,10 +28,13 @@ partial def specfile (name : String) : IO String := do
         search s!"{dir}/.." (step + 1)
   search "." 0
 
-def FIB : Subject := fun args => Fib.fib (args.head?)
-def FIBSEQ : Subject := fun args => Fib.fibseq (args.head?)
-def FIBRANGE : Subject := fun args => Fib.fibrange (args.head?) (args.get? 1)
-def FIBINFO : Subject := fun args => Fib.fibinfo (args.head?)
+-- `args` is a `List Val`, so `getD 0 none` is the argument itself, absent
+-- and all; `.map some` lifts a subject that always has a value to answer.
+def FIB : Subject := fun args => (Fib.fib (args.getD 0 none)).map some
+def FIBSEQ : Subject := fun args => (Fib.fibseq (args.getD 0 none)).map some
+def FIBRANGE : Subject := fun args =>
+  (Fib.fibrange (args.getD 0 none) (args.getD 1 none)).map some
+def FIBINFO : Subject := fun args => (Fib.fibinfo (args.getD 0 none)).map some
 
 /-- The context-group subject: reports what the runner delivered - the
 `contextify` mark and the attached client - as plain data, so the spec can
@@ -45,12 +48,12 @@ def fibctx (ctx : Val) : Except String Json := do
     ("mark", (jget ctx "mark").getD Json.null),
     ("hasclient", jbool (!isnone (jget ctx "client")))])
 
-def FIBCTX : Subject := fun args => fibctx (args.head?)
+def FIBCTX : Subject := fun args => (fibctx (args.getD 0 none)).map some
 
 /-- A subject that returns the sentinel spelling as ordinary string data,
 so the negative test can prove that a literal "__UNDEF__" no longer
 satisfies an assertion that the key is absent. -/
-def FIBLITERALUNDEF : Subject := fun _args => pure (jmap [("a", jstr "__UNDEF__")])
+def FIBLITERALUNDEF : Subject := fun _args => pure (some (jmap [("a", jstr "__UNDEF__")]))
 
 /-- The provider hosts the system under test. `shift` offsets the
 Fibonacci index, so that a client-specific subject is observably
@@ -61,9 +64,10 @@ partial def fibprovider (shift : Float) : Provider :=
     (subject := some (fun name =>
       match name with
       | "fib" => some (fun args =>
-          match asnum (args.head?) with
-          | some num => Fib.fib (some (jnum (Int.ofNat (num + shift).toUInt64.toNat)))
-          | none => Fib.fib (args.head?))
+          match asnum (args.getD 0 none) with
+          | some num =>
+            (Fib.fib (some (jnum (Int.ofNat (num + shift).toUInt64.toNat)))).map some
+          | none => (Fib.fib (args.getD 0 none)).map some)
       | "fibseq" => some FIBSEQ
       | "fibrange" => some FIBRANGE
       | "fibinfo" => some FIBINFO

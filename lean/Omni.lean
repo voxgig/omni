@@ -25,7 +25,14 @@ def undefmark : String := "__UNDEF__"
 def existsmark : String := "__EXISTS__"
 
 /-- A JSON value, or absence. `none` is the marker for "no value at all",
-as distinct from `some Json.null`. -/
+as distinct from `some Json.null`.
+
+`Lean.Json` stores objects in a SORTED tree, so key order is not preserved:
+a spec whose maps are written out of key order reaches a consumer reordered.
+Every map in voxgig/struct's corpus happens to be key-sorted, so nothing
+notices today - but a consumer whose own maps are insertion-ordered (most
+are) cannot rely on that. omni-swift carried the same defect and its value
+model was its own to change (#32); this one is Lean's. -/
 abbrev Val := Option Json
 
 def ismap (val : Val) : Bool :=
@@ -79,10 +86,16 @@ def asmap (val : Val) : Option (List (String × Json)) :=
   | some (.obj kvs) => some (kvs.toArray.map (fun kv => (kv.1, kv.2))).toList
   | _ => none
 
-/-- Read a map entry. Returns `none` (absent) when missing. -/
+/-- Read a map entry. Returns `none` (absent) when missing.
+
+`getObjVal?` rather than reaching into the `.obj` payload directly: the
+container behind it is Lean's own business and it has already changed once
+(`RBNode` through v4.16, `Std.TreeMap.Raw` by v4.32), taking `find`'s
+signature with it. A consumer pinned to a newer toolchain than this one -
+struct/lean is on v4.32 - could not compile the runner at all. -/
 def jget (val : Val) (key : String) : Val :=
   match val with
-  | some (.obj kvs) => kvs.find compare key
+  | some json => (json.getObjVal? key).toOption
   | _ => none
 
 /-- Is a map key present at all (even with a null value)? -/
@@ -91,7 +104,7 @@ def jhas (val : Val) (key : String) : Bool := (jget val key).isSome
 /-- A copy of a map with one entry set (no-op for non-maps). -/
 def jset (val : Json) (key : String) (entry : Json) : Json :=
   match val with
-  | .obj kvs => .obj (kvs.insert compare key entry)
+  | .obj _ => val.setObjVal! key entry
   | other => other
 
 def jnum (val : Int) : Json := Json.num (JsonNumber.fromInt val)
@@ -169,9 +182,9 @@ partial def deepequal (a b : Val) : Bool :=
       let ql := q.toArray.toList
       pl.length == ql.length &&
         pl.all (fun kv =>
-          match q.find compare kv.1 with
-          | some other => deepequal (some kv.2) (some other)
-          | none => false)
+          match (Json.obj q).getObjVal? kv.1 with
+          | .ok other => deepequal (some kv.2) (some other)
+          | .error _ => false)
     | _, _ => false
   | _, _ => false
 
@@ -201,16 +214,24 @@ partial def walk (val : Json) (apply : Json → List String → Json)
   apply next path
 
 /-- Nulls (and absent values) become NULLMARK. Always a fresh copy. -/
-partial def fixjson (val : Val) (donull : Bool) : Json :=
+partial def fixjson (val : Val) (donull : Bool) : Val :=
   if isnone val then
-    (if donull then jstr nullmark else Json.null)
+    -- Canonical returns the value UNCHANGED when donull is false
+    -- (typescript/src/Runner.ts): absent stays absent and null stays null.
+    -- Answering `Json.null` for both collapsed two states the corpus
+    -- distinguishes - and the old return type, `Json`, could not say
+    -- "absent" at all. Same defect the other ports carried (#17, #23, #25,
+    -- #26, #27, #28, #32).
+    (if donull then some (jstr nullmark) else val)
   else
     match val with
-    | some (.arr entries) => Json.arr (entries.map (fun entry => fixjson (some entry) donull))
+    | some (.arr entries) =>
+      some (Json.arr (entries.map (fun entry => (fixjson (some entry) donull).getD Json.null)))
     | some (.obj kvs) =>
-      Json.mkObj (kvs.toArray.toList.map (fun kv => (kv.1, fixjson (some kv.2) donull)))
-    | some other => other
-    | none => Json.null
+      some (Json.mkObj (kvs.toArray.toList.map
+        (fun kv => (kv.1, (fixjson (some kv.2) donull).getD Json.null))))
+    | some other => some other
+    | none => none
 
 /-- The JSON form of an error: always at least {name,message}. -/
 def errify (message : String) : Json :=
@@ -432,7 +453,11 @@ def matchval (check base : Val) : Bool :=
       | some text =>
         let basestr := stringify base
         if text.length > 2 && text.startsWith "/" && text.endsWith "/" then
-          regexFind (text.drop 1 |>.dropRight 1) basestr
+          -- Through the char list rather than `dropRight`: that one is
+          -- deprecated by v4.32 and now answers a `String.Slice`, which is a
+          -- different type, so a consumer on a newer toolchain cannot build
+          -- this. `String.mk` and `List.dropLast` are stable across both.
+          regexFind (String.mk (text.toList.drop 1 |>.dropLast)) basestr
         else
           (basestr.toLower.splitOn text.toLower).length > 1
       | none => deepequal want base
@@ -497,26 +522,49 @@ else that is not a map) is malformed - the presence/definedness
 distinction the sentinel system exists to preserve applies to the
 runner's own validation too. -/
 def resolveversion (alltests : Json) : Except String Nat :=
-  let meta := jget (some alltests) "OMNI"
-  if isabsent meta then
+  -- Not `meta`: that became a reserved token by Lean v4.32, so the binding
+  -- fails to parse on a newer toolchain than this file pins.
+  let omniblock := jget (some alltests) "OMNI"
+  if isabsent omniblock then
     pure 0
   else
-    match meta with
+    match omniblock with
     | some (.obj _) =>
-      match asnum (jget meta "version") with
+      match asnum (jget omniblock "version") with
       | some num =>
         if num != num.floor then
           throw "omni: malformed OMNI version block"
         else if num < 0.0 || SPECVERSION.toFloat < num then
           throw s!"omni: unsupported spec version: {numstr num}"
         else
-          checkrequires (jget meta "requires") num.toUInt64.toNat
+          checkrequires (jget omniblock "requires") num.toUInt64.toNat
       | none => throw "omni: malformed OMNI version block"
     | _ => throw "omni: malformed OMNI version block"
 
-/-- The function under test. Arguments arrive as JSON values; failure is
-reported as `Except.error message`. -/
-abbrev Subject : Type := List Json → Except String Json
+/-- The function under test. Arguments arrive as `Val` - JSON values, or
+absence - and failure is reported as `Except.error message`.
+
+`Val`, not `Json`, on both sides. An entry that supplies no `in` means the
+subject is called with NO argument, which the corpus distinguishes from one
+called with null: struct's `minor/typify` has both `{in: null}` and `{}`
+(register 4.12). And a subject that legitimately returns nothing needs to be
+able to say so under `{null: false}`. -/
+abbrev Subject : Type := List Val → Except String Val
+
+/-- A subject that may REPLACE its arguments, which `match.args` can then
+assert on. `minor/setpath` is the case in point: eight of its nine entries
+assert that the store was rewritten in place, and `merge/integrity` all six.
+
+Lean is pure, so a consumer's nodes are its own - struct/lean keeps them in a
+heap threaded through `SIO` - and nothing it does is visible through this
+runner's argument list. Returning the arguments alongside the result is the
+only channel there is.
+
+Separate from `Subject` rather than replacing it: a signature change would
+break every consumer for a capability most subjects do not need. omni-rust,
+-cpp, -ocaml, -elixir, -haskell, -clojure, -scala and -swift carry the same
+pair, for the same reason. -/
+abbrev SubjectArgs : Type := List Val → Except String (List Val × Val)
 
 /-- Run-time options for a set of test entries. -/
 structure Flags where
@@ -694,13 +742,13 @@ private partial def matchcheck (label : String) (index : Nat) (entry check base 
       throw (failure label index entry s!"match failed at {place}"
         (some (stringify leafval)) (some (stringify baseval)))
 
-private def checkresult (label : String) (index : Nat) (entry : Json) (args : List Json)
-    (res : Json) : Except String Unit := do
+private def checkresult (label : String) (index : Nat) (entry : Json) (args : List Val)
+    (res : Val) : Except String Unit := do
   let entryerr := jget (some entry) "err"
 
   if !isnone entryerr then
     throw (failure label index entry "expected error did not occur"
-      (some (stringify entryerr)) (some (stringify (some res))))
+      (some (stringify entryerr)) (some (stringify res)))
 
   let check := jget (some entry) "match"
   let matched := !isnone check
@@ -708,21 +756,23 @@ private def checkresult (label : String) (index : Nat) (entry : Json) (args : Li
   if let some checkval := check then
     let base := jmap [
       ("in", (jget (some entry) "in").getD Json.null),
-      ("args", jlist args),
+      -- A match block reads arguments as JSON, and an absent one renders as
+      -- null there the way canonical's JSON round-trip does.
+      ("args", jlist (args.map (fun arg => arg.getD Json.null))),
       ("out", (jget (some entry) "res").getD Json.null),
       ("ctx", (jget (some entry) "ctx").getD Json.null)]
     matchcheck label index entry checkval base []
 
   let out := jget (some entry) "out"
 
-  if deepequal (some res) out then
+  if deepequal res out then
     pure ()
   -- NOTE: a match with no explicit out is a complete check on its own.
   else if matched && (isnone out || asstr out == some nullmark) then
     pure ()
   else
     throw (failure label index entry "result mismatch"
-      (some (stringify out)) (some (stringify (some res))))
+      (some (stringify out)) (some (stringify res)))
 
 private def handleerror (label : String) (index : Nat) (entry : Json) (message : String)
     : Except String Unit := do
@@ -764,18 +814,23 @@ structure RunPack where
 def RunPack.set (pack : RunPack) (setname : String) : Json :=
   (jget (some pack.spec) setname).getD Json.null
 
-/-- Run one set of test entries with flags. Returns the failure message. -/
-partial def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flags)
-    (testsubject : Option Subject) : Except String Unit := do
+/-- Run one set of test entries with flags, for a subject that may replace
+its arguments. See `SubjectArgs`. -/
+partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
+    (testsubject : Option Subject) (argsubject : Option SubjectArgs)
+    : Except String Unit := do
   let label := flags.name.getD (if pack.name.isEmpty then "set" else pack.name)
 
-  let usesubject ← match testsubject.orElse (fun _ => pack.subject) with
-    | some found => pure found
-    | none => throw s!"omni: no test subject for: {label}"
+  let usesubject ← match argsubject with
+    | some _ => pure none
+    | none =>
+      match testsubject.orElse (fun _ => pack.subject) with
+      | some found => pure (some found)
+      | none => throw s!"omni: no test subject for: {label}"
 
   let testspecmap := fixjson (some testspec) flags.null
 
-  let testset ← match aslist (jget (some testspecmap) "set") with
+  let testset ← match aslist (jget testspecmap "set") with
     | some entries => pure entries
     | none => throw s!"omni: test spec has no set: {label}"
 
@@ -798,33 +853,37 @@ partial def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flag
       else rawentry
 
     let entrysubject ←
-      match asstr (jget (some entry) "client") with
-      | some clientname =>
+      match usesubject, asstr (jget (some entry) "client") with
+      | none, _ => pure none
+      | some found, some clientname =>
         match pack.clients.lookup clientname with
         | none => throw s!"omni: unknown client: {clientname}"
         | some client =>
           match client.subject with
-          | some resolve => pure ((resolve pack.name).getD usesubject)
-          | none => pure usesubject
-      | none => pure usesubject
+          | some resolve => pure (some ((resolve pack.name).getD found))
+          | none => pure (some found)
+      | some found, none => pure (some found)
 
     -- Build the argument list: `ctx`, `args`, or `in`.
     let hasctx := jhas (some entry) "ctx"
     let hasargs := jhas (some entry) "args"
 
-    let args0 :=
-      if hasctx then [(jget (some entry) "ctx").getD Json.null]
+    -- `Val`, so an entry with no `in` reaches the subject as ABSENT rather
+    -- than as null - the distinction `minor/typify` asserts (register 4.12).
+    let args0 : List Val :=
+      if hasctx then [jget (some entry) "ctx"]
       else if hasargs then
         match aslist (jget (some entry) "args") with
-        | some list => list.toList
-        | none => [(jget (some entry) "args").getD Json.null]
-      else [(jget (some entry) "in").getD Json.null]
+        | some list => list.toList.map some
+        | none => [jget (some entry) "args"]
+      else [jget (some entry) "in"]
 
     let (args, entry) :=
-      if (hasctx || hasargs) && !args0.isEmpty && ismap (some args0.head!) then
+      if (hasctx || hasargs) && !args0.isEmpty && ismap args0.head! then
+        let head := args0.head!.getD Json.null
         let contextified := match pack.client.contextify with
-          | some contextify => contextify args0.head!
-          | none => args0.head!
+          | some contextify => contextify head
+          | none => head
         -- Canonical attaches the resolved client onto ctx/args[0]
         -- (testpack.client) so a context subject can tell it was invoked
         -- through one. Json has no case for a live Provider reference,
@@ -833,14 +892,36 @@ partial def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flag
         -- observable meaning the corpus checks for - presence, never
         -- identity.
         let first := jset contextified "client" (jbool true)
-        (first :: args0.tail!, jset entry "ctx" first)
+        (some first :: args0.tail!, jset entry "ctx" first)
       else (args0, entry)
 
-    match entrysubject args with
-    | .ok rawres =>
-      let res := fixjson (some rawres) flags.null
-      checkresult label index (jset entry "res" res) args res
+    -- An args-subject returns its arguments alongside the result, so
+    -- `match.args` sees what the subject actually did with them.
+    let outcome : Except String (List Val × Val) :=
+      match argsubject, entrysubject with
+      | some call, _ => call args
+      | none, some call => (call args).map (fun res => (args, res))
+      | none, none => throw s!"omni: no test subject for: {label}"
+
+    match outcome with
+    | .ok (callargs, rawres) =>
+      let res := fixjson rawres flags.null
+      let done := match res with
+        | some value => jset entry "res" value
+        | none => entry
+      checkresult label index done callargs res
     | .error message => handleerror label index entry message
+
+/-- Run one set of test entries with flags. Returns the failure message. -/
+def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flags)
+    (testsubject : Option Subject) : Except String Unit :=
+  pack.drive testspec flags testsubject none
+
+/-- Everything `runsetflags` does, for a subject that may replace its
+arguments. See `SubjectArgs`. -/
+def RunPack.runsetflagsargs (pack : RunPack) (testspec : Json) (flags : Flags)
+    (argsubject : SubjectArgs) : Except String Unit :=
+  pack.drive testspec flags none (some argsubject)
 
 /-- Run one set of test entries. Returns the failure message. -/
 def RunPack.runset (pack : RunPack) (testspec : Json) (testsubject : Option Subject)
