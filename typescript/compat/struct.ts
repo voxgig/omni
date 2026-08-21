@@ -59,11 +59,18 @@ export type StructProvider = Provider & {
 // inside omni is skipped when locating the caller.
 const OMNIDIR = dirname(__dirname)
 
-// struct passes a test-file path relative to the module that loads the
-// runner, so resolve it the same way: the first stack frame outside omni
-// is the caller. (A consumer that resolves the path itself - as struct's
-// TypeScript port does, its test files sitting a directory below the
-// loader - passes an absolute path and never reaches this.)
+// A relative test-file path is resolved against the first stack frame
+// outside omni - the caller.
+//
+// PREFER AN ABSOLUTE PATH. This heuristic guesses at what "relative to"
+// means, and the guess is wrong whenever a consumer's test FILES sit at a
+// different depth from the module that loads the runner. struct's TypeScript
+// port is exactly that shape: its loader compiles to `dist-test/` and its
+// test files to `dist-test/utility/`, so the same relative string resolved
+// one directory too deep and read `typescript/build/test/test.json`. That
+// port now resolves the path itself, in `test/omni.ts`, and never reaches
+// this. (An earlier version of this comment asserted it already did - it did
+// not; this shim shipped before any consumer had proved it.)
 function callerdir(): string {
   const original = Error.prepareStackTrace
   Error.prepareStackTrace = (_err, stack) => stack
