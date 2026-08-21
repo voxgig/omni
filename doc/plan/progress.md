@@ -93,7 +93,7 @@ Findings and rationale:
 | 4.3 A2 out/err/match composition | NOT STARTED | `err`+`out` rejection already landed with 4.1. |
 | 4.4 A3 err semantics (`err:false`, structured err) | NOT STARTED | |
 | 4.5 A4 `__EXACT__`/`__HAS__` match leaves | NOT STARTED | |
-| 4.6 C2 group-coverage check (`runcheck` + static) | NOT STARTED | |
+| 4.6 C2 group-coverage check (`runcheck` + static) | NOT STARTED | **The 22-port sweep is the case for this one.** Eight ports shipped a driver that reported success while running less of the corpus than it claimed - five that could not fail at all and three that asserted over part of it (handover §5). Every one was found by a human reading the driver, because nothing checks that the groups a consumer *drives* are the groups its spec *contains*. The migrated ports have not fixed that: they name their groups in a list, one `runset` call per line, and a deleted line is still silent. swift's `CorpusTests.swift` is the clearest instance - 64 `runSet` calls, no assertion on how many ran. Doing it per-port is the 4.12 trap again; `runcheck` belongs in omni, where the spec is. |
 | 4.7 C3 skip/pending/only | NOT STARTED | Gated by the entry-level `needs:` field — **not** `requires`, which is already the top-level `OMNI.requires` capability list checked against `CAPABILITIES` in `Runner.ts`. Settled in `../design/absence-model.md`. |
 | 4.8 C4 declarative unpacking (`DEF.subject.<name>.unpack`) | NOT STARTED | |
 | 4.9 B-group naming coherence (aliases, strict section resolution, `options` short form) | NOT STARTED | |
