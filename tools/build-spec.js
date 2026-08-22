@@ -81,16 +81,35 @@ function buildOne(entry) {
   const dir = Path.dirname(entry)
   const bin = Path.join(TOOLS, 'node_modules', '.bin', 'voxgig-model')
   if (!Fs.existsSync(bin)) {
-    console.error('voxgig-model not found — run `npm install` in ' + TOOLS)
-    process.exit(1)
+    throw new Error('voxgig-model not found — run `npm install` in ' + TOOLS)
   }
   execFileSync(bin, [Path.basename(entry)], { cwd: dir, stdio: 'inherit' })
   const json = entry.replace(/\.aontu$/, '.json')
   if (!Fs.existsSync(json)) {
-    console.error('build produced no JSON for ' + entry)
-    process.exit(1)
+    throw new Error('build produced no JSON for ' + entry)
   }
   return json
+}
+
+// The spec version marker. `OMNI.version` is what turns on strict entry
+// validation in every runner, so a spec that loses it does not fail — it
+// silently downgrades the checking in 23 ports at once.
+//
+// The spec-format shape (spec/def/omni-spec.aontu) catches a misspelled
+// key, a wrong type and a wrong value, because those are unification
+// conflicts. It cannot catch ABSENCE: unifying `{}` with `{version: 1}`
+// fills the key in rather than objecting. So absence is checked here,
+// against the built artifact, which is the thing every port reads.
+function requiremarker(json) {
+  const data = JSON.parse(Fs.readFileSync(json, 'utf8'))
+  const version = data && data.OMNI && data.OMNI.version
+  if ('number' !== typeof version) {
+    throw new Error(
+      Path.relative(process.cwd(), json) +
+      ' has no OMNI.version marker.\n' +
+      'Without it every runner silently drops strict entry validation.'
+    )
+  }
 }
 
 // A generated JSON whose .aontu source is gone. Nothing rebuilds it, so it
@@ -140,19 +159,35 @@ function main() {
     const before = args.check && Fs.existsSync(json)
       ? Fs.readFileSync(json, 'utf8') : null
 
-    buildOne(entry)
+    // Put back exactly what was there. When nothing was, the entry is
+    // missing its committed JSON entirely - remove what this run
+    // generated, so that --check leaves the worktree as it found it.
+    const restore = () => {
+      if (null != before) Fs.writeFileSync(json, before)
+      else if (Fs.existsSync(json)) Fs.unlinkSync(json)
+    }
 
     if (args.check) {
-      const after = Fs.readFileSync(json, 'utf8')
+      // The generator can write or truncate the output and THEN fail, so
+      // restoring only on a clean run leaves --check mutating the very
+      // artifact it promises not to touch. Every exit path restores.
+      let after
+      try {
+        buildOne(entry)
+        requiremarker(json)
+        after = Fs.readFileSync(json, 'utf8')
+      } catch (err) {
+        restore()
+        throw err
+      }
+
       if (before !== after) {
         stale.push(Path.relative(process.cwd(), json))
-        // Restore what was there. When nothing was, the entry is missing its
-        // committed JSON entirely - remove what this run generated, so that
-        // --check leaves the worktree exactly as it found it.
-        if (null != before) Fs.writeFileSync(json, before)
-        else Fs.unlinkSync(json)
+        restore()
       }
     } else {
+      buildOne(entry)
+      requiremarker(json)
       console.log('built ' + Path.relative(process.cwd(), json))
     }
   }
@@ -170,4 +205,9 @@ function main() {
   }
 }
 
-main()
+try {
+  main()
+} catch (err) {
+  console.error(err && err.message ? err.message : String(err))
+  process.exit(1)
+}
