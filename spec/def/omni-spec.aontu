@@ -30,6 +30,29 @@
 # belong here, so that a malformed spec fails at build rather than at test.
 
 
+# The spec metadata block. `version` is what turns on strict entry
+# validation in every runner, so a spec that loses or mistypes it does not
+# fail loudly - it silently downgrades the checking in 23 ports at once.
+# Closed, so a misspelled `versoin:` is an unknown key rather than a
+# second marker nobody reads.
+#
+# `version` is pinned to the one defined version rather than to `integer`:
+# a bump is a decision about every runner's baseline, and it should have to
+# be made here as well as in the spec. Update both when version 2 exists.
+#
+# `requires` is optional and unconstrained - it names capabilities beyond
+# the version baseline, and the runner is the authority on those.
+#
+# ABSENCE is NOT caught here, and cannot be: unifying `{}` with
+# `{version: 1}` fills the key in rather than objecting. That case is
+# checked in tools/build-spec.js against the built artifact, which is what
+# every port actually reads.
+Meta: hide(close({
+  version: 1
+  requires?: top
+}))
+
+
 # One test entry. Closed: an unrecognised key is an error, because an
 # unrecognised key is almost always an assertion that stopped asserting.
 # Every field is optional - the runner decides which combinations mean

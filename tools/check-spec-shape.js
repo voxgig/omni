@@ -60,6 +60,10 @@ function checkspec(specfile) {
       check,
       '@"' + SHAPE + '"\n' +
       '@"' + specfile + '"\n' +
+      // The spec version marker. Checked as well as the groups: it is the
+      // smallest thing in the file and the one whose loss is quietest,
+      // since every runner reads it to decide whether to validate strictly.
+      'OMNI: $.Meta\n' +
       // Every section under `primary`, and every group within it.
       'primary: &: { &: $.Group }\n'
     )
@@ -81,6 +85,11 @@ const REDCASES = [
   ['non-string id', 'primary: s: g: set: [ { in: 1, out: 1, id: null } ]'],
   ['non-boolean doc', 'primary: s: g: set: [ { in: 1, out: 1, doc: yes } ]'],
   ['map-valued err', 'primary: s: g: set: [ { in: 1, err: { code: 1 } } ]'],
+  // The marker. Absence is not here because unification cannot catch it -
+  // build-spec.js checks that against the built artifact instead.
+  ['misspelled version key', 'OMNI: versoin: 1'],
+  ['non-numeric version', "OMNI: version: 'one'"],
+  ['unknown spec version', 'OMNI: version: 2'],
 ]
 
 function selftest() {
