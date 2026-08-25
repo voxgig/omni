@@ -10,13 +10,21 @@ work it records (see AGENTS.md).
 
 Two standing decisions frame everything below:
 
-- **No package publishing for now.** omni is consumed as a **local
-  checkout**, resolved via `$OMNI_HOME` and sibling paths and wired per
-  language with gitignored links (symlinks, `go.work`, classpath,
-  `-p:OmniPath=`) - the mechanism sekreto already uses in all ten ports,
-  now documented as the supported path in DOCS.md §8.3. Publishing remains
-  a possible later phase; nothing in this plan depends on it except the
-  final shape of Phase 3.
+- **The local checkout is the supported path; the two Node ports are
+  also packaged.** omni is consumed as a **local checkout**, resolved via
+  `$OMNI_HOME` and sibling paths and wired per language with gitignored
+  links (symlinks, `go.work`, classpath, `-p:OmniPath=`) - the mechanism
+  sekreto already uses in all ten ports, documented in DOCS.md §8.3. That
+  holds for twenty-one of the twenty-three ports and is what every
+  existing consumer uses today.
+
+  This was previously stated as "no package publishing for now". It no
+  longer is: `@voxgig/omni-js` and `@voxgig/omni` are packaged for npm,
+  so a JavaScript or TypeScript consumer may take omni as a
+  **devDependency** instead - the isolation device there being the
+  devDependency itself, which npm never installs transitively (register
+  4.13). Each port carries its own version. Nothing has been migrated
+  onto that route yet; doing so is a separate change, port by port.
 - **Canonical-first, always.** Every runner change lands in the canonical
   TypeScript, then the spec, then every port - the repo's prime
   directives apply to plan work exactly as to bug fixes.
@@ -89,10 +97,18 @@ discovery for the package.
 Decide and document the contract - most plausibly a TS/JS Sekreto
 implementation (or a Seneca plugin wrapping `@voxgig/sekreto`) whose
 conformance to `voxgig/sekreto`'s spec corpus is the validation signal.
-Without publishing, "external" means: a repo outside the voxgig sibling
-layout, consuming omni via `OMNI_HOME` in CI, running the spec under
-**jest** (the first non-`node --test` consumer). Vendor a pinned copy of
-`spec/sekreto.json` with a freshness check. Replace the SenecaConfig
+"External" means a repo outside the voxgig sibling layout, running the
+spec under **jest** (the first non-`node --test` consumer). Vendor a
+pinned copy of `spec/sekreto.json` with a freshness check.
+
+Note that this phase is now the one case that does NOT need `OMNI_HOME`:
+it targets a TS/JS consumer, and those are exactly the two ports on npm,
+so the harness should take `@voxgig/omni-js` as a devDependency. That
+makes it the honest external test - a consumer reaching omni the way any
+stranger would, with no sibling checkout and no knowledge of this
+repository's layout - which is more validation than the `OMNI_HOME` route
+would have given, not less. The plan's original wording assumed the
+checkout because it predates the packaging. Replace the SenecaConfig
 scaffold (name, README, URLs, src, tests) first.
 
 ## Phase 4 - the spec-model improvement programme

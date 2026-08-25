@@ -11,6 +11,11 @@ omni is a test runner, so it belongs in `devDependencies`:
 npm install --save-dev @voxgig/omni
 ```
 
+**Not on the registry yet.** The first release has not been cut, so
+that command 404s today; until it lands, omni is consumed as a local
+checkout - see [DOCS.md §8.3](../DOCS.md#83-porting-the-rest).
+(Delete this paragraph once `@voxgig/omni` is published.)
+
 Types are bundled. Zero runtime dependencies, and nothing here is imported
 by a consumer's shipped code.
 
