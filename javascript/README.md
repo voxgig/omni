@@ -3,9 +3,18 @@
 CommonJS port of the canonical TypeScript implementation. Also hosts the
 compatibility shim that lets `voxgig/struct` replace its in-situ runner.
 
+## Install
+
+omni is a test runner, so it belongs in `devDependencies`:
+
 ```sh
-npm test
+npm install --save-dev @voxgig/omni-js
 ```
+
+Zero runtime dependencies, and nothing here is imported by a consumer's
+shipped code.
+
+Working in this repository instead: `npm test` (there is no build step).
 
 ## Use
 
@@ -24,8 +33,8 @@ A failing check throws `OmniError`.
 ## struct compatibility
 
 [`compat/struct.js`](compat/struct.js) exposes omni behind the exact runner
-API used by `voxgig/struct`, so a struct port switches over by changing one
-import:
+API used by `voxgig/struct`. It is a declared subpath of the package, so a
+struct port switches over by changing one import:
 
 ```diff
 -const { makeRunner, nullModifier, NULLMARK } = require('./runner')

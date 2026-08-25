@@ -2,19 +2,61 @@
   "name": "@voxgig/omni",
   "version": "0.1.0",
   "description": "Omni: shared multi-language test runner (TypeScript, canonical)",
-  "license": "MIT",
   "main": "dist/src/index.js",
+  "type": "commonjs",
   "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./compat/struct": {
+      "types": "./dist/compat/struct.d.ts",
+      "default": "./dist/compat/struct.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "compat/struct": [
+        "dist/compat/struct.d.ts"
+      ]
+    }
+  },
+  "homepage": "https://github.com/voxgig/omni",
+  "keywords": [
+    "voxgig",
+    "omni",
+    "test",
+    "runner",
+    "conformance",
+    "spec"
+  ],
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/voxgig/omni.git"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "watch": "tsc -w",
+    "clean": "rm -rf dist node_modules package-lock.json",
+    "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "test-some": "npm run build && node --test --test-name-pattern=$npm_config_pattern \"dist/test/*.test.js\"",
+    "reset": "npm run clean && npm i && npm run build && npm test",
+    "repo-tag": "REPO_VERSION=`node -e \"console.log(require('./package').version)\"` && echo TAG: typescript/v$REPO_VERSION && git commit -a -m typescript/v$REPO_VERSION && git push && git tag typescript/v$REPO_VERSION && git push --tags;",
+    "repo-publish": "npm run clean && npm i && npm run repo-publish-quick",
+    "repo-publish-quick": "npm run build && npm run test && npm run repo-tag && npm stage publish --access public --registry https://registry.npmjs.org",
+    "repo-publish-dry": "npm run clean && npm i && npm run repo-publish-dry-quick",
+    "repo-publish-dry-quick": "npm run build && npm run test && npm stage publish --dry-run --access public --registry https://registry.npmjs.org"
+  },
+  "license": "MIT",
   "files": [
+    "LICENSE",
     "dist/src",
     "dist/compat"
   ],
-  "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist",
-    "test": "npm run build && node --test \"dist/test/*.test.js\"",
-    "test-some": "npm run build && node --test --test-name-pattern=$npm_config_pattern \"dist/test/*.test.js\""
-  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"

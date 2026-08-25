@@ -704,8 +704,16 @@ one import:
 
 where `./omni` is a ~20-line resolver that locates the local omni checkout
 (see [8.3](#83-porting-the-rest)) and re-exports
-`<checkout>/javascript/compat/struct.js`. (If omni is published one day,
-this becomes `require('@voxgig/omni-js/compat/struct')`.)
+`<checkout>/javascript/compat/struct.js`.
+
+Two ports are now also on a registry - `@voxgig/omni` and `@voxgig/omni-js`
+on npm - and for those the resolver is optional: the shim is a declared
+subpath, so a consumer that adds omni as a **devDependency** writes
+`require('@voxgig/omni-js/compat/struct')` (or, from TypeScript,
+`require('@voxgig/omni/compat/struct')`) and needs no checkout at all. The
+existing consumers still resolve a checkout; moving them over is a separate
+change, port by port. See [8.3](#83-porting-the-rest) for why every other
+port is checkout-only.
 
 The shim wraps struct's SDK as an omni provider, and forwards `utility()`
 and `tester()`, so test code that reaches through the returned `client`
@@ -726,12 +734,14 @@ with struct's own runner.
 
 For each struct port:
 
-1. Wire omni in as a **local checkout** - omni is deliberately not
-   published to any package registry for now, and the supported
-   consumption mechanism is the one `voxgig/sekreto` already uses in all
-   ten of its ports: resolve the checkout from `$OMNI_HOME`, then sibling
-   paths (`../../omni`, `../../../omni`), taking the first directory that
-   contains `spec/fib.json`. Compiled languages link it without putting a
+1. Wire omni in as a **local checkout**. Two of the twenty-three ports
+   are on a registry (`@voxgig/omni` and `@voxgig/omni-js` on npm) and a
+   JavaScript or TypeScript consumer may take omni as a devDependency
+   instead; every other port has no published artifact, so for them the
+   checkout is the only mechanism. It is also the one `voxgig/sekreto`
+   already uses in all ten of its ports: resolve the checkout from
+   `$OMNI_HOME`, then sibling paths (`../../omni`, `../../../omni`),
+   taking the first directory that contains `spec/fib.json`. Compiled languages link it without putting a
    machine-specific path in a checked-in file: Go generates a `go.work`,
    Rust symlinks `vendor/omni`, C# passes `-p:OmniPath=`, Java puts it on
    the classpath - all gitignored. CI checks out `voxgig/omni` beside the
