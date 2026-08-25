@@ -11,6 +11,10 @@
 #     fragment `omni/javascript`, true only of a checkout. Installed under
 #     node_modules nothing matched, the shim took its own frame for the
 #     caller, and a relative spec path resolved inside node_modules.
+#   - @voxgig/omni-js built its export object by spread, which node's
+#     cjs-module-lexer cannot read statically, so `import { makeRunner }
+#     from '@voxgig/omni-js'` failed where the same import from
+#     @voxgig/omni worked. Only reachable once installed.
 #
 # So: pack the tarball, install it into an empty directory OUTSIDE this
 # repository, and exercise it there.
@@ -82,6 +86,8 @@ assert.ok(pkg.exports, NAME + ': manifest declares no exports map')
 const subpaths = Object.keys(pkg.exports).filter((s) => s !== './package.json')
 assert.ok(0 < subpaths.length, NAME + ': exports map has no entry points')
 
+const PKGDIR = require('node:path').dirname(require.resolve(NAME + '/package.json'))
+
 for (const sub of subpaths) {
   const spec = '.' === sub ? NAME : NAME + sub.slice(1)
   const at = require.resolve(spec)
@@ -91,7 +97,24 @@ for (const sub of subpaths) {
   )
   const mod = require(spec)
   assert.ok(0 < Object.keys(mod).length, spec + ' resolved but exported nothing')
-  console.log('  ' + spec + ': ' + Object.keys(mod).length + ' exports')
+
+  // A declared `types` condition must actually be in the tarball. Requiring
+  // the subpath proves only the RUNTIME half; a `files` list that dropped
+  // the .d.ts files would ship a typeless package and still pass.
+  const entry = pkg.exports[sub]
+  const types = entry && 'object' === typeof entry ? entry.types : null
+  if (types) {
+    const dts = require('node:path').join(PKGDIR, types)
+    assert.ok(require('node:fs').existsSync(dts), spec + ': declared types ' + types + ' is not in the tarball')
+  }
+
+  console.log('  ' + spec + ': ' + Object.keys(mod).length + ' exports' + (types ? ' + types' : ''))
+}
+
+// `types` at the top level too, for consumers that never look at `exports`.
+if (pkg.types) {
+  const dts = require('node:path').join(PKGDIR, pkg.types)
+  assert.ok(require('node:fs').existsSync(dts), NAME + ': declared types ' + pkg.types + ' is not in the tarball')
 }
 
 // The compat shim, behind a struct-shaped SDK, given a RELATIVE spec path.
@@ -121,12 +144,38 @@ main().catch((e) => {
 })
 JS
 
+  # Every subpath must also import as ESM by NAME. A CommonJS entry point is
+  # only importable that way if node's cjs-module-lexer can see the names
+  # statically: an object built by spread is opaque to it, and
+  # `import { makeRunner } from '@voxgig/omni-js'` failed for exactly that
+  # reason while the same import from @voxgig/omni worked.
+  cat > "$SMOKE/consumer/esm.mjs" <<'MJS'
+import { createRequire } from 'node:module'
+import assert from 'node:assert'
+
+const NAME = process.env.OMNI_PKG
+const require = createRequire(import.meta.url)
+const pkg = require(NAME + '/package.json')
+
+for (const sub of Object.keys(pkg.exports).filter((s) => s !== './package.json')) {
+  const spec = '.' === sub ? NAME : NAME + sub.slice(1)
+  const mod = await import(spec)
+  const named = Object.keys(mod).filter((k) => 'default' !== k)
+  assert.ok(
+    named.includes('makeRunner'),
+    spec + ': no named ESM export `makeRunner` - the entry point is opaque to cjs-module-lexer',
+  )
+  console.log('  ' + spec + ': ' + named.length + ' named ESM exports')
+}
+MJS
+
   (
     cd "$SMOKE"
     npm init -y >/dev/null 2>&1
     npm install "./$TARBALL" --no-audit --no-fund --silent
     # Invoked from the smoke ROOT, while the spec lives in consumer/.
     OMNI_PKG="$NAME" OMNI_SMOKE="$SMOKE" node consumer/consume.js
+    OMNI_PKG="$NAME" node consumer/esm.mjs
   )
 
   rm -rf "$SMOKE"

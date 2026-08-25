@@ -21,7 +21,8 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "git://github.com/voxgig/omni.git"
+    "url": "git+https://github.com/voxgig/omni.git",
+    "directory": "javascript"
   },
   "scripts": {
     "build": "node -e \"console.log('No build step for JavaScript')\"",
