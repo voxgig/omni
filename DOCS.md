@@ -706,6 +706,10 @@ where `./omni` is a ~20-line resolver that locates the local omni checkout
 (see [8.3](#83-porting-the-rest)) and re-exports
 `<checkout>/javascript/compat/struct.js`.
 
+omni is **server-side only** — every port reads spec files from disk and
+runs a system under test in-process, so no port targets a browser and
+neither npm package carries a `browser` export condition.
+
 The two Node ports are also published to npm, as `@voxgig/omni-js` and
 `@voxgig/omni`, and for those the resolver is optional: the shim is a
 declared subpath, so a consumer that adds omni as a **devDependency**

@@ -130,6 +130,13 @@ directory and use its `Makefile`.
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
 `make pack-check`, `make pack-diff`, `make inspect`, `make clean`.
 
+**omni is server-side only.** No port targets a browser, and the two
+npm packages carry no `browser` export condition and no bundler build.
+Nothing here should acquire one: the runner reads spec files from disk
+and runs a system under test in-process, which is a server-side shape.
+If a browser consumer ever appears it is a new decision, not an
+oversight being corrected.
+
 **Node 24 is the baseline.** Every `node-version` in `ci.yml` and
 `release.yml` pins it, so that is the version the two Node ports are
 tested and published on. Node 22 still passes the whole sweep and the
