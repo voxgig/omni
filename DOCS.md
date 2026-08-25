@@ -711,9 +711,9 @@ The two Node ports are also packaged for npm, as `@voxgig/omni-js` and
 declared subpath, so a consumer that adds omni as a **devDependency**
 writes `require('@voxgig/omni-js/compat/struct')` (or, from TypeScript,
 `require('@voxgig/omni/compat/struct')`) and needs no checkout at all.
-(NOT YET ON THE REGISTRY - the first release has not been cut, so today
-that install 404s and the checkout below is the only route that works.
-Delete this parenthesis once both packages are published.)
+(**Not on the registry yet** - the first release has not been cut, so
+today that install 404s and the checkout below is the only route that
+works. Delete this parenthesis once both packages are published.)
 
 The existing consumers all still resolve a checkout; moving any of them
 over is a separate change, port by port. See
