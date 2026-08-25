@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: '22'
+          node-version: '24'
       - run: make test-${{ matrix.lang }}
 
   jvm:
@@ -294,7 +294,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: '22'
+          node-version: '24'
       # What @voxgig/omni and @voxgig/omni-js would publish, installed from
       # a tarball into an empty directory and used. The port suites cannot
       # see this: they run against the working tree.
@@ -312,5 +312,5 @@ jobs:
           path: .struct
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: '22'
+          node-version: '24'
       - run: make struct-compat STRUCT=${{ github.workspace }}/.struct
