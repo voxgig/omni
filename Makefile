@@ -9,6 +9,7 @@
 #   make parity        - check that every port has the canonical API
 #   make struct-compat - run voxgig/struct's own suite on omni's runner
 #   make pack-check    - install the npm ports from a tarball and use them
+#   make pack-diff     - what a release would add/remove vs the registry
 #   make spec          - recompile spec/*.json from spec/*.aontu
 #   make spec-check    - fail if a committed spec/*.json is stale
 
@@ -18,7 +19,7 @@
 LANGS = typescript javascript python ruby php perl lua go rust java csharp kotlin \
         scala clojure c cpp zig swift dart elixir ocaml haskell lean
 
-.PHONY: all test build inspect clean parity struct-compat pack-check check spec spec-check
+.PHONY: all test build inspect clean parity struct-compat pack-check pack-diff check spec spec-check
 
 all: test
 
@@ -85,5 +86,12 @@ struct-compat:
 # tree, where every file is present whatever `files` says.
 pack-check:
 	@tools/pack_check.sh $(PORTS)
+
+# What a release would add to, or remove from, the published package.
+# Needs the network, so it is not part of `check` and not a PR job -
+# pack-check is the hermetic one. Removing a file that the published
+# version has is how a patch release silently breaks a consumer.
+pack-diff:
+	@tools/pack_diff.sh $(PORTS)
 
 check: parity test
