@@ -128,7 +128,7 @@ directory and use its `Makefile`.
 | Lean 4 | `lean/` | `make test` | `lake`; pure `Except String` failures |
 
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
-`make pack-check`, `make inspect`, `make clean`.
+`make pack-check`, `make pack-diff`, `make inspect`, `make clean`.
 
 **Node 24 is the baseline.** Every `node-version` in `ci.yml` and
 `release.yml` pins it, so that is the version the two Node ports are
@@ -146,6 +146,13 @@ this repository and uses them there. Anything true only of a checkout -
 a file the `files` list forgets, a path the shim assumes - is invisible
 to every other target and shows up only once a consumer installs. Both
 have already happened; `tools/pack_check.sh` names them.
+
+`make pack-diff` is its network-bound companion, run at release time
+rather than on every PR: it compares what a port would publish against
+what is on the registry now and refuses a release that drops a file the
+published version has. Adding files is ordinary; removing them silently
+breaks whoever imported them, and 0.1.0 shipped three `src/*.ts` that a
+release from main would have dropped.
 
 
 ## Standard workflows

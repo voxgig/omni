@@ -245,6 +245,16 @@ jobs:
         if: ${{ steps.registry.outputs.published == 'false' }}
         run: make pack-check PORTS=${{ steps.resolve.outputs.port }}
 
+      # A RELEASE MUST NOT SILENTLY DROP A PUBLISHED FILE. @voxgig/omni@0.1.0
+      # was published from a tree whose `files` carried "src" while main's
+      # did not, so the next release from main would have removed three
+      # source files from the package with nothing to notice. Adding files
+      # is ordinary and allowed; removing them fails the release unless
+      # OMNI_ALLOW_REMOVALS says it is deliberate.
+      - name: A release must not remove published files
+        if: ${{ steps.registry.outputs.published == 'false' }}
+        run: make pack-diff PORTS=${{ steps.resolve.outputs.port }}
+
       # Publish BEFORE tagging (the tag job `needs` this one), so a tag only
       # ever exists for a release that reached the registry.
       #

@@ -706,15 +706,11 @@ where `./omni` is a ~20-line resolver that locates the local omni checkout
 (see [8.3](#83-porting-the-rest)) and re-exports
 `<checkout>/javascript/compat/struct.js`.
 
-The two Node ports are also packaged for npm, as `@voxgig/omni-js` and
+The two Node ports are also published to npm, as `@voxgig/omni-js` and
 `@voxgig/omni`, and for those the resolver is optional: the shim is a
 declared subpath, so a consumer that adds omni as a **devDependency**
 writes `require('@voxgig/omni-js/compat/struct')` (or, from TypeScript,
 `require('@voxgig/omni/compat/struct')`) and needs no checkout at all.
-(**Not on the registry yet** - the first release has not been cut, so
-today that install 404s and the checkout below is the only route that
-works. Delete this parenthesis once both packages are published.)
-
 The existing consumers all still resolve a checkout; moving any of them
 over is a separate change, port by port. See
 [8.3](#83-porting-the-rest) for the other twenty-one.
@@ -738,8 +734,8 @@ with struct's own runner.
 
 For each struct port:
 
-1. Wire omni in as a **local checkout**. Only the two Node ports have
-   been packaged for a registry so far - the rest have no published
+1. Wire omni in as a **local checkout**. Only the two Node ports are
+   published to a registry so far - the rest have no published
    artifact, not because they could not have one (python, rust and dart
    all have obvious homes) but because nobody has done the packaging
    work - so for them the checkout is the only mechanism. It is also the
