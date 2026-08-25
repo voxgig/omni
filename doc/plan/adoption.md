@@ -2,9 +2,10 @@
 
 omni's goal: be the single multi-language test-spec utility of the voxgig
 ecosystem. `voxgig/sekreto` already runs every port's conformance suite
-through omni; `voxgig/struct` is to replace its in-situ runners with omni - 5 of 24
-done, 20 to go; `senecajs/Sekreto` is to validate omni from outside the sibling-
-checkout world. This document is the plan; the live status is the register
+through omni; `voxgig/struct` has replaced its in-situ runners with omni in
+22 of 24 ports, the remaining two blocked (zig) and undecided (boru);
+`senecajs/Sekreto` is to validate omni from outside the sibling-checkout
+world. This document is the plan; the live status is the register
 in [`progress.md`](progress.md), which changes in the same commit as the
 work it records (see AGENTS.md).
 
@@ -54,10 +55,13 @@ swap; they exercise the paths most likely to differ.
 
 Order, as actually taken: javascript (shim already validated by the
 struct-compat gate), then **python** (voxgig/struct#86), **ruby**
-(voxgig/struct#88) and **go** (voxgig/struct#89). typescript was
-planned second and is now deferred - omni's side is ready
-(`typescript/compat/struct.ts`), but `@voxgig/sdkgen` copies the
-version-stamped TS runner and is outside the current repository scope.
+(voxgig/struct#88) and **go** (voxgig/struct#89), then the remaining
+eighteen. typescript was planned second and ran late - omni's side had been
+ready since `typescript/compat/struct.ts`, but `@voxgig/sdkgen` copies the
+version-stamped TS runner - and landed as voxgig/struct#96. **Twenty-two of
+the twenty-four are merged.** The two that are not: `zig` is BLOCKED (struct/zig
+pins Zig 0.13, omni-zig needs 0.16) and `boru` needs a decision, because omni
+has no boru port to migrate onto. Both are measured in voxgig/struct#112.
 
 Both the ruby and go swaps needed omni-side work first, and neither was
 visible until a struct port was actually run through the shim: #8's shims

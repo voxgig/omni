@@ -1,6 +1,6 @@
 # Status — where the next session starts
 
-Live snapshot, 2026-08-21. The register in [`progress.md`](progress.md) is the
+Live snapshot, 2026-08-25. The register in [`progress.md`](progress.md) is the
 per-item authority and [`handover.md`](handover.md) is the durable record;
 this file says what is in flight right now, what is blocked on a human, and
 what to pick up first. Update it at the end of a session, or delete it once it
@@ -9,48 +9,45 @@ goes stale — a wrong status file is worse than none.
 
 ## In flight
 
-**Nothing open in omni.** Every omni PR through #34 is merged; `main` is
-3821f9e.
+**Nothing open in omni.** Every omni PR through #41 is merged; `main` is
+74ae081.
 
-**Sixteen open drafts in voxgig/struct**, the tail of the port migration:
+**Nothing open in voxgig/struct.** The port migration is finished: all sixteen
+of the drafts this file previously listed are merged, so **22 of 24 ports are
+on omni**. The two that are not are `zig` (BLOCKED on a Zig 0.13→0.16 move in
+struct/zig) and `boru` (DECISION NEEDED — omni has no boru port), both measured
+in voxgig/struct#112.
 
-| PR | Port | State |
-|---|---|---|
-| [#96](https://github.com/voxgig/struct/pull/96) | typescript | open |
-| [#97](https://github.com/voxgig/struct/pull/97) | rust | open |
-| [#98](https://github.com/voxgig/struct/pull/98) | java | open |
-| [#100](https://github.com/voxgig/struct/pull/100) | perl | open |
-| [#101](https://github.com/voxgig/struct/pull/101) | c | open |
-| [#102](https://github.com/voxgig/struct/pull/102) | cpp | open |
-| [#103](https://github.com/voxgig/struct/pull/103) | kotlin | open |
-| [#104](https://github.com/voxgig/struct/pull/104) | ocaml | open |
-| [#105](https://github.com/voxgig/struct/pull/105) | elixir | open |
-| [#106](https://github.com/voxgig/struct/pull/106) | haskell | open |
-| [#107](https://github.com/voxgig/struct/pull/107) | dart | open |
-| [#108](https://github.com/voxgig/struct/pull/108) | clojure | open |
-| [#109](https://github.com/voxgig/struct/pull/109) | scala | open |
-| [#110](https://github.com/voxgig/struct/pull/110) | swift | open |
-| [#111](https://github.com/voxgig/struct/pull/111) | lean | open |
-| [#112](https://github.com/voxgig/struct/pull/112) | — | open; the zig/boru blocker note |
+**The npm pair is published with provenance.** `@voxgig/omni` and
+`@voxgig/omni-js` are both at 0.1.1, released over trusted publishing (OIDC),
+each carrying a SLSA v1 attestation whose subject digest matches the published
+tarball. Tags `typescript/v0.1.1` and `javascript/v0.1.1`. No consumer has been
+migrated onto that route yet — doing so is a separate change, port by port.
 
-**Seven are merged** (javascript #84, python #86, ruby #88, go #89, php #92,
-lua #94, csharp #95); the fifteen above are written, green and open but NOT
-merged, so the register still counts them `IN PROGRESS`. That is 22 of 24 with
-a migration written, 7 of 24 landed. The remaining two — zig and boru — are
-blocked for reasons measured in #112, not for want of effort. What landed and what each swap cost is in
-[`handover.md`](handover.md) §1; the two findings that recurred across ports
-are §5 (drivers that could not fail) and §6 (getprop's default `alt`).
+What landed and what each swap cost is in [`handover.md`](handover.md) §1; the
+two findings that recurred across ports are §5 (drivers that could not fail)
+and §6 (getprop's default `alt`).
 
 
 ## Pick up first
 
-**1. Drive the sixteen drafts to green and merge them.** That is the whole
-remaining Phase 0 port work. Every one of them is a PR opened by this
-programme, so the obligation is to get it mergeable rather than to report on
-it.
+**1. Make register 4.13's proof declaration-based.** 4.13's rule is about
+*declaration* — "nothing the library builds may name omni" — but the proof it
+prescribes is about *resolution*: "CI must prove it with the checkout absent."
+Those coincide only while omni is unresolvable by any other route, and for Go
+that stopped being true. `github.com/voxgig/omni/go` resolves from the public
+module proxy today with no tags and no checkout: `go mod tidy` in a scratch
+module with no omni anywhere resolves a pseudo-version and writes
+`require github.com/voxgig/omni/go v0.0.0-20260825220049-74ae081d405a` into the
+manifest — the struct#89 bug, reproducible now. So every absence-based guard
+proves less than it appears to, and the fix is owed regardless of any
+publishing decision. `struct/typescript/tools/omni-isolation.js` is the shape
+to copy: assert the manifest and the resolved dependency graph directly, the
+way `npm ls --omit=dev` does, so the check still holds when omni *is*
+resolvable.
 
-Three CI traps have already been hit and are worth checking for on any
-still-red leg, because none of them is a defect in the port:
+Three CI traps cost time during the migration. None is a defect in a port,
+and all three will recur:
 
 - **A struct PR checks out omni `main` at run time.** A run that executed
   before its paired omni PR merged fails against the *old* omni and stays red
