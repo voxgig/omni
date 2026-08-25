@@ -130,6 +130,13 @@ directory and use its `Makefile`.
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
 `make pack-check`, `make pack-diff`, `make inspect`, `make clean`.
 
+**The packages ship source.** omni is open source, and `files` carries
+`src/` and `compat/` alongside the compiled `dist/`. A consumer who wants
+to read the runner, or a porter translating it into a fourteenth
+language, gets it from the package rather than having to find the repo.
+The npm entry points all resolve to `dist/`; the sources ride along.
+`make pack-diff` will refuse a release that drops any of them.
+
 **omni is server-side only.** No port targets a browser, and the two
 npm packages carry no `browser` export condition and no bundler build.
 Nothing here should acquire one: the runner reads spec files from disk

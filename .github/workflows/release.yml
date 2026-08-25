@@ -1,41 +1,51 @@
 # Releases an omni npm package: publishes to npm AND writes the git tag.
 #
-# Modelled on voxgig/sekreto's release.yml, which is in turn modelled on
-# voxgig/apidef's publish.yml and the reasoning in that repo's
-# docs/how-to/release-and-tag.md. The comments below restate the parts that
-# are load-bearing here; that doc is the fuller account.
+# Modelled on voxgig/sekreto's release.yml, in turn on voxgig/apidef's
+# publish.yml and the reasoning in that repo's docs/how-to/release-and-tag.md.
+# The comments below restate the parts that are load-bearing here.
 #
 # ONE FILE, BECAUSE NPM ALLOWS EXACTLY ONE. A trusted publisher is registered
 # on npmjs.com against a single workflow FILENAME, so anything that must
 # accompany a publish - here, the tag - has to live inside it. A second
 # workflow cannot publish whatever permissions it holds: npm rejects the
 # exchange and reports it as a 404, not a 403, so as not to leak whether the
-# package exists.
-#
-# TWO JOBS, BECAUSE THEY NEED DIFFERENT PRIVILEGES, and the split is not
-# tidiness:
-#
-#   publish  id-token: write, contents: READ. Runs npm install, the build
-#            and the tests - dependency lifecycle scripts and project code.
-#   tag      contents: write. Runs git and nothing else.
-#
-# checkout persists its token into the git config for the WHOLE job, so in
-# one job every dependency postinstall during `npm install` would run
-# alongside a repository-write credential. OIDC cannot create a tag either -
-# its audience is the registry, not GitHub - so the two credentials are both
-# needed and neither substitutes for the other.
-#
-# And they cannot be split across two workflow FILES: a ref pushed with
-# GITHUB_TOKEN does not start another workflow run, so "tag in A, publish on
+# package exists. They cannot be split across two FILES either: a ref pushed
+# with GITHUB_TOKEN starts no further workflow run, so "tag in A, publish on
 # the tag" publishes nothing, silently.
 #
+# THREE JOBS, EACH WITH THE LEAST IT NEEDS. This is the security shape of the
+# file, and it is not tidiness:
+#
+#   build    contents: read.   Runs npm install, the build, the tests and the
+#                              packaging checks - all the project code and
+#                              every dependency lifecycle script. Ends by
+#                              uploading the TARBALL.
+#   publish  id-token: write.  Downloads that tarball and publishes it. NO
+#                              CHECKOUT AT ALL, so no repository code and no
+#                              dependency script can run here.
+#   tag      contents: write.  Runs git and nothing else.
+#
+# Why it matters: `id-token: write` is a JOB-level grant. It puts
+# ACTIONS_ID_TOKEN_REQUEST_URL and _TOKEN in the environment of every process
+# in that job, so a compromised postinstall during `npm install` could mint
+# the same OIDC token the publish uses and exchange it for a registry
+# credential scoped to whatever packages trust this repo. Keeping install and
+# build out of the OIDC job is what closes that, and `checkout` is omitted
+# there for the same reason - it would persist a git credential too.
+#
+# PUBLISHING THE TARBALL, NOT THE DIRECTORY, is what makes the split possible
+# and is better anyway: the exact bytes that `make pack-check` and
+# `make pack-diff` verified are the bytes that ship, with no chance of the
+# publish job's tree differing from the tested one. Provenance survives it -
+# libnpmpublish computes the attestation subject from the tarball bytes
+# (`ssri.fromData(tarballData)`), not from how the tarball was produced.
+#
 # TRUSTED PUBLISHING IS PER PACKAGE. @voxgig/omni and @voxgig/omni-js each
-# need their own `npm trust` run before a release can publish, or it will
-# fail with that misleading 404.
+# need their own `npm trust` run, or a release fails with that misleading 404.
 #
 # UNLIKE sekreto AND station, THERE IS NO SIBLING CHECKOUT. omni is the test
-# runner those repos borrow; its own suite imports only ./src and a local
-# fib fixture, so `make test-<port>` needs nothing but this repository.
+# runner those repos borrow; its own suite imports only ./src and a local fib
+# fixture, so `make test-<port>` needs nothing but this repository.
 #
 # VERSION BUMPS ARE NOT AUTOMATED, deliberately. Nothing here commits. It
 # reads the version already on the branch and releases exactly that, so the
@@ -58,23 +68,31 @@ on:
         required: true
         type: choice
         options: [typescript, javascript]
+      allow_removals:
+        description: 'This release deliberately REMOVES files from the published package'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  publish:
-    name: npm publish
+  # Everything that runs project code or third-party scripts. No id-token,
+  # no contents: write - if anything here is compromised it has neither a
+  # registry credential nor a repository one to reach for.
+  build:
+    name: build and check
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    # Deliberately NOT contents: write - see the header. This job runs
-    # dependency lifecycle scripts.
     permissions:
-      id-token: write
       contents: read
 
     outputs:
       port: ${{ steps.resolve.outputs.port }}
       version: ${{ steps.resolve.outputs.version }}
+      name: ${{ steps.resolve.outputs.name }}
       tag: ${{ steps.resolve.outputs.tag }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+      published: ${{ steps.registry.outputs.published }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -84,7 +102,6 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24.x
-          registry-url: 'https://registry.npmjs.org'
 
       # RELEASES COME FROM main, INCLUDING FROM THE BUTTON. `gh workflow run
       # --ref` accepts any branch, so without this the Actions UI could
@@ -125,9 +142,9 @@ jobs:
           echo "$NAME $VERSION -> tag $PORT/v$VERSION"
 
       # A tag pushed by hand must agree with the version it claims. Without
-      # this, pushing typescript/v0.1.1 while package.json still says 0.1.0
-      # resolves 0.1.0, finds it already published, skips the publish and
-      # goes GREEN - leaving a tag with no release behind it.
+      # this, pushing typescript/v0.1.2 while package.json still says 0.1.1
+      # resolves 0.1.1, finds it already published, skips the publish and goes
+      # GREEN - leaving a tag with no release behind it.
       - name: A pushed tag must match the package version
         if: ${{ github.event_name == 'push' }}
         env:
@@ -142,8 +159,8 @@ jobs:
       # A TAG CAN BE PUSHED FROM ANY BRANCH, and the dispatch guard above does
       # not cover that path. `git tag typescript/v0.1.1 && git push --tags`
       # from a feature branch arrives here with a ref that satisfies the
-      # version check, and publishes that branch to the registry
-      # irreversibly. Releases come from main on BOTH paths.
+      # version check, and publishes that branch irreversibly. Releases come
+      # from main on BOTH paths.
       #
       # --is-ancestor, not "equals the tip": a tag legitimately lags main by
       # the time the run starts, and that must still release.
@@ -161,9 +178,9 @@ jobs:
           echo "$GITHUB_REF_NAME is on main"
 
       # AN EXISTING TAG IS ONLY A PROBLEM IF IT POINTS SOMEWHERE ELSE. A tag
-      # already on THIS commit is the idempotent case - nothing to create,
-      # not an error - which is what makes re-dispatching after a partial
-      # release safe.
+      # already on THIS commit is the idempotent case - nothing to create, not
+      # an error - which is what makes re-dispatching after a partial release
+      # safe.
       - name: Refuse a tag that points at a different commit
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
@@ -178,20 +195,11 @@ jobs:
           fi
           [ -z "$AT" ] || echo "$TAG already points here; nothing to create"
 
-      # `make test-<port>`, not a bare `npm test`: the port Makefile's test
-      # target installs and builds first, and a fresh checkout has no dist/.
-      - name: Build and test
-        run: make test-${{ steps.resolve.outputs.port }}
-
-      # Trusted publishing requires npm >= 11.5.1.
-      - name: Use a trusted-publishing capable npm
-        run: npm install -g npm@latest
-
       # THE REGISTRY IS THE SOURCE OF TRUTH FOR "IS THIS RELEASED", not the
-      # tag. A run can publish and then fail before tagging, leaving a
-      # version on npm with nothing pointing at it. Without this check that
-      # state is unrecoverable: the publish dies on "cannot publish over the
-      # previously published versions" before the tag job ever runs.
+      # tag. A run can publish and then fail before tagging, leaving a version
+      # on npm with nothing pointing at it. Without this check that state is
+      # unrecoverable: the publish dies on "cannot publish over the previously
+      # published versions" before the tag job ever runs.
       - name: Is this version already on npm?
         id: registry
         env:
@@ -209,11 +217,11 @@ jobs:
 
       # SKIPPING THE PUBLISH ASSUMES "SAME VERSION MEANS SAME CODE". That
       # holds only if main has not moved: publish at commit A, tag job fails,
-      # main advances to B, someone re-dispatches - the publish is skipped
-      # and B gets tagged, while the registry artifact was built from A.
-      # npm records the source commit as gitHead, so this is checkable.
-      # Absent gitHead cannot be verified, so warn rather than block:
-      # refusing would make legitimate recovery impossible.
+      # main advances to B, someone re-dispatches - the publish is skipped and
+      # B gets tagged, while the registry artifact was built from A. npm
+      # records the source commit as gitHead, so this is checkable. Absent
+      # gitHead cannot be verified, so warn rather than block: refusing would
+      # make legitimate recovery impossible.
       - name: A published version must come from this commit
         if: ${{ steps.registry.outputs.published == 'true' }}
         env:
@@ -231,39 +239,95 @@ jobs:
             echo "$VERSION on npm was built from this commit"
           fi
 
+      # `make test-<port>`, not a bare `npm test`: the port Makefile's test
+      # target installs and builds first, and a fresh checkout has no dist/.
+      - name: Build and test
+        run: make test-${{ steps.resolve.outputs.port }}
+
       # THE TESTS DO NOT EXERCISE THE TARBALL. They run against the working
-      # tree, where every file is present whatever `files` says and the
-      # shims sit at their checkout paths - so a missing entry, or a path
-      # assumption that only holds in a checkout, is invisible to them and
-      # shows up once a consumer installs from npm. Both have happened; the
-      # header of tools/pack_check.sh names them.
-      #
-      # `make pack-check` packs, installs into an empty directory outside
-      # the checkout, and uses the result. Same target CI runs on every PR,
-      # so this is a backstop rather than the only line of defence.
+      # tree, where every file is present whatever `files` says and the shims
+      # sit at their checkout paths - so a missing entry, or a path assumption
+      # that only holds in a checkout, is invisible to them and shows up once
+      # a consumer installs. Both have happened; tools/pack_check.sh names them.
       - name: The tarball must work as a consumer receives it
         if: ${{ steps.registry.outputs.published == 'false' }}
         run: make pack-check PORTS=${{ steps.resolve.outputs.port }}
 
-      # A RELEASE MUST NOT SILENTLY DROP A PUBLISHED FILE. @voxgig/omni@0.1.0
-      # was published from a tree whose `files` carried "src" while main's
-      # did not, so the next release from main would have removed three
-      # source files from the package with nothing to notice. Adding files
-      # is ordinary and allowed; removing them fails the release unless
-      # OMNI_ALLOW_REMOVALS says it is deliberate.
+      # A RELEASE MUST NOT SILENTLY DROP A PUBLISHED FILE. 0.1.0 was published
+      # from a tree whose `files` carried "src" while main's did not, so the
+      # next release would have removed three source files with nothing to
+      # notice. Adding files is ordinary; removing them fails unless
+      # `allow_removals` says it is deliberate.
       - name: A release must not remove published files
         if: ${{ steps.registry.outputs.published == 'false' }}
+        env:
+          OMNI_ALLOW_REMOVALS: ${{ inputs.allow_removals && '1' || '' }}
         run: make pack-diff PORTS=${{ steps.resolve.outputs.port }}
 
-      # Publish BEFORE tagging (the tag job `needs` this one), so a tag only
-      # ever exists for a release that reached the registry.
-      #
-      # No --provenance: trusted publishing attaches it on its own.
-      - name: Publish to npm
+      # The artifact the publish job will ship. Packing HERE, in the job that
+      # ran the tests and the checks, is what makes "the bytes that were
+      # verified are the bytes that ship" true rather than aspirational.
+      - name: Pack
+        id: pack
         if: ${{ steps.registry.outputs.published == 'false' }}
         working-directory: ${{ steps.resolve.outputs.port }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dist"
+          TARBALL="$(npm pack --pack-destination "$RUNNER_TEMP/dist" --silent | tail -1)"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "packed $TARBALL"
+          tar tzf "$RUNNER_TEMP/dist/$TARBALL"
+
+      - name: Upload the tarball
+        if: ${{ steps.registry.outputs.published == 'false' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/dist/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # THE ONLY JOB WITH id-token: write, and it deliberately does NOT check the
+  # repository out. It downloads the tarball build produced and publishes it.
+  # No project code, no dependency lifecycle script and no git credential is
+  # in scope while the OIDC token exists.
+  publish:
+    name: npm publish
+    needs: build
+    if: ${{ needs.build.outputs.published == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.x
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download the tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/dist
+
+      # Trusted publishing requires npm >= 11.5.1, and node-version alone does
+      # not guarantee it. `--ignore-scripts` because this is the one install
+      # that happens beside the OIDC token: npm itself has no lifecycle
+      # scripts, so this costs nothing and closes the last script path.
+      - name: Use a trusted-publishing capable npm
+        run: npm install -g npm@latest --ignore-scripts
+
+      # No --provenance: trusted publishing attaches it on its own, and the
+      # attestation subject is computed from these tarball bytes.
+      - name: Publish to npm
         env:
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TARBALL: ${{ needs.build.outputs.tarball }}
         run: |
           set -euo pipefail
           # A PRERELEASE MUST NOT BECOME `latest`. `npm publish` defaults to
@@ -273,16 +337,21 @@ jobs:
             *-*) DIST=next ;;
             *)   DIST=latest ;;
           esac
-          echo "publishing $VERSION under dist-tag $DIST"
-          npm publish --access public --tag "$DIST"
+          echo "publishing $TARBALL under dist-tag $DIST"
+          npm publish "$RUNNER_TEMP/dist/$TARBALL" --access public --tag "$DIST"
 
-  # Runs git and nothing else. No npm install, no project code - so the
-  # repository-write credential is never in scope while third-party code
-  # runs. Skipped on the push path: the tag already exists there.
+  # Runs git and nothing else. Skipped on the push path: the tag already
+  # exists there. `always()` because publish is SKIPPED when the version is
+  # already on npm, and that is the recovery case this job exists for - a run
+  # that published and then failed before tagging.
   tag:
     name: tag
-    needs: publish
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [build, publish]
+    if: >-
+      ${{ always()
+          && github.event_name == 'workflow_dispatch'
+          && needs.build.result == 'success'
+          && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -296,16 +365,16 @@ jobs:
 
       - name: Tag the release
         env:
-          TAG: ${{ needs.publish.outputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -euo pipefail
           HEAD_SHA="$(git rev-parse HEAD)"
 
           # EXISTENCE IS NOT ENOUGH. `--verify` only asks whether the name
-          # resolves; a tag created between the publish job's guard and this
-          # checkout could point anywhere. Treating that as idempotent would
-          # leave a green run with an artifact from THIS commit and a release
-          # tag on a different one.
+          # resolves; a tag created between build's guard and this checkout
+          # could point anywhere. Treating that as idempotent would leave a
+          # green run with an artifact from THIS commit and a release tag on a
+          # different one.
           AT="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
           if [ -n "$AT" ]; then
             if [ "$AT" != "$HEAD_SHA" ]; then
