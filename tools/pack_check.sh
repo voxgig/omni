@@ -15,6 +15,12 @@
 #     cjs-module-lexer cannot read statically, so `import { makeRunner }
 #     from '@voxgig/omni-js'` failed where the same import from
 #     @voxgig/omni worked. Only reachable once installed.
+#   - both shims resolved a relative spec path against a caller frame that
+#     an ESM caller reports as a file:// URL, so it became
+#     `file:/.../fib.json` and the read failed.
+#   - the typescript tarball is 100% build output and dist/ is not
+#     committed, so `npm publish` from a clean tree shipped LICENSE,
+#     README and package.json - nothing else.
 #
 # So: pack the tarball, install it into an empty directory OUTSIDE this
 # repository, and exercise it there.
@@ -30,9 +36,13 @@ for PORT in $PORTS; do
   NAME=$(node -p "require('$ROOT/$PORT/package.json').name")
   printf '======== %s (%s) ========\n' "$PORT" "$NAME"
 
-  # dist/ is not committed; the TypeScript port must be built to pack.
+  # Install only - deliberately NOT `npm run build`. dist/ is not committed
+  # and the tarball is entirely build output, so the port's `prepack` is
+  # what has to produce it. Building here would mask a missing prepack and
+  # this check would pass over a tarball that a real publish ships hollow.
   if [ -f "$ROOT/$PORT/tsconfig.json" ]; then
-    (cd "$ROOT/$PORT" && npm install --no-audit --no-fund --silent && npm run --silent build)
+    (cd "$ROOT/$PORT" && npm install --no-audit --no-fund --silent)
+    rm -rf "$ROOT/$PORT/dist"
   fi
 
   SMOKE=$(mktemp -d)
@@ -167,6 +177,41 @@ for (const sub of Object.keys(pkg.exports).filter((s) => s !== './package.json')
   )
   console.log('  ' + spec + ': ' + named.length + ' named ESM exports')
 }
+
+// IMPORTING THE SHIM IS NOT USING IT. The compat shim resolves a relative
+// spec path by walking the stack for the first frame outside omni, and an
+// ESM caller's frame is a file:// URL rather than a path - so this file
+// must actually CALL it, from ESM, with a relative path. Importing alone
+// left that bug invisible.
+function fib(n) {
+  let prev = 0
+  let cur = 1
+  if (0 === n) return 0
+  for (let i = 1; i < n; i++) {
+    const next = prev + cur
+    prev = cur
+    cur = next
+  }
+  return cur
+}
+
+function sdkfor(shift) {
+  const sdk = {
+    utility: () => ({
+      fib: (n) => fib('number' === typeof n ? n + shift : n),
+      contextify: (v) => v,
+      struct: { inject: (o) => o },
+    }),
+    tester: async (o) => sdkfor(o && o.shift ? o.shift : 0),
+  }
+  return sdk
+}
+
+const compat = await import(NAME + '/compat/struct')
+const runner = await compat.makeRunner('./fib.json', sdkfor(0))
+const R = await runner('fib')
+await R.runset(R.spec.basic, fib)
+console.log('  compat/struct: relative spec resolved from an ESM caller, corpus ran')
 MJS
 
   (

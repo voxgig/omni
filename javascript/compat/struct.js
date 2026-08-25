@@ -11,6 +11,7 @@
 // Everything else - the corpus, the SDK, the test file - is unchanged.
 
 const { dirname, isAbsolute, join, sep } = require('node:path')
+const { fileURLToPath } = require('node:url')
 
 const omni = require('../src')
 
@@ -33,6 +34,28 @@ const { EXISTSMARK, NULLMARK, UNDEFMARK, nullmodifier } = omni
 // javascript was the only port matching on a path fragment.
 const OMNIDIR = dirname(__dirname)
 
+// A stack frame's file, as a filesystem path.
+//
+// An ESM caller's frame reports a file:// URL rather than a path, and
+// `dirname('file:///a/b.mjs')` yields 'file:/a', so a relative spec path
+// resolved against it died on `ENOENT ... 'file:/.../fib.json'`. Frames
+// that name no path at all - node: internals, data: URLs, eval - are
+// skipped rather than mistaken for the caller.
+function framepath(frame) {
+  const file = 'function' === typeof frame.getFileName ? frame.getFileName() : null
+  if (null == file) {
+    return null
+  }
+  if (file.startsWith('file://')) {
+    try {
+      return fileURLToPath(file)
+    } catch {
+      return null
+    }
+  }
+  return isAbsolute(file) ? file : null
+}
+
 // struct passes a test-file path relative to the test file that loads the
 // runner, so resolve it the same way.
 function callerdir() {
@@ -44,7 +67,7 @@ function callerdir() {
   Error.prepareStackTrace = original
 
   for (const frame of stack) {
-    const file = 'function' === typeof frame.getFileName ? frame.getFileName() : null
+    const file = framepath(frame)
     if (file && !file.startsWith(OMNIDIR + sep)) {
       return dirname(file)
     }
