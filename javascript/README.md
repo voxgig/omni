@@ -14,6 +14,10 @@ npm install --save-dev @voxgig/omni-js
 Zero runtime dependencies, and nothing here is imported by a consumer's
 shipped code.
 
+**Server-side only.** omni reads spec files from disk and runs a system
+under test in-process; it does not target a browser and the package
+carries no `browser` export condition.
+
 Working in this repository instead: `npm test` (there is no build step).
 
 ## Use
