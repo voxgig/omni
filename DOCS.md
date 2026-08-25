@@ -704,8 +704,20 @@ one import:
 
 where `./omni` is a ~20-line resolver that locates the local omni checkout
 (see [8.3](#83-porting-the-rest)) and re-exports
-`<checkout>/javascript/compat/struct.js`. (If omni is published one day,
-this becomes `require('@voxgig/omni-js/compat/struct')`.)
+`<checkout>/javascript/compat/struct.js`.
+
+The two Node ports are also packaged for npm, as `@voxgig/omni-js` and
+`@voxgig/omni`, and for those the resolver is optional: the shim is a
+declared subpath, so a consumer that adds omni as a **devDependency**
+writes `require('@voxgig/omni-js/compat/struct')` (or, from TypeScript,
+`require('@voxgig/omni/compat/struct')`) and needs no checkout at all.
+(NOT YET ON THE REGISTRY - the first release has not been cut, so today
+that install 404s and the checkout below is the only route that works.
+Delete this parenthesis once both packages are published.)
+
+The existing consumers all still resolve a checkout; moving any of them
+over is a separate change, port by port. See
+[8.3](#83-porting-the-rest) for the other twenty-one.
 
 The shim wraps struct's SDK as an omni provider, and forwards `utility()`
 and `tester()`, so test code that reaches through the returned `client`
@@ -726,15 +738,22 @@ with struct's own runner.
 
 For each struct port:
 
-1. Wire omni in as a **local checkout** - omni is deliberately not
-   published to any package registry for now, and the supported
-   consumption mechanism is the one `voxgig/sekreto` already uses in all
-   ten of its ports: resolve the checkout from `$OMNI_HOME`, then sibling
-   paths (`../../omni`, `../../../omni`), taking the first directory that
-   contains `spec/fib.json`. Compiled languages link it without putting a
+1. Wire omni in as a **local checkout**. Only the two Node ports have
+   been packaged for a registry so far - the rest have no published
+   artifact, not because they could not have one (python, rust and dart
+   all have obvious homes) but because nobody has done the packaging
+   work - so for them the checkout is the only mechanism. It is also the
+   one `voxgig/sekreto` already uses in all ten of its ports: resolve
+   the checkout from `$OMNI_HOME`, then sibling paths (`../../omni`,
+   `../../../omni`), taking the first directory that contains
+   `spec/fib.json`. Compiled languages link it without putting a
    machine-specific path in a checked-in file: Go generates a `go.work`,
    Rust symlinks `vendor/omni`, C# passes `-p:OmniPath=`, Java puts it on
-   the classpath - all gitignored. CI checks out `voxgig/omni` beside the
+   the classpath - all gitignored. A JavaScript or TypeScript consumer
+   may instead take `@voxgig/omni-js` or `@voxgig/omni` from npm; there
+   the isolation device is the **`devDependencies` block itself**, since
+   npm never installs a devDependency transitively, and `npm ls --omit=dev`
+   is what proves it (register 4.13). CI checks out `voxgig/omni` beside the
    consuming repo and exports `OMNI_HOME`. Only the *tests* depend on
    omni; the shipped library never does, so struct's zero-runtime-
    dependency rule is untouched.

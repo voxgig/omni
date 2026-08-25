@@ -128,7 +128,24 @@ directory and use its `Makefile`.
 | Lean 4 | `lean/` | `make test` | `lake`; pure `Except String` failures |
 
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
-`make inspect`, `make clean`.
+`make pack-check`, `make inspect`, `make clean`.
+
+**Node 24 is the baseline.** Every `node-version` in `ci.yml` and
+`release.yml` pins it, so that is the version the two Node ports are
+tested and published on. Node 22 still passes the whole sweep and the
+shipped library uses nothing newer, so neither manifest declares
+`engines` - a floor we have not established would be over-claiming, and
+it would warn consumers off for no reason. Node 20 does NOT work for
+development: `node --test` only learned glob patterns in 22, so
+`make test-typescript` fails there with a misleading
+`Could not find 'dist/test/*.test.js'`.
+
+`make pack-check` is the one that does not run against the working tree:
+it packs the two npm ports, installs them into an empty directory outside
+this repository and uses them there. Anything true only of a checkout -
+a file the `files` list forgets, a path the shim assumes - is invisible
+to every other target and shows up only once a consumer installs. Both
+have already happened; `tools/pack_check.sh` names them.
 
 
 ## Standard workflows

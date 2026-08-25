@@ -2,13 +2,44 @@
   "name": "@voxgig/omni-js",
   "version": "0.1.0",
   "description": "Omni: shared multi-language test runner (JavaScript)",
-  "license": "MIT",
   "main": "src/index.js",
-  "files": [
-    "src"
+  "type": "commonjs",
+  "exports": {
+    ".": "./src/index.js",
+    "./compat/struct": "./compat/struct.js",
+    "./package.json": "./package.json"
+  },
+  "homepage": "https://github.com/voxgig/omni",
+  "keywords": [
+    "voxgig",
+    "omni",
+    "test",
+    "runner",
+    "conformance",
+    "spec"
   ],
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/voxgig/omni.git",
+    "directory": "javascript"
+  },
   "scripts": {
+    "build": "node -e \"console.log('No build step for JavaScript')\"",
+    "clean": "rm -rf node_modules package-lock.json",
     "test": "node --test \"test/*.test.js\"",
-    "test-some": "node --test --test-name-pattern=$npm_config_pattern \"test/*.test.js\""
-  }
+    "test-some": "node --test --test-name-pattern=$npm_config_pattern \"test/*.test.js\"",
+    "reset": "npm run clean && npm i && npm test",
+    "repo-tag": "REPO_VERSION=`node -e \"console.log(require('./package').version)\"` && echo TAG: javascript/v$REPO_VERSION && git commit -a -m javascript/v$REPO_VERSION && git push && git tag javascript/v$REPO_VERSION && git push --tags;",
+    "repo-publish": "npm run clean && npm i && npm run repo-publish-quick",
+    "repo-publish-quick": "npm run test && npm run repo-tag && npm stage publish --access public --registry https://registry.npmjs.org",
+    "repo-publish-dry": "npm run clean && npm i && npm run repo-publish-dry-quick",
+    "repo-publish-dry-quick": "npm run test && npm stage publish --dry-run --access public --registry https://registry.npmjs.org"
+  },
+  "license": "MIT",
+  "files": [
+    "LICENSE",
+    "src",
+    "compat"
+  ]
 }

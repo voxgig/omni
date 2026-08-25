@@ -8,6 +8,7 @@
 #   make clean         - clean build artifacts
 #   make parity        - check that every port has the canonical API
 #   make struct-compat - run voxgig/struct's own suite on omni's runner
+#   make pack-check    - install the npm ports from a tarball and use them
 #   make spec          - recompile spec/*.json from spec/*.aontu
 #   make spec-check    - fail if a committed spec/*.json is stale
 
@@ -17,7 +18,7 @@
 LANGS = typescript javascript python ruby php perl lua go rust java csharp kotlin \
         scala clojure c cpp zig swift dart elixir ocaml haskell lean
 
-.PHONY: all test build inspect clean parity struct-compat check spec spec-check
+.PHONY: all test build inspect clean parity struct-compat pack-check check spec spec-check
 
 all: test
 
@@ -77,5 +78,12 @@ spec-check:
 # Pass STRUCT=<path> if the struct repo is not a sibling of this one.
 struct-compat:
 	@tools/struct_compat.sh $(STRUCT)
+
+# What the npm ports would actually publish, exercised as a consumer gets
+# it: packed, installed into an empty directory outside this repository,
+# then used. The suites cannot see this - they run against the working
+# tree, where every file is present whatever `files` says.
+pack-check:
+	@tools/pack_check.sh $(PORTS)
 
 check: parity test

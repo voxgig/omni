@@ -3,10 +3,23 @@
 The canonical omni implementation. Every other port is a translation of
 [`src/Runner.ts`](src/Runner.ts) and [`src/Util.ts`](src/Util.ts).
 
+## Install
+
+omni is a test runner, so it belongs in `devDependencies`:
+
 ```sh
-npm install
-npm test
+npm install --save-dev @voxgig/omni
 ```
+
+**Not on the registry yet.** The first release has not been cut, so
+that command 404s today; until it lands, omni is consumed as a local
+checkout - see [DOCS.md §8.3](../DOCS.md#83-porting-the-rest).
+(Delete this paragraph once `@voxgig/omni` is published.)
+
+Types are bundled. Zero runtime dependencies, and nothing here is imported
+by a consumer's shipped code.
+
+Working in this repository instead: `npm install && npm test`.
 
 ## Use
 
@@ -38,9 +51,11 @@ import:
 ```
 
 where `./omni` is the resolver in the consuming port's test directory that
-locates a local omni checkout. The shim wraps struct's SDK as a provider
-and forwards `utility()`/`tester()`, so test code that reaches through the
-returned client keeps working. It is the typed peer of
+locates a local omni checkout. Installed from npm no resolver is needed -
+the shim is a declared subpath, `require('@voxgig/omni/compat/struct')`.
+The shim wraps struct's SDK as a provider and forwards
+`utility()`/`tester()`, so test code that reaches through the returned
+client keeps working. It is the typed peer of
 [`../javascript/compat/struct.js`](../javascript/compat/struct.js), and
 being a build artifact it lives at `dist/compat/struct.js` once `npm run
 build` has run.

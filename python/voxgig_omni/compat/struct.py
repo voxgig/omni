@@ -34,7 +34,7 @@ def callerdir() -> str:
     omni package is the caller."""
     for frame in inspect.stack():
         filename = os.path.abspath(frame.filename)
-        if not filename.startswith(OMNIDIR):
+        if not filename.startswith(OMNIDIR + os.sep):
             return os.path.dirname(filename)
     return os.getcwd()
 

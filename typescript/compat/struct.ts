@@ -13,7 +13,8 @@
 // the test file - is unchanged. This is the TypeScript peer of
 // javascript/compat/struct.js and python/voxgig_omni/compat/struct.py.
 
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { EXISTSMARK, NULLMARK, UNDEFMARK, makeRunner as omnimakerunner, nullmodifier } from '../src'
 
@@ -57,6 +58,12 @@ export type StructProvider = Provider & {
 // The directory this shim was loaded from: dist/compat when built, compat
 // when run from source. Its parent is the port root, so every frame from
 // inside omni is skipped when locating the caller.
+//
+// It is derived from __dirname rather than matched against a known path,
+// so it holds wherever the package sits - a checkout, or
+// node_modules/@voxgig/omni. The trailing separator matters: without it a
+// sibling whose name merely EXTENDS this one (`omni-js-extra` beside
+// `omni-js`) would read as inside.
 const OMNIDIR = dirname(__dirname)
 
 // A relative test-file path is resolved against the first stack frame
@@ -71,6 +78,28 @@ const OMNIDIR = dirname(__dirname)
 // port now resolves the path itself, in `test/omni.ts`, and never reaches
 // this. (An earlier version of this comment asserted it already did - it did
 // not; this shim shipped before any consumer had proved it.)
+// A stack frame's file, as a filesystem path.
+//
+// An ESM caller's frame reports a file:// URL rather than a path, and
+// `dirname('file:///a/b.mjs')` yields 'file:/a', so a relative spec path
+// resolved against it died on `ENOENT ... 'file:/.../fib.json'`. Frames
+// that name no path at all - node: internals, data: URLs, eval - are
+// skipped rather than mistaken for the caller.
+function framepath(frame: any): string | null {
+  const file = 'function' === typeof frame.getFileName ? frame.getFileName() : null
+  if (null == file) {
+    return null
+  }
+  if (file.startsWith('file://')) {
+    try {
+      return fileURLToPath(file)
+    } catch {
+      return null
+    }
+  }
+  return isAbsolute(file) ? file : null
+}
+
 function callerdir(): string {
   const original = Error.prepareStackTrace
   Error.prepareStackTrace = (_err, stack) => stack
@@ -80,8 +109,8 @@ function callerdir(): string {
   Error.prepareStackTrace = original
 
   for (const frame of stack) {
-    const file = 'function' === typeof frame.getFileName ? frame.getFileName() : null
-    if (file && !file.startsWith(OMNIDIR)) {
+    const file = framepath(frame)
+    if (file && !file.startsWith(OMNIDIR + sep)) {
       return dirname(file)
     }
   }
