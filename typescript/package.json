@@ -1,6 +1,6 @@
 {
   "name": "@voxgig/omni",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Omni: shared multi-language test runner (TypeScript, canonical)",
   "main": "dist/src/index.js",
   "type": "commonjs",
@@ -57,6 +57,7 @@
   "files": [
     "LICENSE",
     "src",
+    "compat",
     "dist/src",
     "dist/compat"
   ],
