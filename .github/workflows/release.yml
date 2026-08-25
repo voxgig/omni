@@ -139,6 +139,27 @@ jobs:
             exit 1
           }
 
+      # A TAG CAN BE PUSHED FROM ANY BRANCH, and the dispatch guard above does
+      # not cover that path. `git tag typescript/v0.1.1 && git push --tags`
+      # from a feature branch arrives here with a ref that satisfies the
+      # version check, and publishes that branch to the registry
+      # irreversibly. Releases come from main on BOTH paths.
+      #
+      # --is-ancestor, not "equals the tip": a tag legitimately lags main by
+      # the time the run starts, and that must still release.
+      - name: A pushed tag must point at a commit on main
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          # An explicit refspec: a tag-push checkout has no origin/main, and
+          # a bare `git fetch origin main` only writes FETCH_HEAD.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main || {
+            echo "::error::$GITHUB_REF_NAME points at a commit that is not on main"
+            exit 1
+          }
+          echo "$GITHUB_REF_NAME is on main"
+
       # AN EXISTING TAG IS ONLY A PROBLEM IF IT POINTS SOMEWHERE ELSE. A tag
       # already on THIS commit is the idempotent case - nothing to create,
       # not an error - which is what makes re-dispatching after a partial
@@ -211,47 +232,18 @@ jobs:
           fi
 
       # THE TESTS DO NOT EXERCISE THE TARBALL. They run against the working
-      # tree, where every file is present whatever `files` says - so a
-      # missing entry is invisible to them and shows up only once a consumer
-      # installs from npm. That is not hypothetical: @voxgig/omni-js shipped
-      # `files: ["src"]` and omitted compat/struct.js, the one module
-      # voxgig/struct's JavaScript port consumes.
+      # tree, where every file is present whatever `files` says and the
+      # shims sit at their checkout paths - so a missing entry, or a path
+      # assumption that only holds in a checkout, is invisible to them and
+      # shows up once a consumer installs from npm. Both have happened; the
+      # header of tools/pack_check.sh names them.
       #
-      # So pack what would be published, install THAT into an empty
-      # directory outside the repository (node resolves up the tree, and a
-      # temp dir inside the checkout would find the working copy and pass
-      # for the wrong reason), and require every declared entry point.
-      - name: The tarball must contain every entry point
+      # `make pack-check` packs, installs into an empty directory outside
+      # the checkout, and uses the result. Same target CI runs on every PR,
+      # so this is a backstop rather than the only line of defence.
+      - name: The tarball must work as a consumer receives it
         if: ${{ steps.registry.outputs.published == 'false' }}
-        env:
-          NAME: ${{ steps.resolve.outputs.name }}
-          PORT: ${{ steps.resolve.outputs.port }}
-        run: |
-          set -euo pipefail
-          SMOKE="$(mktemp -d)"
-          TARBALL="$(cd "$PORT" && npm pack --pack-destination "$SMOKE" --silent | tail -1)"
-          echo "packed $TARBALL"
-          tar tzf "$SMOKE/$TARBALL"
-
-          cd "$SMOKE"
-          npm init -y >/dev/null
-          npm install "./$TARBALL" --no-audit --no-fund --silent
-
-          # Every subpath in the manifest's `exports`, main included.
-          node -e '
-            const name = process.env.NAME
-            const pkg = require(name + "/package.json")
-            const subpaths = Object.keys(pkg.exports).filter((s) => s !== "./package.json")
-            for (const sub of subpaths) {
-              const spec = "." === sub ? name : name + sub.slice(1)
-              const mod = require(spec)
-              const keys = Object.keys(mod)
-              if (0 === keys.length) {
-                throw new Error(spec + " resolved but exported nothing")
-              }
-              console.log(spec + ": " + keys.length + " exports")
-            }
-          '
+        run: make pack-check PORTS=${{ steps.resolve.outputs.port }}
 
       # Publish BEFORE tagging (the tag job `needs` this one), so a tag only
       # ever exists for a release that reached the registry.

@@ -287,6 +287,19 @@ jobs:
           python-version: '3.12'
       - run: make parity
 
+  pack-check:
+    name: npm packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+      # What @voxgig/omni and @voxgig/omni-js would publish, installed from
+      # a tarball into an empty directory and used. The port suites cannot
+      # see this: they run against the working tree.
+      - run: make pack-check
+
   struct-compat:
     name: struct compatibility
     runs-on: ubuntu-latest

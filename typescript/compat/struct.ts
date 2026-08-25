@@ -13,7 +13,7 @@
 // the test file - is unchanged. This is the TypeScript peer of
 // javascript/compat/struct.js and python/voxgig_omni/compat/struct.py.
 
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, sep } from 'node:path'
 
 import { EXISTSMARK, NULLMARK, UNDEFMARK, makeRunner as omnimakerunner, nullmodifier } from '../src'
 
@@ -57,6 +57,12 @@ export type StructProvider = Provider & {
 // The directory this shim was loaded from: dist/compat when built, compat
 // when run from source. Its parent is the port root, so every frame from
 // inside omni is skipped when locating the caller.
+//
+// It is derived from __dirname rather than matched against a known path,
+// so it holds wherever the package sits - a checkout, or
+// node_modules/@voxgig/omni. The trailing separator matters: without it a
+// sibling whose name merely EXTENDS this one (`omni-js-extra` beside
+// `omni-js`) would read as inside.
 const OMNIDIR = dirname(__dirname)
 
 // A relative test-file path is resolved against the first stack frame
@@ -81,7 +87,7 @@ function callerdir(): string {
 
   for (const frame of stack) {
     const file = 'function' === typeof frame.getFileName ? frame.getFileName() : null
-    if (file && !file.startsWith(OMNIDIR)) {
+    if (file && !file.startsWith(OMNIDIR + sep)) {
       return dirname(file)
     }
   }

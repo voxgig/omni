@@ -10,11 +10,28 @@
 //
 // Everything else - the corpus, the SDK, the test file - is unchanged.
 
-const { dirname, isAbsolute, join } = require('node:path')
+const { dirname, isAbsolute, join, sep } = require('node:path')
 
 const omni = require('../src')
 
 const { EXISTSMARK, NULLMARK, UNDEFMARK, nullmodifier } = omni
+
+// The directory this shim was loaded from. Its parent is the package root,
+// so every frame from inside omni is skipped when locating the caller.
+//
+// This used to test each frame for the literal fragment `omni/javascript`,
+// which is only true of a CHECKOUT. Installed from npm the shim lives at
+// node_modules/@voxgig/omni-js/compat/struct.js, no frame matched, and the
+// first frame examined - this module's own - was taken for the caller: a
+// relative spec path then resolved to
+// node_modules/@voxgig/omni-js/compat/<spec>, and makeRunner died on
+// ENOENT. Deriving the root from __dirname holds wherever the package sits.
+// The trailing separator matters: without it a sibling whose name merely
+// EXTENDS this one (`omni-js-extra` beside `omni-js`) would read as inside.
+//
+// This is what the typescript, python, php and ruby peers already did;
+// javascript was the only port matching on a path fragment.
+const OMNIDIR = dirname(__dirname)
 
 // struct passes a test-file path relative to the test file that loads the
 // runner, so resolve it the same way.
@@ -28,7 +45,7 @@ function callerdir() {
 
   for (const frame of stack) {
     const file = 'function' === typeof frame.getFileName ? frame.getFileName() : null
-    if (file && !file.includes(join('omni', 'javascript'))) {
+    if (file && !file.startsWith(OMNIDIR + sep)) {
       return dirname(file)
     }
   }
