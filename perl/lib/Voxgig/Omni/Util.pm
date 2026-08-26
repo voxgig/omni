@@ -167,7 +167,15 @@ sub deepequal {
 
         # NaN equals NaN: deepequal is structural, not IEEE (as canonical).
         # NaN is the only value that is not equal to itself.
-        return 1 if $a != $a && $b != $b;
+        #
+        # The string-form guard is load-bearing. Perl scalars are untyped and
+        # looks_like_number() accepts the STRINGS "NaN" and "nan", so a bare
+        # self-inequality test would make two differently spelled strings
+        # compare equal - canonical treats them as distinct strings. Two
+        # genuinely computed NaNs both stringify to "NaN", so requiring the
+        # string forms to match keeps real NaN equality and restores string
+        # distinctness.
+        return 1 if $a != $a && $b != $b && "$a" eq "$b";
 
         return ( $a == $b ) ? 1 : 0;
     }
