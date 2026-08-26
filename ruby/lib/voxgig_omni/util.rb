@@ -109,7 +109,12 @@ module VoxgigOmni
       bbool = b.is_a?(TrueClass) || b.is_a?(FalseClass)
       return a == b if abool || bbool
 
-      return a == b if isnum(a) && isnum(b)
+      # NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+      if isnum(a) && isnum(b)
+        return true if a.is_a?(Float) && a.nan? && b.is_a?(Float) && b.nan?
+
+        return a == b
+      end
 
       return a.equal?(b) if a.nil? || b.nil? || a.equal?(ABSENT) || b.equal?(ABSENT)
 

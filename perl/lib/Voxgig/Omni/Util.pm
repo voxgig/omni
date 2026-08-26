@@ -164,6 +164,11 @@ sub deepequal {
     return 0 if ref($a) ne ref($b);
 
     if ( isnum($a) && isnum($b) ) {
+
+        # NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+        # NaN is the only value that is not equal to itself.
+        return 1 if $a != $a && $b != $b;
+
         return ( $a == $b ) ? 1 : 0;
     }
 

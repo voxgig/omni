@@ -824,5 +824,30 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,
-failure text - is identical across all twenty-three ports, and the
-Fibonacci suite proves it on every run.
+failure text - is *intended* to be identical across all twenty-three ports,
+and the Fibonacci suite proves it **for every value JSON can express**.
+
+That qualifier is load-bearing, and it is the honest limit of what is
+checked. The corpus is JSON, so a value JSON has no literal for cannot
+appear in an entry, and port behaviour on such a value is unproven by
+construction. `tools/check_parity.py` does not close the gap either: it is
+a NAME check by design and says so in its own docstring - it confirms each
+canonical identifier appears as a token in a port's source, and a port
+whose `deepequal` was `return true` would pass it.
+
+**NaN is the worked example.** `deepequal(NaN, NaN)` must be `true` -
+deepequal is structural, not IEEE - and six ports silently disagreed:
+php, ruby, lua, perl, clojure and zig. Every suite stayed green throughout,
+because `spec/fib.json` contains no NaN and cannot: JSON has no NaN
+literal, and the sentinel set (`__NULL__`, `__UNDEF__`, `__EXISTS__`) has
+no member for it. Ruby was the sharpest case - it returned `true` for
+`deepequal(Float::NAN, Float::NAN)` and `false` for two *distinct* NaNs,
+because `Float::NAN` is a single constant object caught by an identity
+fast-path. A test written the obvious way would have passed and proved
+nothing.
+
+The divergence is fixed. The structural point is not: where neither the
+corpus nor the name check reaches, ports can drift silently, and no port
+currently unit-tests `deepequal`, `clone`, `getpath`, `walk`, `jsonstr`,
+`stringify` or `pathify` directly - the whole util surface is exercised
+only incidentally, through JSON-expressible values.
