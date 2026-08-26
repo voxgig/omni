@@ -1,0 +1,625 @@
+# RUN: boru run -no-check -no-compile test/main.boru
+# RUN-SOME: boru run -no-check -no-compile test/main.boru basic
+#
+# The Fibonacci conformance suite: every omni port runs this same set of
+# groups, from the same spec/fib.json, against the same fib library.
+#
+# No third-party test framework: a failing omni check raises, and this
+# harness counts. `make test` stays dependency-free.
+
+import "boru:io"
+import "boru:string-util"
+import "../src/omni.boru"
+import "./fib.boru"
+
+def rn-tally (flex {npass: 0 nfail: 0})
+
+def rn-ok fn [[name:Any] [Any] [
+  def np ((rn-tally get "npass") add 1)
+  (rn-tally set "npass" np) drop
+  print `ok   - ${name}`
+  def r none
+  r
+]]
+
+def rn-bad fn [[name:Any msg:Any] [Any] [
+  def nf ((rn-tally get "nfail") add 1)
+  (rn-tally set "nfail" nf) drop
+  print `FAIL - ${name}`
+  print (msg)
+  def r none
+  r
+]]
+
+# --- the subjects and the provider -------------------------------------------
+#
+# Everything omni calls back into is a LAMBDA built here, capturing the
+# library functions it needs as values. A callback runs in omni's registry,
+# where neither `Fib.*` nor this file's own `rn-*` words are bound — only
+# core words and the callback's captured frame. And every callback receives
+# its arguments as one list (see the convention note in ../src/omni.boru).
+
+def rn-build fn [[nshift:Integer] [Any] [
+  def fibfn (Fib.fib/v)
+  def seqfn (Fib.fibseq/v)
+  def rangefn (Fib.fibrange/v)
+  def infofn (Fib.fibinfo/v)
+
+  # `nshift` offsets the Fibonacci index, so a client-specific subject is
+  # observably different from the root one.
+  def shifted ([av:Any] => [
+    def n (av get 0)
+    def isnum ((n is Integer) or (n is Float))
+    def r (
+      if (isnum eq true) [fibfn (n add nshift)] [fibfn n]
+    )
+    r
+  ])
+
+  def seqsub ([av:Any] => [
+    def r (seqfn (av get 0))
+    r
+  ])
+  def rangesub ([av:Any] => [
+    def r (rangefn (av get 0) (av get 1))
+    r
+  ])
+  def infosub ([av:Any] => [
+    def r (infofn (av get 0))
+    r
+  ])
+
+  def subj ([av:Any] => [
+    def name (av get 0)
+    def r (
+      if (name eq "fib") [[shifted/v]] [
+        if (name eq "fibseq") [[seqsub/v]] [
+          if (name eq "fibrange") [[rangesub/v]] [
+            if (name eq "fibinfo") [[infosub/v]] [none]
+          ]
+        ]
+      ]
+    )
+    r
+  ])
+
+  # Marks the map, so the context group can prove the hook ran.
+  def cfy ([av:Any] => [
+    def v (av get 0)
+    (v set "mark" "CTX") drop
+    def r v
+    r
+  ])
+
+  # A client provider. Built inline rather than by recursing into rn-build,
+  # because a module word is exactly what a callback cannot reach.
+  def clientfn ([av:Any] => [
+    def options (av get 0)
+    def sv (if (options is Map) [if (options has "shift") [options get "shift"] [none]] [none])
+    def isnum ((sv is Integer) or (sv is Float))
+    def s (if (isnum eq true) [sv] [0])
+
+    def cshifted ([cav:Any] => [
+      def n (cav get 0)
+      def cisnum ((n is Integer) or (n is Float))
+      def r (
+        if (cisnum eq true) [fibfn (n add s)] [fibfn n]
+      )
+      r
+    ])
+    def csubj ([cav:Any] => [
+      def name (cav get 0)
+      def r (
+        if (name eq "fib") [[cshifted/v]] [
+          if (name eq "fibseq") [[seqsub/v]] [
+            if (name eq "fibrange") [[rangesub/v]] [
+              if (name eq "fibinfo") [[infosub/v]] [none]
+            ]
+          ]
+        ]
+      )
+      r
+    ])
+    def r (flex {subject: [csubj/v] contextify: [cfy/v]})
+    r
+  ])
+
+  # The context-group subject: reports what the runner delivered - the
+  # contextify mark and the attached client - as plain data, so the spec can
+  # pin both with an ordinary `out` comparison in every port.
+  def ctxsub ([av:Any] => [
+    def ctx (av get 0)
+    def n (if (ctx is Map) [if (ctx has "n") [ctx get "n"] [none]] [none])
+    def v (fibfn n)
+    def mark (if (ctx is Map) [if (ctx has "mark") [ctx get "mark"] [none]] [none])
+    def hasclient (if (ctx is Map) [ctx has "client"] [false])
+    def r (flex {n: (n) val: (v) mark: (mark) hasclient: (hasclient)})
+    r
+  ])
+
+  # Returns the literal string "__UNDEF__" as ordinary data, to prove the
+  # absent sentinel no longer accepts its own literal.
+  def undefsub ([av:Any] => [
+    def r (flex {a: "__UNDEF__"})
+    r
+  ])
+
+  def provider (flex {
+    subject: [subj/v]
+    client: [clientfn/v]
+    contextify: [cfy/v]
+  })
+
+  def r (flex {
+    provider: (provider)
+    fib: [shifted/v]
+    seq: [seqsub/v]
+    range: [rangesub/v]
+    info: [infosub/v]
+    ctx: [ctxsub/v]
+    undef: [undefsub/v]
+  })
+  r
+]]
+
+# --- spec discovery ----------------------------------------------------------
+
+def rnl-specfile fn [[i:Integer dir:String name:String] [Any] [
+  def r (
+    if (i gte 8) [
+      raise {code: omni_fail/q message: `omni: spec not found: ${name}`}
+    ] [
+      def cand (StringUtil.concat [dir "/spec/" name])
+      def found (do [
+        (IO.read (make Pathon cand)) drop
+        true
+      ] error [var [[e] false]])
+      if (found eq true) [cand] [
+        def up (StringUtil.concat [dir "/.."])
+        def i1 (i add 1)
+        def rr (rnl-specfile i1 up name)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- group runner ------------------------------------------------------------
+
+def rn-only (flex {name: none})
+
+def rn-wanted fn [[name:Any] [Boolean] [
+  def o (rn-only get "name")
+  def r (
+    if (o is None) [true] [o eq name]
+  )
+  r
+]]
+
+def rn-group fn [[pack:Any name:Any subject:Any flags:Any] [Any] [
+  def r (
+    if ((rn-wanted name) not) [none] [
+      def outcome (do [
+        (Omni.runsetflags pack (Omni.set pack name) flags subject) drop
+        {ok: true}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-ok name)
+        rr
+      ] [
+        def rr (rn-bad name (outcome get "msg"))
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- the runner must be able to fail -----------------------------------------
+
+def rn-badspec (flex {
+  fib: {
+    wrongout: {set: [{in: 5 out: 5} {in: 6 out: 999}]}
+    wrongerr: {set: [{in: 1 err: "never happens"}]}
+    wrongmatch: {set: [{in: 6 match: {out: 999}}]}
+    missing: {set: [{in: 6 match: {out: {nope: "__EXISTS__"}}}]}
+    matchabsent: {set: [{in: 6 match: {out: {nope: "fine"}}}]}
+    undefonnull: {set: [{in: 0 match: {out: {prev: "__UNDEF__"}}}]}
+    nullonabsent: {set: [{in: 6 match: {out: {nope: "__NULL__"}}}]}
+    wrongundef: {set: [{in: 6 match: {out: {a: "__UNDEF__"}}}]}
+    emptystr: {set: [{in: 6 match: {out: {label: ""}}}]}
+  }
+})
+
+def rn-expectfail fn [[label:Any setname:Any subject:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def rn (Omni.makeRunner rn-badspec (flex {}))
+      def pack (Omni.runner rn "fib" none)
+      def outcome (do [
+        (Omni.runset pack (Omni.set pack setname) subject) drop
+        {ok: true}
+      ] error [var [[e] {ok: false}]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-bad label `omni: expected a failure for set: ${setname}`)
+        rr
+      ] [
+        def rr (rn-ok label)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- regressions the negative tests above cannot see --------------------------
+# Both of these were live at once, and all nine expectfail tests stayed green
+# through them: the runner still failed when it should, for the wrong reason.
+
+def rn-regress-spec (flex {
+  fib: {
+    nothingback: {set: [{in: 6}]}
+    mismatch: {set: [{id: "regress/mismatch" in: 6 out: 999}]}
+    hooks: {set: [{ctx: {n: 6} out: 8}]}
+    cfyerr: {set: [{ctx: {n: 6} err: "/contextify boom/"}]}
+    badclient: {set: [{in: 6 client: 7 out: 8}]}
+    errval: {set: [{in: 6 out: {name: "Error" message: "caught"}}]}
+    badargs: {set: [{args: 5 err: "/args is not a list/"}]}
+  }
+})
+
+# Run one set of rn-regress-spec and report whether it raised; `wantfail`
+# says which outcome is the passing one, and `wantmsg` (when given) has to
+# appear in the failure message.
+def rn-regress fn [[label:Any setname:Any provider:Any subject:Any flags:Any wantfail:Boolean wantmsg:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      # Building the pack is inside the protected block too: a provider hook
+      # can raise in `runner`, before any set runs, and that has to be a
+      # recorded failure rather than a crash that takes the suite with it.
+      def outcome (do [
+        def rn (Omni.makeRunner rn-regress-spec provider)
+        def pack (Omni.runner rn "fib" none)
+        (Omni.runsetflags pack (Omni.set pack setname) flags subject) drop
+        {ok: true msg: ""}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      def failed ((outcome get "ok") not)
+      if (failed eq wantfail) [
+        def m (outcome get "msg")
+        def wantstr (wantmsg is String)
+        def hasmsg (if (wantstr eq true) [StringUtil.contains wantmsg m] [true])
+        if (hasmsg eq true) [
+          def rr (rn-ok label)
+          rr
+        ] [
+          def rr (rn-bad label `omni: wrong message - ${m}`)
+          rr
+        ]
+      ] [
+        if (wantfail eq true) [
+          def rr (rn-bad label `omni: expected a failure for set: ${setname}`)
+          rr
+        ] [
+          def rr (rn-bad label (outcome get "msg"))
+          rr
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
+# An entry with no `out`, under null:false, expects nothing back - and boru
+# has one `none` and no `undefined`, so `none` is the only thing a subject can
+# return to say "nothing". The runner used to compare that against ABSENT and
+# call it a mismatch. No group above reaches the comparison: under null:true
+# the runner rewrites both sides to __NULL__ first, and the one null:false
+# group gives every entry an explicit `out`.
+def rn-nothingback fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def nothing ([av:Any] => [
+        def r2 none
+        r2
+      ])
+      def rn (Omni.makeRunner rn-regress-spec (flex {}))
+      def pack (Omni.runner rn "fib" none)
+      def outcome (do [
+        (Omni.runsetflags pack (Omni.set pack "nothingback") (flex {null: false}) [nothing/v]) drop
+        {ok: true}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label (outcome get "msg"))
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# A failing set has to say what failed. `raise` takes a fresh map, never a
+# caught Error value: re-raising the value itself died with "cannot call
+# `raise`", which still failed the set - so every expectfail above passed
+# while the verdict it was there to prove was thrown away.
+def rn-verdict fn [[label:Any subject:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def rn (Omni.makeRunner rn-regress-spec (flex {}))
+      def pack (Omni.runner rn "fib" none)
+      def outcome (do [
+        (Omni.runsetflags pack (Omni.set pack "mismatch") (flex {name: "mismatch"}) subject) drop
+        {ok: true msg: ""}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-bad label "omni: expected a failure for set: mismatch")
+        rr
+      ] [
+        def m (outcome get "msg")
+        # The whole reference, not just the verdict: index and id are what
+        # tell one failing entry from another, and a suite that checks only
+        # "result mismatch" stays green if `om-entryref` drops either.
+        def hasref (StringUtil.contains "mismatch[0] (regress/mismatch)" m)
+        def hasverdict (StringUtil.contains "result mismatch" m)
+        if (hasref and hasverdict) [
+          def rr (rn-ok label)
+          rr
+        ] [
+          def rr (rn-bad label `omni: verdict lost - ${m}`)
+          rr
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
+# The provider hooks are OPTIONAL, and canonical tests them with `null != x`
+# - true of a missing key and of a key holding null alike. Testing only for
+# ABSENT made a provider that stores `contextify: none` look callable, and
+# the runner then applied `none`.
+def rn-nullhooks fn [[label:Any fibsub:Any] [Any] [
+  def prov (flex {subject: none contextify: none client: none inject: none})
+  def ctxsub ([av:Any] => [
+    def ctx (av get 0)
+    def n (if (ctx is Map) [if (ctx has "n") [ctx get "n"] [none]] [none])
+    def r (fibsub n)
+    r
+  ])
+  def r (rn-regress label "hooks" prov [ctxsub/v] (flex {}) false none)
+  r
+]]
+
+# A hook that raises belongs to the ENTRY, not to the set: canonical resolves
+# arguments inside the entry `try`, so `err` can expect a contextify failure.
+# Resolving them outside it aborted the whole set instead.
+def rn-hookerr fn [[label:Any fibsub:Any] [Any] [
+  def boom ([av:Any] => [
+    raise {code: cfy_fail/q message: "contextify boom"}
+  ])
+  def prov (flex {contextify: [boom/v]})
+  def ctxsub ([av:Any] => [
+    def r (fibsub 6)
+    r
+  ])
+  def r (rn-regress label "cfyerr" prov [ctxsub/v] (flex {}) false none)
+  r
+]]
+
+# Canonical selects a client for any non-null `client` and raises when it
+# names none it has. Accepting only a String let `client: 7` run silently
+# against the root provider - passing against the wrong subject.
+def rn-badclient fn [[label:Any fibsub:Any] [Any] [
+  def sub2 ([av:Any] => [
+    def r (fibsub (av get 0))
+    r
+  ])
+  def r (rn-regress label "badclient" (flex {}) [sub2/v] (flex {}) true "unknown client: 7")
+  r
+]]
+
+# A subject may CATCH an error and return it as data; canonical normalises
+# that through errify, so an {name,message} expectation matches.
+def rn-errval fn [[label:Any] [Any] [
+  def catcher ([av:Any] => [
+    def e (do [
+      raise {code: boom/q message: "caught"}
+    ] error [var [[er] er]])
+    def r e
+    r
+  ])
+  def r (rn-regress label "errval" (flex {}) [catcher/v] (flex {}) false none)
+  r
+]]
+
+# The public names have to accept what the canonical API accepts. Nothing
+# else here calls them that way - the runner uses the internal helpers - so
+# without this the signatures could drift and every other test stay green.
+def rn-publicapi fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def outcome (do [
+        # loadspec: a parsed spec comes back unchanged, not read as a path.
+        def spec (Omni.loadspec rn-regress-spec)
+        def okspec (spec is Map)
+        # fixjson: an optional FLAGS MAP, not a boolean.
+        def kept (Omni.fixjson none (flex {null: false}))
+        def marked (Omni.fixjson none (flex {}))
+        def okfix ((kept is None) and (marked eq Omni.NULLMARK))
+        # match: (flags, index, entry, check, base) - no path argument.
+        (Omni.match (flex {name: "api"}) 0 (flex {}) (flex {a: 1}) (flex {a: 1})) drop
+        def allok (okspec and okfix)
+        {ok: (allok)}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label "omni: public API does not take the canonical arguments")
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# `jsonstr` has to emit JSON, and every code point below U+0020 has to be
+# escaped for it to be JSON at all. This rendered quote, backslash, newline,
+# return and tab and passed the rest through raw, so a control character in a
+# spec string produced invalid JSON and failure text no other port prints.
+def rn-ctrlesc fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def raw "a\u0008b\u0000c\u000cd"
+      def out (Omni.jsonstr raw)
+      def okb (StringUtil.contains "\\b" out)
+      def oknul (StringUtil.contains "\\u0000" out)
+      def okf (StringUtil.contains "\\f" out)
+      def allok ((okb and oknul) and okf)
+      if (allok eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label `omni: control characters not escaped - ${out}`)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# A sentinel check means null before anything else looks at it. Treating
+# __NULL__ and __UNDEF__ as ordinary strings made `matchval(NULLMARK, none)`
+# false and let `err: "__NULL__"` accept any message carrying that literal.
+def rn-matchsentinel fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def a (Omni.matchval Omni.NULLMARK none)
+      def b (Omni.matchval Omni.UNDEFMARK none)
+      def c (Omni.matchval Omni.NULLMARK "not null at all")
+      # An empty want matches an empty base, and nothing else.
+      def d (Omni.matchval "" "")
+      def e (Omni.matchval "" "x")
+      def allok ((((a and b) and (c not)) and d) and (e not))
+      if (allok eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label "omni: sentinel or empty-want matching is wrong")
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# `args` is spread into the subject call canonically, so a non-list dies at
+# invocation and the entry's `err` can expect it. Erasing it to an empty list
+# let a malformed entry pass here - against a subject that ignores its
+# arguments - and nowhere else.
+def rn-badargs fn [[label:Any] [Any] [
+  def ignorer ([av:Any] => [
+    def r 8
+    r
+  ])
+  def r (rn-regress label "badargs" (flex {}) [ignorer/v] (flex {}) false none)
+  r
+]]
+
+# --- main --------------------------------------------------------------------
+
+def rn-main fn [[av:Any] [Any] [
+  if (av is List) [
+    if ((size av) gt 0) [(rn-only set "name" (av get 0)) drop none] [none] drop
+    none
+  ] [none] drop
+
+  def built (rn-build 0)
+  def prov (built get "provider")
+  def sfib (built get "fib")
+  def sseq (built get "seq")
+  def srange (built get "range")
+  def sinfo (built get "info")
+  def sctx (built get "ctx")
+  def sundef (built get "undef")
+
+  def path (rnl-specfile 0 "." "fib.json")
+  def rn (Omni.makeRunner path prov)
+  def pack (Omni.runner rn "fib" none)
+
+  (rn-group pack "basic" sfib (flex {})) drop
+  (rn-group pack "seq" sseq (flex {})) drop
+  (rn-group pack "range" srange (flex {})) drop
+  (rn-group pack "info" sinfo (flex {})) drop
+  (rn-group pack "nulls" sinfo (flex {null: false})) drop
+  (rn-group pack "error" sfib (flex {})) drop
+  (rn-group pack "match" sfib (flex {})) drop
+  (rn-group pack "matchinfo" sinfo (flex {})) drop
+  (rn-group pack "client" sfib (flex {})) drop
+  (rn-group pack "context" sctx (flex {})) drop
+
+  (rn-expectfail "detects wrong result" "wrongout" sfib) drop
+  (rn-expectfail "detects missing error" "wrongerr" sfib) drop
+  (rn-expectfail "detects failed match" "wrongmatch" sfib) drop
+  (rn-expectfail "detects absent key" "missing" sinfo) drop
+  (rn-expectfail "a concrete match leaf does not match a missing key" "matchabsent" sinfo) drop
+  (rn-expectfail "__UNDEF__ does not match a present null" "undefonnull" sinfo) drop
+  (rn-expectfail "__UNDEF__ does not match its own literal" "wrongundef" sundef) drop
+  (rn-expectfail "__NULL__ does not match an absent key" "nullonabsent" sinfo) drop
+  (rn-expectfail "an empty-string match leaf is not a wildcard" "emptystr" sinfo) drop
+
+  (rn-nothingback "an entry with no out expects nothing back") drop
+  (rn-verdict "a failing set reports its verdict" sfib) drop
+
+  def fibfn (Fib.fib/v)
+  # `fibfn/v`, not `fibfn`: a function-valued word is a call barrier in
+  # argument position too, so a bare one starts its own dispatch instead of
+  # being handed over.
+  (rn-nullhooks "a null provider hook is not a hook" fibfn/v) drop
+  (rn-hookerr "a raising hook is the entry's error" fibfn/v) drop
+  (rn-badclient "a non-string client selector is still a selector" fibfn/v) drop
+  (rn-errval "a returned Error normalises through errify") drop
+  (rn-publicapi "the public API takes the canonical arguments") drop
+  (rn-ctrlesc "jsonstr escapes every control character") drop
+  (rn-matchsentinel "a sentinel check is null before anything reads it") drop
+  (rn-badargs "a non-list args is refused, not erased") drop
+
+  def np (rn-tally get "npass")
+  def nf (rn-tally get "nfail")
+  print `${np} passed, ${nf} failed`
+  if (nf gt 0) [
+    raise {code: omni_fail/q message: `${nf} failures`}
+  ] [none] drop
+  def r none
+  r
+]]
+
+export "Run" {main: rn-main/v}

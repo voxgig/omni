@@ -1,7 +1,7 @@
 # omni
 
 **Shared multi language testing.** One test spec, written once as plain
-JSON, run by the same runner in twenty-three languages.
+JSON, run by the same runner in twenty-four languages.
 
 Write the behaviour of a library once. Verify it everywhere.
 
@@ -76,6 +76,7 @@ can be replaced by one shared implementation (see
 | OCaml | [`ocaml/`](ocaml/) | `make test` | in-tree JSON parser + regex engine |
 | Haskell | [`haskell/`](haskell/) | `make test` | base only; in-tree JSON parser + regex engine |
 | Lean 4 | [`lean/`](lean/) | `make test` | pure: failures returned as `Except String` |
+| boru | [`boru/`](boru/) | `make test` | concatenative; subjects are lambdas capturing values |
 
 Run one port with `make test-<lang>`, all of them with `make test`.
 

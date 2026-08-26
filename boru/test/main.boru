@@ -1,0 +1,11 @@
+# omni boru port — test entry point.
+# Run from the boru/ port directory:
+#   boru run -no-check -no-compile test/main.boru
+#   boru run -no-check -no-compile test/main.boru basic     # one group
+# (The suite lives in run.boru; this top level stays minimal — module
+# namespace calls are the engine's well-behaved path. `IO.args` is the
+# script's argument vector, and the only way a selector reaches the suite:
+# there is no core word for it.)
+import "boru:io"
+import "./test/run.boru" end
+(Run.main (IO.args)) drop

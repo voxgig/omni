@@ -23,7 +23,7 @@ comprehensive guide).
 
 ## What this repository is
 
-omni is one test runner, defined once and ported faithfully to twenty-three
+omni is one test runner, defined once and ported faithfully to twenty-four
 languages, so that a single JSON spec file produces identical pass/fail
 results everywhere.
 
@@ -213,7 +213,7 @@ release from main would have dropped.
 - **Failure text is API.** The message format in
   [`DOCS.md`](DOCS.md#6-failure-messages) is identical in every port and is
   asserted by each port's "reports entry index and id" test. Changing it
-  means changing all twenty-three.
+  means changing all twenty-four.
 - **Comments explain why, not what.** Match the density of the surrounding
   code.
 - **Commit messages.** Conventional and scoped: `fix(go): ...`,
