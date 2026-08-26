@@ -9,7 +9,7 @@ goes stale — a wrong status file is worse than none.
 
 ## In flight
 
-**Nothing open in omni.** Every omni PR through #41 is merged. (No `main`
+**Nothing open in omni.** Every omni PR through #44 is merged. (No `main`
 hash here on purpose: this file is the starting point for the next session, and
 a tip recorded in the same commit that moves the tip is false the moment it
 merges.)
@@ -42,34 +42,38 @@ and §6 (getprop's default `alt`).
 
 ## Pick up first
 
-**1. Make register 4.13's proof declaration-based.** 4.13's rule is about
-*declaration* — "nothing the library builds may name omni" — but the proof it
-prescribes is about *resolution*: "CI must prove it with the checkout absent."
-Those coincide only while omni is unresolvable by any other route, and for Go
-that stopped being true. `github.com/voxgig/omni/go` resolves from the public
-module proxy today with no tags and no checkout: `go mod tidy` in a scratch
-module with no omni anywhere resolves a pseudo-version and writes
-`require github.com/voxgig/omni/go v0.0.0-20260825220049-74ae081d405a` into the
-manifest — the struct#89 bug, reproducible now. So every absence-based guard
-proves less than it appears to, and the fix is owed regardless of any
-publishing decision.
+**1. Decide how NaN-class behaviour gets covered, then cover it.**
+OM-4's NaN divergence is fixed in all six ports that had it — php, ruby, lua,
+perl, clojure and zig — but **the fix is invisible to every test in this repo**,
+so all six can regress silently. `spec/fib.json` is JSON and JSON has no NaN
+literal; the sentinel set (`__NULL__`, `__UNDEF__`, `__EXISTS__`) has no member
+for it; and no port unit-tests `deepequal` at all. The whole util surface —
+`deepequal`, `clone`, `getpath`, `walk`, `jsonstr`, `stringify`, `pathify` — is
+exercised only incidentally, through JSON-expressible values.
 
-Scope it correctly, though: the hole is **Go's specifically**, not every
-absence-based guard. rust, swift, dart, haskell and lean all name omni by a
-literal PATH, and a path has no fallback — measured, a Cargo path dependency
-whose target is missing fails outright and never reaches for a registry or a
-git ref. Go is the exception because it needs a pair no other port has: a
-module path a public proxy serves, and `go mod tidy` writing that resolution
-into the published manifest. What a declaration check adds *everywhere* is
-separate and still worth it — it catches an omni import at the commit that
-introduces it rather than at the tidy that publishes it.
+Two mechanisms, and this is a real decision rather than a detail:
 
-`voxgig/struct#118` does this: `tools/omni_isolation.py`, 19 library manifests
-and the shipped source of every port, mutation-tested by
-`tools/omni_isolation_selftest.py`.
+- **A `__NAN__` sentinel.** Makes the area corpus-reachable for all 23 ports,
+  which matches "the corpus is the contract". But it is a spec change: a new
+  exported constant (so `check_parity.py`'s `CANONICAL` and every port's public
+  surface), handling in `fixjson` and the match rules — `NULLMARK`/`UNDEFMARK`/
+  `EXISTSMARK` have bespoke handling at roughly ten sites in `Runner.ts` alone —
+  new `fib.aontu` entries, and all 23 ports.
+- **Per-port unit tests.** Much smaller, touches no spec and no public API, and
+  arguably the *right* home rather than a workaround: NaN is outside what a JSON
+  corpus can express by definition, so a native-language test is the honest
+  place for it. Cost is 23 small test additions, seventeen of them in languages
+  with no toolchain in the usual environment — CI is what would prove those.
 
-Three CI traps cost time during the migration. None is a defect in a port,
-and all three will recur:
+Whichever is chosen, write the test so it uses **two distinct NaN values**. Ruby
+returns `true` for `deepequal(Float::NAN, Float::NAN)` purely because
+`Float::NAN` is one constant object caught by an identity fast-path; the obvious
+test passes and proves nothing.
+
+### Three CI traps, recorded so they are not rediscovered
+
+These cost time during the port migration. None is a defect in a port, and all
+three will recur:
 
 - **A struct PR checks out omni `main` at run time.** A run that executed
   before its paired omni PR merged fails against the *old* omni and stays red
@@ -163,18 +167,33 @@ findings still carry open, measurable work:
 - **OM-2** — the depth-limit fix landed in only 2 of the 10 in-tree JSON
   parsers (c and rust have a guard; clojure, cpp, elixir, java, kotlin, lua,
   scala and swift have none).
-- **OM-3** — `check_parity.py` still verifies names, not behaviour:
-  `defined()` runs `re.findall(r'[A-Za-z_][A-Za-z0-9_\-]*', text)` over raw
-  source (`tools/check_parity.py:136-150`), so it matches identifiers inside
-  comments and strings and does no semantic checking at all. A port whose
-  `deepequal` was `return true` still passes `make parity`.
-- **OM-4** — partly closed. Swift's `errify` name and the Swift/Elixir/Clojure
-  `client`-on-`ctx` gap were fixed by voxgig/omni#5, and python's NaN
-  `deepequal` with it (`python/voxgig_omni/util.py:114-115` returns true for
-  two NaNs). Still open: NaN deep-equality in ruby, php and clojure (ruby
-  `a == b`, php `(float)$a === (float)$b` — both false for NaN), Go flag
-  coercion, and the narrower error-capture scope in Go/Java/Swift/Elixir/
-  Clojure.
+- **OM-3** — the *tool* is not the defect, and never claimed to be: its
+  docstring already says "this is a NAME check, not a behaviour check ... a
+  port whose `deepequal` was `return true` would pass here". Confirmed by
+  mutation — gutting python's `deepequal` to `return True` leaves
+  `check_parity.py` green while `make test-python` fails 4 tests. The DOCS.md
+  §9 overstatement it also named ("the Fibonacci suite proves it on every
+  run") **is** fixed. **What is still open is the coverage hole**: no port
+  unit-tests `deepequal`, `clone`, `getpath`, `walk`, `jsonstr`, `stringify`
+  or `pathify` directly — every port's suite is the fib corpus runner alone,
+  so the whole util surface is exercised only incidentally, and only through
+  values JSON can express. **Mechanism is undecided** — see OM-4.
+- **OM-4** — the NaN half is **closed, and the list was short by three.** A
+  survey of all 23 ports found **six** diverging, not the three recorded here:
+  **php, ruby, lua, perl, clojure and zig**. All six fixed (php/ruby/lua/perl
+  verified by execution, clojure/zig by source plus CI — neither toolchain
+  exists here). Ruby was the sharpest: it returns `true` for
+  `deepequal(Float::NAN, Float::NAN)` only because `Float::NAN` is one constant
+  object caught by the `a.equal?(b)` identity fast-path; two *distinct* NaNs
+  returned `false`. **The fix is invisible to every test in the repo** — JSON
+  has no NaN literal, so `spec/fib.json` cannot carry one, and all six could
+  regress silently tomorrow. **Decide the coverage mechanism**: a `__NAN__`
+  sentinel makes the area corpus-reachable for all 23 ports but is a spec
+  change touching the exported API, `fixjson`, the match rules and every port;
+  per-port unit tests are much smaller and arguably the right home, since NaN
+  is outside what a JSON corpus can express by definition. Still open from
+  this finding: Go flag coercion, and the narrower error-capture scope in
+  Go/Java/Swift/Elixir/Clojure.
 - **OM-5** — catastrophic regex backtracking, with no step limit or
   memoisation in the reference engine (`rust/src/regex.rs`) or its lua peer.
 

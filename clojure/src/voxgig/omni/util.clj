@@ -72,7 +72,12 @@
 (defn deepequal [a b]
   (cond
     (or (boolean? a) (boolean? b)) (and (boolean? a) (boolean? b) (= a b))
-    (or (isnum a) (isnum b)) (and (isnum a) (isnum b) (== a b))
+    ;; NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+    (or (isnum a) (isnum b))
+    (and (isnum a) (isnum b)
+         (or (== a b)
+             (and (double? a) (Double/isNaN a)
+                  (double? b) (Double/isNaN b))))
     (or (isabsent a) (isabsent b)) (and (isabsent a) (isabsent b))
     (or (nil? a) (nil? b)) (and (nil? a) (nil? b))
 

@@ -244,7 +244,11 @@ pub fn deepequal(a: Maybe, b: Maybe) bool {
         if (!isnum(a) or !isnum(b)) {
             return false;
         }
-        return asnum(a).? == asnum(b).?;
+        const anum = asnum(a).?;
+        const bnum = asnum(b).?;
+
+        // NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+        return anum == bnum or (std.math.isNan(anum) and std.math.isNan(bnum));
     }
 
     return switch (x) {

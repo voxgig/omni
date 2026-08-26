@@ -138,7 +138,9 @@ final class Util
         }
 
         if (self::isnum($a) && self::isnum($b)) {
-            return (float) $a === (float) $b;
+            // NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+            return (float) $a === (float) $b
+                || (is_nan((float) $a) && is_nan((float) $b));
         }
 
         if (self::isabsent($a) || self::isabsent($b)) {

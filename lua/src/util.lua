@@ -128,7 +128,17 @@ function M.deepequal(a, b)
   end
 
   if M.isnum(a) or M.isnum(b) then
-    return M.isnum(a) and M.isnum(b) and a == b
+    if not (M.isnum(a) and M.isnum(b)) then
+      return false
+    end
+
+    -- NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+    -- NaN is the only value that is not equal to itself.
+    if a ~= a and b ~= b then
+      return true
+    end
+
+    return a == b
   end
 
   if M.isabsent(a) or M.isabsent(b) then
