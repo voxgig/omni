@@ -23,7 +23,14 @@ gitignored links — `go.work`, `vendor/omni`, `-p:OmniPath=`, `.omni-runner`,
 `pubspec_overrides.yaml`. That is DOCS §8.3, and it is what all ten sekreto
 ports and all twenty-two migrated struct ports use today.
 
-A git ref would let those ports be pinned the way the npm pair can be:
+**What is missing is not reproducibility — it is a package-manager-declared
+dependency.** A consumer can already pin the checkout exactly: check the
+sibling repo out at a SHA (`git switch --detach <sha>`) or carry it as a
+submodule. Phase 0 item 0.5 depends on precisely that ability, requiring the
+struct-compat CI checkout to be pinned to a struct ref rather than floating on
+a default branch. So the question is not "can a consumer pin omni" — it can —
+but whether omni should be declarable and resolvable by each ecosystem's own
+package manager, the way the npm pair is:
 
     voxgig_omni = { git = "https://github.com/voxgig/omni", tag = "rust/v0.1.0" }
 
@@ -44,14 +51,33 @@ That sentence contains a seam:
 | the **rule** | *declaration* — does the manifest name omni? | always |
 | the **proof** | *resolution* — can the build find omni? | only while omni is unfindable |
 
-Several mechanisms work purely by absence — swift's `.omni-runner` symlink
-("no link, no dependency declared"), dart's generated `pubspec_overrides.yaml`,
-go's `go.work`, rust's `../.omni` link. For those, a checkout-absent CI run
-proves something only because there is nothing else to resolve. Publish a ref
-and the run goes green while proving nothing.
+**The seam is not equally wide everywhere, and the difference is what a
+mechanism names omni BY.** A mechanism that names a literal filesystem path
+has no fallback: remove the path and it fails, whatever refs exist anywhere.
+A mechanism that names a canonical *module identity* can be satisfied by any
+resolver that recognises it.
 
-**For Go that has already happened, and needs no decision from us.** *Measured*,
-in a scratch module with no omni checkout anywhere on the machine:
+| port | names omni by | can a resolver satisfy it? |
+|---|---|---|
+| rust | path `../../.omni/rust` | **no** — *measured*, below |
+| swift | path, via the `.omni-runner` symlink | no |
+| dart | path, in a generated `pubspec_overrides.yaml` | no |
+| haskell | `-i$(OMNI_DIR)/haskell/src` search path | no |
+| lean | `.omni-build` srcDir | no |
+| **go** | **module path `github.com/voxgig/omni/go`** | **yes** |
+
+*Measured* — a Cargo path dependency whose target is absent, with omni fully
+published and resolvable:
+
+    error: failed to get `voxgig_omni` as a dependency of package …
+    Caused by: failed to load source for dependency `voxgig_omni`
+
+It does not reach for a registry or a git ref, because a path dependency is
+literal. Rust's guard stays a real guard, and so do swift's, dart's,
+haskell's and lean's.
+
+**Go is the exception, and it is already open.** *Measured*, in a scratch
+module with no omni checkout anywhere on the machine:
 
     $ go mod tidy
     go: finding module for package github.com/voxgig/omni/go/compat/struct
@@ -64,8 +90,17 @@ No tags were involved. Go synthesised a pseudo-version from `main`'s tip
 because omni is a public repo and `proxy.golang.org` serves it automatically.
 This is the struct#89 bug — the one that opened 4.13 — still reproducible.
 
-So refs do not *create* the Go hole. They would make an already-open one look
-endorsed.
+Two things make Go different, and both are needed: the harness names omni by
+a module path a public proxy already serves, AND a routine command
+(`go mod tidy`) *writes* that resolution into the published manifest. No
+other port has the pair.
+
+So refs do not *create* the Go hole; they would make an already-open one look
+endorsed. And the remediation is narrower than "replace every absence-based
+check": those checks remain valid where the dependency is a path. What a
+declaration check adds everywhere is different and still worth having — it
+catches an omni import at the commit that introduces it, rather than at the
+`go mod tidy` that publishes it, which no absence check does at all.
 
 
 ## Blocker 2 — no single tag namespace satisfies every ecosystem

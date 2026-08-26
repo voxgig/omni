@@ -9,8 +9,10 @@ goes stale — a wrong status file is worse than none.
 
 ## In flight
 
-**Nothing open in omni.** Every omni PR through #41 is merged; `main` is
-74ae081.
+**Nothing open in omni.** Every omni PR through #41 is merged. (No `main`
+hash here on purpose: this file is the starting point for the next session, and
+a tip recorded in the same commit that moves the tip is false the moment it
+merges.)
 
 **Nothing open in voxgig/struct.** The port migration is finished: all sixteen
 of the drafts this file previously listed are merged, so **22 of 24 ports are
@@ -41,10 +43,21 @@ module with no omni anywhere resolves a pseudo-version and writes
 `require github.com/voxgig/omni/go v0.0.0-20260825220049-74ae081d405a` into the
 manifest — the struct#89 bug, reproducible now. So every absence-based guard
 proves less than it appears to, and the fix is owed regardless of any
-publishing decision. `struct/typescript/tools/omni-isolation.js` is the shape
-to copy: assert the manifest and the resolved dependency graph directly, the
-way `npm ls --omit=dev` does, so the check still holds when omni *is*
-resolvable.
+publishing decision.
+
+Scope it correctly, though: the hole is **Go's specifically**, not every
+absence-based guard. rust, swift, dart, haskell and lean all name omni by a
+literal PATH, and a path has no fallback — measured, a Cargo path dependency
+whose target is missing fails outright and never reaches for a registry or a
+git ref. Go is the exception because it needs a pair no other port has: a
+module path a public proxy serves, and `go mod tidy` writing that resolution
+into the published manifest. What a declaration check adds *everywhere* is
+separate and still worth it — it catches an omni import at the commit that
+introduces it rather than at the tidy that publishes it.
+
+`voxgig/struct#118` does this: `tools/omni_isolation.py`, 19 library manifests
+and the shipped source of every port, mutation-tested by
+`tools/omni_isolation_selftest.py`.
 
 Three CI traps cost time during the migration. None is a defect in a port,
 and all three will recur:
