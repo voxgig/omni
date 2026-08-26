@@ -753,7 +753,43 @@ For each struct port:
    may instead take `@voxgig/omni-js` or `@voxgig/omni` from npm; there
    the isolation device is the **`devDependencies` block itself**, since
    npm never installs a devDependency transitively, and `npm ls --omit=dev`
-   is what proves it (register 4.13). CI checks out `voxgig/omni` beside the
+   is what proves it (register 4.13).
+
+   **Five ports can also be pinned by git ref.** `go`, `clojure`, `rust`,
+   `dart` and `lean` carry release tags of the form `<port>/vX.Y.Z`, so a
+   consumer may declare omni through that ecosystem's own package manager
+   instead of resolving a checkout:
+
+   | port | declaration |
+   |---|---|
+   | go | `require github.com/voxgig/omni/go vX.Y.Z` |
+   | rust | `voxgig_omni = { git = "https://github.com/voxgig/omni", tag = "rust/vX.Y.Z" }` |
+   | dart | `voxgig_omni: { git: { url: ..., ref: dart/vX.Y.Z, path: dart } }` |
+   | clojure | `{:git/url ... :git/tag "clojure/vX.Y.Z" :git/sha "<40 chars>" :deps/root "clojure"}` |
+   | lean | `[[require]] name = "omni", git = ..., rev = "lean/vX.Y.Z", subDir = "lean"` |
+
+   The prefix is not cosmetic: Go **requires** a subdirectory module's tags
+   to be named `<subdir>/vX.Y.Z` and ignores every tag without it. The other
+   four impose no naming rule at all and follow the same shape for
+   consistency; each can equally pin a bare commit SHA and skip tags
+   entirely.
+
+   `swift` is deliberately **not** in that list and cannot be. SwiftPM loads
+   a source-control dependency's manifest from the repository ROOT
+   (`packagePath: .root` is hard-coded, and no `.package(...)` overload takes
+   a subdirectory), so serving `omni/swift` by ref would mean a
+   `Package.swift` at `/` - making this polyglot repository read as "a Swift
+   package" to every consumer of every other language. SwiftPM also rejects a
+   prefixed tag, accepting only `1.2.3` or `v1.2.3`, which would collide with
+   the scheme Go mandates. The remaining sixteen ports have no published
+   artifact of any kind; the checkout is their only route.
+
+   **A Go tag is a one-way door.** proxy.golang.org and sum.golang.org cache
+   a version permanently, and moving or deleting a tag surfaces to users as a
+   *security error*, not a missing version. Withdrawal is only via `retract`
+   in a NEW version. Get the number right the first time.
+
+   CI checks out `voxgig/omni` beside the
    consuming repo and exports `OMNI_HOME`. Only the *tests* depend on
    omni; the shipped library never does, so struct's zero-runtime-
    dependency rule is untouched.

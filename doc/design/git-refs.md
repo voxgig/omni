@@ -7,8 +7,14 @@ Every ecosystem claim below was checked against that ecosystem's own tooling
 or source and, where the repo could answer, against the live registry. Claims
 marked *measured* were produced by running the command shown.
 
-Status: **DECISION NEEDED**, and deliberately split in two — the first half is
-owed regardless of the answer.
+Status: **DECIDED, 2026-08-26.** Prefixed tags for the five permissive
+ecosystems — `go`, `clojure`, `rust`, `dart`, `lean` — as `<port>/vX.Y.Z`.
+`swift` is a decided no and stays checkout-only. The remaining sixteen keep
+the checkout as their only route.
+
+The item was deliberately split in two, and the first half is **done**
+independently of this answer: 4.13's proof is declaration-based as of
+voxgig/struct#118.
 
 
 ## The question
@@ -168,5 +174,20 @@ Go-compatible by construction. SwiftPM is a genuine hard no without moving a
 `Package.swift` to the repository root, and the honest answer there may simply
 be that swift stays checkout-only.
 
-What this document does **not** decide: whether any port should publish at all.
-That is a separate call, and nothing here forces it.
+## What cutting the tags turned up
+
+Preparing the five for publication found two defects, both the shape of
+register 4.15 — *a port must not put its own tree on a consumer's path* — and
+neither visible from omni's own suite, which builds everything anyway:
+
+- **clojure** declared `:paths ["src" "test"]`. A consumer resolving
+  `:deps/root "clojure"` would have received omni's own self-test namespaces
+  (`voxgig.omni.test.*`) on their classpath. `test` is now a `:test` alias
+  that only omni's `make test` activates.
+- **lean** declared `defaultTargets = ["omnitest"]` — omni's self-test
+  *executable*, built from `Main.lean` against the `Fib` fixture — rather than
+  the `Omni` library a consumer actually requires.
+
+Worth recording as the general lesson: a manifest is only exercised as a
+*published* artifact when someone publishes it. Both of these had been correct
+for omni's own purposes for as long as the ports have existed.
