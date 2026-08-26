@@ -1,0 +1,136 @@
+# The system under test: a tiny Fibonacci library.
+#
+# Every omni port ships this same library, with the same behaviour and the
+# same error messages, and tests it with the same spec file (spec/fib.json).
+#
+# House rules are the module's: bind-then-return, module-level loops, no
+# short-circuit in `and`/`or`. See ../src/omni.boru.
+
+import "../src/omni.boru"
+
+# Validate a Fibonacci index. The spec matches on these messages.
+def fb-fibindex fn [[v:Any] [Any] [
+  if ((Omni.isnum v) not) [
+    def s (Omni.stringify v)
+    raise {code: fib_err/q message: `fib: not a number: ${s}`}
+  ] [none] drop
+
+  def i (convert Integer v)
+  if (i is None) [
+    def s (Omni.stringify v)
+    raise {code: fib_err/q message: `fib: non-integer index: ${s}`}
+  ] [none] drop
+
+  if (((convert Float i) eq (convert Float v)) not) [
+    def s (Omni.stringify v)
+    raise {code: fib_err/q message: `fib: non-integer index: ${s}`}
+  ] [none] drop
+
+  if (i lt 0) [
+    def s (Omni.stringify v)
+    raise {code: fib_err/q message: `fib: negative index: ${s}`}
+  ] [none] drop
+
+  def r i
+  r
+]]
+
+def fbl-fibnum fn [[k:Integer index:Integer prev:Integer cur:Integer] [Any] [
+  def r (
+    if (k gte index) [cur] [
+      def nxt (prev add cur)
+      def k1 (k add 1)
+      def rr (fbl-fibnum k1 index cur nxt)
+      rr
+    ]
+  )
+  r
+]]
+
+# The nth Fibonacci number: fib(0)=0, fib(1)=1.
+def fb-fibnum fn [[index:Integer] [Any] [
+  def r (
+    if (index eq 0) [0] [
+      def rr (fbl-fibnum 1 index 0 1)
+      rr
+    ]
+  )
+  r
+]]
+
+def fb-fib fn [[v:Any] [Any] [
+  def i (fb-fibindex v)
+  def r (fb-fibnum i)
+  r
+]]
+
+def fbl-seq fn [[i:Integer count:Integer acc:Any] [Any] [
+  def r (
+    if (i gte count) [acc] [
+      def n (fb-fibnum i)
+      (append [n] acc) drop
+      def i1 (i add 1)
+      def rr (fbl-seq i1 count acc)
+      rr
+    ]
+  )
+  r
+]]
+
+# The first n Fibonacci numbers.
+def fb-fibseq fn [[v:Any] [Any] [
+  def count (fb-fibindex v)
+  def acc (flex [])
+  def r (fbl-seq 0 count acc)
+  r
+]]
+
+def fbl-range fn [[i:Integer to:Integer acc:Any] [Any] [
+  def r (
+    if (i gt to) [acc] [
+      def n (fb-fibnum i)
+      (append [n] acc) drop
+      def i1 (i add 1)
+      def rr (fbl-range i1 to acc)
+      rr
+    ]
+  )
+  r
+]]
+
+# The Fibonacci numbers from index start to index end, inclusive.
+def fb-fibrange fn [[start:Any stop:Any] [Any] [
+  def from (fb-fibindex start)
+  def to (fb-fibindex stop)
+  def acc (flex [])
+  def r (fbl-range from to acc)
+  r
+]]
+
+# A description of the nth Fibonacci number. `prev` is null at index 0,
+# which exercises the runner's null handling.
+def fb-fibinfo fn [[v:Any] [Any] [
+  def index (fb-fibindex v)
+  def num (fb-fibnum index)
+  def even ((num mod 2) eq 0)
+  def prev (
+    if (index eq 0) [none] [
+      def p (fb-fibnum (index sub 1))
+      p
+    ]
+  )
+  def istr (convert String index)
+  def nstr (convert String num)
+  def label `fib(${istr})=${nstr}`
+  def r (flex {n: (index) val: (num) even: (even) prev: (prev) label: (label)})
+  r
+]]
+
+export "Fib" {
+  fibindex: fb-fibindex/v
+  fibnum: fb-fibnum/v
+  fib: fb-fib/v
+  fibseq: fb-fibseq/v
+  fibrange: fb-fibrange/v
+  fibinfo: fb-fibinfo/v
+}

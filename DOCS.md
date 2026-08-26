@@ -1,6 +1,6 @@
 # omni - the comprehensive guide
 
-omni runs one JSON test spec against a library in any of twenty-three
+omni runs one JSON test spec against a library in any of twenty-four
 languages.
 This document defines the spec format, the runner semantics, and the API
 each port exposes. For a quick overview see [`README.md`](README.md); for
@@ -717,7 +717,7 @@ writes `require('@voxgig/omni-js/compat/struct')` (or, from TypeScript,
 `require('@voxgig/omni/compat/struct')`) and needs no checkout at all.
 The existing consumers all still resolve a checkout; moving any of them
 over is a separate change, port by port. See
-[8.3](#83-porting-the-rest) for the other twenty-one.
+[8.3](#83-porting-the-rest) for the other twenty-two.
 
 The shim wraps struct's SDK as an omni provider, and forwards `utility()`
 and `tester()`, so test code that reaches through the returned `client`
@@ -824,7 +824,7 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,
-failure text - is *intended* to be identical across all twenty-three ports,
+failure text - is *intended* to be identical across all twenty-four ports,
 and the Fibonacci suite proves it **only for the cases the corpus actually
 exercises**.
 

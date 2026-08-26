@@ -73,6 +73,7 @@ PORTS = {
     'clojure': ['clojure/src'],
     'lua': ['lua/src'],
     'zig': ['zig/src'],
+    'boru': ['boru/src'],
     'swift': ['swift/Sources/Omni'],
     'dart': ['dart/lib'],
     'elixir': ['elixir/lib'],

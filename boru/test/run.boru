@@ -1,0 +1,313 @@
+# RUN: boru run -no-check -no-compile test/run.boru
+# RUN-SOME: boru run -no-check -no-compile test/run.boru basic
+#
+# The Fibonacci conformance suite: every omni port runs this same set of
+# groups, from the same spec/fib.json, against the same fib library.
+#
+# No third-party test framework: a failing omni check raises, and this
+# harness counts. `make test` stays dependency-free.
+
+import "boru:io"
+import "boru:string-util"
+import "../src/omni.boru"
+import "./fib.boru"
+
+def rn-tally (flex {npass: 0 nfail: 0})
+
+def rn-ok fn [[name:Any] [Any] [
+  def np ((rn-tally get "npass") add 1)
+  (rn-tally set "npass" np) drop
+  print `ok   - ${name}`
+  def r none
+  r
+]]
+
+def rn-bad fn [[name:Any msg:Any] [Any] [
+  def nf ((rn-tally get "nfail") add 1)
+  (rn-tally set "nfail" nf) drop
+  print `FAIL - ${name}`
+  print (msg)
+  def r none
+  r
+]]
+
+# --- the subjects and the provider -------------------------------------------
+#
+# Everything omni calls back into is a LAMBDA built here, capturing the
+# library functions it needs as values. A callback runs in omni's registry,
+# where neither `Fib.*` nor this file's own `rn-*` words are bound — only
+# core words and the callback's captured frame. And every callback receives
+# its arguments as one list (see the convention note in ../src/omni.boru).
+
+def rn-build fn [[nshift:Integer] [Any] [
+  def fibfn (Fib.fib/v)
+  def seqfn (Fib.fibseq/v)
+  def rangefn (Fib.fibrange/v)
+  def infofn (Fib.fibinfo/v)
+
+  # `nshift` offsets the Fibonacci index, so a client-specific subject is
+  # observably different from the root one.
+  def shifted ([av:Any] => [
+    def n (av get 0)
+    def isnum ((n is Integer) or (n is Float))
+    def r (
+      if (isnum eq true) [fibfn (n add nshift)] [fibfn n]
+    )
+    r
+  ])
+
+  def seqsub ([av:Any] => [
+    def r (seqfn (av get 0))
+    r
+  ])
+  def rangesub ([av:Any] => [
+    def r (rangefn (av get 0) (av get 1))
+    r
+  ])
+  def infosub ([av:Any] => [
+    def r (infofn (av get 0))
+    r
+  ])
+
+  def subj ([av:Any] => [
+    def name (av get 0)
+    def r (
+      if (name eq "fib") [[shifted/v]] [
+        if (name eq "fibseq") [[seqsub/v]] [
+          if (name eq "fibrange") [[rangesub/v]] [
+            if (name eq "fibinfo") [[infosub/v]] [none]
+          ]
+        ]
+      ]
+    )
+    r
+  ])
+
+  # Marks the map, so the context group can prove the hook ran.
+  def cfy ([av:Any] => [
+    def v (av get 0)
+    (v set "mark" "CTX") drop
+    def r v
+    r
+  ])
+
+  # A client provider. Built inline rather than by recursing into rn-build,
+  # because a module word is exactly what a callback cannot reach.
+  def clientfn ([av:Any] => [
+    def options (av get 0)
+    def sv (if (options is Map) [if (options has "shift") [options get "shift"] [none]] [none])
+    def isnum ((sv is Integer) or (sv is Float))
+    def s (if (isnum eq true) [sv] [0])
+
+    def cshifted ([cav:Any] => [
+      def n (cav get 0)
+      def cisnum ((n is Integer) or (n is Float))
+      def r (
+        if (cisnum eq true) [fibfn (n add s)] [fibfn n]
+      )
+      r
+    ])
+    def csubj ([cav:Any] => [
+      def name (cav get 0)
+      def r (
+        if (name eq "fib") [[cshifted/v]] [
+          if (name eq "fibseq") [[seqsub/v]] [
+            if (name eq "fibrange") [[rangesub/v]] [
+              if (name eq "fibinfo") [[infosub/v]] [none]
+            ]
+          ]
+        ]
+      )
+      r
+    ])
+    def r (flex {subject: [csubj/v] contextify: [cfy/v]})
+    r
+  ])
+
+  # The context-group subject: reports what the runner delivered - the
+  # contextify mark and the attached client - as plain data, so the spec can
+  # pin both with an ordinary `out` comparison in every port.
+  def ctxsub ([av:Any] => [
+    def ctx (av get 0)
+    def n (if (ctx is Map) [if (ctx has "n") [ctx get "n"] [none]] [none])
+    def v (fibfn n)
+    def mark (if (ctx is Map) [if (ctx has "mark") [ctx get "mark"] [none]] [none])
+    def hasclient (if (ctx is Map) [ctx has "client"] [false])
+    def r (flex {n: (n) val: (v) mark: (mark) hasclient: (hasclient)})
+    r
+  ])
+
+  # Returns the literal string "__UNDEF__" as ordinary data, to prove the
+  # absent sentinel no longer accepts its own literal.
+  def undefsub ([av:Any] => [
+    def r (flex {a: "__UNDEF__"})
+    r
+  ])
+
+  def provider (flex {
+    subject: [subj/v]
+    client: [clientfn/v]
+    contextify: [cfy/v]
+  })
+
+  def r (flex {
+    provider: (provider)
+    fib: [shifted/v]
+    seq: [seqsub/v]
+    range: [rangesub/v]
+    info: [infosub/v]
+    ctx: [ctxsub/v]
+    undef: [undefsub/v]
+  })
+  r
+]]
+
+# --- spec discovery ----------------------------------------------------------
+
+def rnl-specfile fn [[i:Integer dir:String name:String] [Any] [
+  def r (
+    if (i gte 8) [
+      raise {code: omni_fail/q message: `omni: spec not found: ${name}`}
+    ] [
+      def cand (StringUtil.concat [dir "/spec/" name])
+      def found (do [
+        (IO.read (make Pathon cand)) drop
+        true
+      ] error [var [[e] false]])
+      if (found eq true) [cand] [
+        def up (StringUtil.concat [dir "/.."])
+        def i1 (i add 1)
+        def rr (rnl-specfile i1 up name)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- group runner ------------------------------------------------------------
+
+def rn-only (flex {name: none})
+
+def rn-wanted fn [[name:Any] [Boolean] [
+  def o (rn-only get "name")
+  def r (
+    if (o is None) [true] [o eq name]
+  )
+  r
+]]
+
+def rn-group fn [[pack:Any name:Any subject:Any flags:Any] [Any] [
+  def r (
+    if ((rn-wanted name) not) [none] [
+      def outcome (do [
+        (Omni.runsetflags pack (Omni.set pack name) flags subject) drop
+        {ok: true}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-ok name)
+        rr
+      ] [
+        def rr (rn-bad name (outcome get "msg"))
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- the runner must be able to fail -----------------------------------------
+
+def rn-badspec (flex {
+  fib: {
+    wrongout: {set: [{in: 5 out: 5} {in: 6 out: 999}]}
+    wrongerr: {set: [{in: 1 err: "never happens"}]}
+    wrongmatch: {set: [{in: 6 match: {out: 999}}]}
+    missing: {set: [{in: 6 match: {out: {nope: "__EXISTS__"}}}]}
+    matchabsent: {set: [{in: 6 match: {out: {nope: "fine"}}}]}
+    undefonnull: {set: [{in: 0 match: {out: {prev: "__UNDEF__"}}}]}
+    nullonabsent: {set: [{in: 6 match: {out: {nope: "__NULL__"}}}]}
+    wrongundef: {set: [{in: 6 match: {out: {a: "__UNDEF__"}}}]}
+    emptystr: {set: [{in: 6 match: {out: {label: ""}}}]}
+  }
+})
+
+def rn-expectfail fn [[label:Any setname:Any subject:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def rn (Omni.makeRunner rn-badspec (flex {}))
+      def pack (Omni.runner rn "fib" none)
+      def outcome (do [
+        (Omni.runset pack (Omni.set pack setname) subject) drop
+        {ok: true}
+      ] error [var [[e] {ok: false}]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-bad label `omni: expected a failure for set: ${setname}`)
+        rr
+      ] [
+        def rr (rn-ok label)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- main --------------------------------------------------------------------
+
+def rn-main fn [[av:Any] [Any] [
+  if (av is List) [
+    if ((size av) gt 0) [(rn-only set "name" (av get 0)) drop none] [none] drop
+    none
+  ] [none] drop
+
+  def built (rn-build 0)
+  def prov (built get "provider")
+  def sfib (built get "fib")
+  def sseq (built get "seq")
+  def srange (built get "range")
+  def sinfo (built get "info")
+  def sctx (built get "ctx")
+  def sundef (built get "undef")
+
+  def path (rnl-specfile 0 "." "fib.json")
+  def rn (Omni.makeRunner path prov)
+  def pack (Omni.runner rn "fib" none)
+
+  (rn-group pack "basic" sfib (flex {})) drop
+  (rn-group pack "seq" sseq (flex {})) drop
+  (rn-group pack "range" srange (flex {})) drop
+  (rn-group pack "info" sinfo (flex {})) drop
+  (rn-group pack "nulls" sinfo (flex {null: false})) drop
+  (rn-group pack "error" sfib (flex {})) drop
+  (rn-group pack "match" sfib (flex {})) drop
+  (rn-group pack "matchinfo" sinfo (flex {})) drop
+  (rn-group pack "client" sfib (flex {})) drop
+  (rn-group pack "context" sctx (flex {})) drop
+
+  (rn-expectfail "detects wrong result" "wrongout" sfib) drop
+  (rn-expectfail "detects missing error" "wrongerr" sfib) drop
+  (rn-expectfail "detects failed match" "wrongmatch" sfib) drop
+  (rn-expectfail "detects absent key" "missing" sinfo) drop
+  (rn-expectfail "a concrete match leaf does not match a missing key" "matchabsent" sinfo) drop
+  (rn-expectfail "__UNDEF__ does not match a present null" "undefonnull" sinfo) drop
+  (rn-expectfail "__UNDEF__ does not match its own literal" "wrongundef" sundef) drop
+  (rn-expectfail "__NULL__ does not match an absent key" "nullonabsent" sinfo) drop
+  (rn-expectfail "an empty-string match leaf is not a wildcard" "emptystr" sinfo) drop
+
+  def np (rn-tally get "npass")
+  def nf (rn-tally get "nfail")
+  print `${np} passed, ${nf} failed`
+  if (nf gt 0) [
+    raise {code: omni_fail/q message: `${nf} failures`}
+  ] [none] drop
+  def r none
+  r
+]]
+
+export "Run" {main: rn-main/v}

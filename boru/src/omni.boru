@@ -1,0 +1,1268 @@
+# ============================================================================
+# omni — the shared multi-language test runner (boru port).
+#
+# Port of the canonical TypeScript implementation (typescript/src/Runner.ts).
+# Behaviour must match, case for case.
+#
+# House rules of this module, all of them load-bearing on this engine (see
+# ../README.md and voxgig/struct's boru/AGENTS.md for the measurements):
+#   - every fn body ends `def r (...)` then `r`, never a bare tail call: a
+#     bare call LOSES a `none` result at the return boundary in deep apply
+#     chains.
+#   - all recursion lives in module-level `oml-*` loop functions with
+#     explicit parameters. A named `def f fn ...` inside a body collides
+#     with the outer binding and silently corrupts recursion.
+#   - `and`/`or` do NOT short-circuit; never guard a typed call with a type
+#     test in the same condition. Nested `if` instead.
+#   - node truthiness is never used bare ({} and "" and 0 are falsy).
+#
+# Function values travel wrapped in one-element lists ([f/v]) — the same
+# fn-box carrier struct's boru port uses, because a bare Function in a map
+# slot is called rather than stored.
+#
+# CALLING CONVENTION. Everything this runner invokes — the subject, and the
+# provider's subject/client/contextify/inject hooks — receives its arguments
+# as ONE list. `apply` on this engine does not spread: `[a b] f/v apply`
+# hands the callee the list, whatever its declared arity (measured). So a
+# boru subject reads `args get 0`, `args get 1`, the way omni-zig's
+# `fn (self, args: []const Json)` and omni-go's `[]Json` subjects do.
+#
+# A callback also runs in THIS module's registry, not its author's: it may
+# use core words and values captured from its defining frame, but NOT the
+# namespaces its own file imported. A consumer therefore builds subjects as
+# lambdas that capture the functions they need as VALUES. struct's boru port
+# records the same rule for its walker callbacks.
+# ============================================================================
+
+import "boru:io"
+import "boru:string-util"
+import "boru:minilang"
+
+# --- sentinels ---------------------------------------------------------------
+
+def om-nullmark "__NULL__"
+def om-undefmark "__UNDEF__"
+def om-existsmark "__EXISTS__"
+
+# The newest spec format version this runner understands. A spec with no
+# OMNI block is version 0: the original, lenient format, frozen forever.
+def om-specversion 1
+
+# Capability strings supported beyond the version baseline. Empty today.
+def om-capabilities []
+
+# The complete set of fields an entry may carry. Under version 1 anything
+# else is an error: an unrecognised key is almost always a typo'd
+# assertion, and a typo'd assertion is a test that silently stopped testing.
+def om-entryfields ["in" "args" "ctx" "out" "err" "match" "client" "id" "doc"]
+
+# boru has ONE `none`, which plays JSON null. ABSENT therefore needs a value
+# of its own, or "no such key" and "key holding null" collapse — and the
+# whole sentinel mechanism exists to keep them apart. A quoted atom is
+# unforgeable by spec data, which a string marker would not be.
+def om-absent (quote om__absent__)
+
+def om-isabsent fn [[v:Any] [Boolean] [
+  def r (v eq om-absent)
+  r
+]]
+
+def om-isnull fn [[v:Any] [Boolean] [
+  def r (v is None)
+  r
+]]
+
+# "no value of either kind" — canonical's isnone.
+def om-isnone fn [[v:Any] [Boolean] [
+  def r ((v is None) or (v eq om-absent))
+  r
+]]
+
+def om-ismap fn [[v:Any] [Boolean] [
+  def r (v is Map)
+  r
+]]
+
+def om-islist fn [[v:Any] [Boolean] [
+  def r (v is List)
+  r
+]]
+
+def om-isstr fn [[v:Any] [Boolean] [
+  def r (v is String)
+  r
+]]
+
+def om-isnum fn [[v:Any] [Boolean] [
+  def r ((v is Integer) or (v is Float))
+  r
+]]
+
+# Read a slot. A missing key is ABSENT; a key holding null is null. The two
+# type tests are nested rather than `and`ed, because `and` evaluates both
+# sides and `has` on a non-map raises.
+def om-get fn [[v:Any k:Any] [Any] [
+  def r (
+    if (v is Map) [
+      if (v has (k)) [v get (k)] [om-absent]
+    ] [
+      if (v is List) [
+        if (k is Integer) [
+          if (k lt (size v)) [v get (k)] [om-absent]
+        ] [om-absent]
+      ] [om-absent]
+    ]
+  )
+  r
+]]
+
+def om-has fn [[v:Any k:Any] [Boolean] [
+  def r (
+    if (v is Map) [v has (k)] [false]
+  )
+  r
+]]
+
+# --- util --------------------------------------------------------------------
+
+def oml-clone-map fn [[i:Integer ks:Any v:Any o:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [o] [
+      def k (ks get i)
+      def cv (om-clone (v get (k)))
+      (o set (k) cv) drop
+      def i1 (i add 1)
+      def rr (oml-clone-map i1 ks v o)
+      rr
+    ]
+  )
+  r
+]]
+
+def oml-clone-list fn [[i:Integer v:Any acc:Any] [Any] [
+  def r (
+    if (i gte (size v)) [acc] [
+      def cv (om-clone (v get i))
+      (append [cv] acc) drop
+      def i1 (i add 1)
+      def rr (oml-clone-list i1 v acc)
+      rr
+    ]
+  )
+  r
+]]
+
+def om-clone fn [[v:Any] [Any] [
+  def r (
+    if (v is Map) [
+      def ks (keys v)
+      def o0 (flex {})
+      def rr (oml-clone-map 0 ks v o0)
+      rr
+    ] [
+      if (v is List) [
+        def acc0 (flex [])
+        def rr (oml-clone-list 0 v acc0)
+        rr
+      ] [v]
+    ]
+  )
+  r
+]]
+
+def om-deepequal fn [[a:Any b:Any] [Boolean] [
+  def r (a deq b)
+  r
+]]
+
+def oml-getpath fn [[i:Integer nd:Any path:Any] [Any] [
+  def r (
+    if (i gte (size path)) [nd] [
+      def k (path get i)
+      def nxt (
+        if (nd is List) [
+          def n (convert Integer k)
+          if (n is None) [om-absent] [om-get nd n]
+        ] [om-get nd k]
+      )
+      if (nxt eq om-absent) [om-absent] [
+        def i1 (i add 1)
+        def rr (oml-getpath i1 nxt path)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+def om-getpath fn [[val:Any path:Any] [Any] [
+  def r (
+    if (path is List) [
+      def rr (oml-getpath 0 val path)
+      rr
+    ] [val]
+  )
+  r
+]]
+
+def oml-walk-map fn [[i:Integer ks:Any v:Any apply:Any path:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [v] [
+      def k (ks get i)
+      def cp (om-clone path)
+      (append [k] cp) drop
+      def cv (om-walk (v get (k)) apply cp)
+      (v set (k) cv) drop
+      def i1 (i add 1)
+      def rr (oml-walk-map i1 ks v apply path)
+      rr
+    ]
+  )
+  r
+]]
+
+def oml-walk-list fn [[i:Integer v:Any apply:Any path:Any] [Any] [
+  def r (
+    if (i gte (size v)) [v] [
+      def cp (om-clone path)
+      (append [(convert String i)] cp) drop
+      def cv (om-walk (v get i) apply cp)
+      (v set i cv) drop
+      def i1 (i add 1)
+      def rr (oml-walk-list i1 v apply path)
+      rr
+    ]
+  )
+  r
+]]
+
+def om-walk fn [[val:Any apply:Any path:Any] [Any] [
+  def p (if (path is List) [path] [flex []])
+  def r (
+    if (val is Map) [
+      def ks (keys val)
+      def w (oml-walk-map 0 ks val apply p)
+      def f (if (apply is List) [apply get 0] [apply])
+      def rr ([w p] f/v apply)
+      rr
+    ] [
+      if (val is List) [
+        def w (oml-walk-list 0 val apply p)
+        def f (if (apply is List) [apply get 0] [apply])
+        def rr ([w p] f/v apply)
+        rr
+      ] [
+        def f (if (apply is List) [apply get 0] [apply])
+        def rr ([val p] f/v apply)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# Numbers render as JSON does: an integral value has no fraction, and a
+# non-finite one is null, matching every other port.
+# Numbers render as JSON does: an integral value carries no fraction.
+#
+# Every `convert` is parenthesised. Bare, it forward-collects and the block
+# yields TWO values - measured as `om-numstr: expected 1 return value(s),
+# got 2 - ['2.5' 2.5]`.
+def om-numstr fn [[v:Any] [String] [
+  def r (
+    if (v is Integer) [(convert String v)] [
+      def i (convert Integer v)
+      if (i is None) [(convert String v)] [
+        if ((convert Float i) eq (convert Float v)) [(convert String i)] [(convert String v)]
+      ]
+    ]
+  )
+  r
+]]
+
+def oml-quote fn [[i:Integer s:String acc:Any] [Any] [
+  def r (
+    if (i gte (size s)) [acc] [
+      def c (s slice i (i add 1))
+      def esc (
+        if (c eq "\"") ["\\\""] [
+          if (c eq "\\") ["\\\\"] [
+            if (c eq "\n") ["\\n"] [
+              if (c eq "\r") ["\\r"] [
+                if (c eq "\t") ["\\t"] [c]
+              ]
+            ]
+          ]
+        ]
+      )
+      (append [esc] acc) drop
+      def i1 (i add 1)
+      def rr (oml-quote i1 s acc)
+      rr
+    ]
+  )
+  r
+]]
+
+def om-quote fn [[s:String] [String] [
+  def acc (flex [])
+  def parts (oml-quote 0 s acc)
+  def body (StringUtil.concat (make List parts))
+  def r (StringUtil.concat ["\"" body "\""])
+  r
+]]
+
+def oml-join fn [[i:Integer parts:Any sep:String acc:Any] [Any] [
+  def r (
+    if (i gte (size parts)) [acc] [
+      if (i gt 0) [(append [sep] acc) drop none] [none] drop
+      (append [(parts get i)] acc) drop
+      def i1 (i add 1)
+      def rr (oml-join i1 parts sep acc)
+      rr
+    ]
+  )
+  r
+]]
+
+# StringUtil.concat joins a list with no separator, and the module exports no
+# `join`, so the separator is interleaved here.
+def om-join fn [[parts:Any sep:String] [String] [
+  def acc (flex [])
+  def out (oml-join 0 parts sep acc)
+  def r (StringUtil.concat (make List out))
+  r
+]]
+
+def oml-jsonstr-list fn [[i:Integer v:Any acc:Any] [Any] [
+  def r (
+    if (i gte (size v)) [acc] [
+      def s (om-jsonstr (v get i))
+      (append [s] acc) drop
+      def i1 (i add 1)
+      def rr (oml-jsonstr-list i1 v acc)
+      rr
+    ]
+  )
+  r
+]]
+
+def oml-jsonstr-map fn [[i:Integer ks:Any v:Any acc:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [acc] [
+      def k (ks get i)
+      def kq (om-quote k)
+      def vs (om-jsonstr (v get (k)))
+      def pair (StringUtil.concat [kq ":" vs])
+      (append [pair] acc) drop
+      def i1 (i add 1)
+      def rr (oml-jsonstr-map i1 ks v acc)
+      rr
+    ]
+  )
+  r
+]]
+
+# Compact JSON text with map keys SORTED, identical in every port. That
+# ordering is why this cannot be the engine's `emit json`, which preserves
+# insertion order: two ports would then disagree on a failure message.
+def om-jsonstr fn [[v:Any] [String] [
+  def r (
+    if (v eq om-absent) ["undefined"] [
+      if (v is None) ["null"] [
+        if (v is Boolean) [if (v eq true) ["true"] ["false"]] [
+          if (v is String) [om-quote v] [
+            if ((v is Integer) or (v is Float)) [om-numstr v] [
+              if (v is List) [
+                def acc (flex [])
+                def parts (oml-jsonstr-list 0 v acc)
+                def body (om-join parts ",")
+                StringUtil.concat ["[" body "]"]
+              ] [
+                if (v is Map) [
+                  def ks (sort (keys v))
+                  def acc (flex [])
+                  def parts (oml-jsonstr-map 0 ks v acc)
+                  def body (om-join parts ",")
+                  StringUtil.concat ["{" body "}"]
+                ] [om-quote `${v}`]
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
+# Strings verbatim, everything else as compact JSON.
+def om-stringify fn [[v:Any] [String] [
+  def r (
+    if (v is String) [v] [om-jsonstr v]
+  )
+  r
+]]
+
+def om-pathify fn [[path:Any] [String] [
+  def r (
+    if (path is List) [om-join path "."] [""]
+  )
+  r
+]]
+
+# --- errors ------------------------------------------------------------------
+
+# A test failure (or a malformed spec), raised with a code that separates it
+# from an error thrown by the subject under test.
+def om-fail-raise fn [[message:String] [Any] [
+  raise {code: omni_fail/q message: (message)}
+]]
+
+# The message an `err` expectation matches.
+#
+# A raised value is an Error, not a Map, so `e is Map` is false and a Map-only
+# branch fell through to stringifying the whole object - "error(fib: negative
+# index: -3)". An anchored pattern like `/negative index: -3$/` then cannot
+# match, because the rendering appends `)`. Read the slot and let the read
+# fail if there is none.
+def om-errmessage fn [[e:Any] [String] [
+  def r (
+    if (e is String) [e] [
+      def m (do [e get "message"] error [var [[x] none]])
+      if (m is None) [om-stringify e] [om-stringify m]
+    ]
+  )
+  r
+]]
+
+# The JSON form of an error: always at least {name,message}.
+def om-errify fn [[e:Any] [Any] [
+  def m (om-errmessage e)
+  def r (flex {name: "Error" message: (m)})
+  r
+]]
+
+# --- spec --------------------------------------------------------------------
+
+# Load a spec: a path to a JSON file. The engine's IO.read parses by
+# extension, so this port needs no JSON reader of its own.
+def om-loadspec fn [[path:String] [Any] [
+  def r (IO.read (make Pathon path))
+  r
+]]
+
+# Find `primary.<name>`, then `<name>`, then the whole spec.
+def om-resolvespec fn [[name:Any alltests:Any] [Any] [
+  def r (
+    if (name is None) [alltests] [
+      if (name eq "") [alltests] [
+        def primary (om-get (om-get alltests "primary") name)
+        if ((om-isabsent primary) not) [primary] [
+          def section (om-get alltests name)
+          if ((om-isabsent section) not) [section] [alltests]
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
+def oml-caps fn [[i:Integer reqs:Any] [Any] [
+  def r (
+    if (i gte (size reqs)) [none] [
+      def cap (reqs get i)
+      def ok (
+        if (cap is String) [StringUtil.contains (cap) (StringUtil.join (make List om-capabilities) ",")] [false]
+      )
+      if (ok eq true) [
+        def i1 (i add 1)
+        def rr (oml-caps i1 reqs)
+        rr
+      ] [
+        def cs (om-stringify cap)
+        (om-fail-raise `omni: spec requires unsupported capability: ${cs}`) drop
+        none
+      ]
+    ]
+  )
+  r
+]]
+
+# Read the spec's format version from its optional top-level OMNI block, and
+# refuse a spec this runner cannot faithfully run: a version newer than
+# SPECVERSION, or a required capability not in CAPABILITIES.
+def om-resolveversion fn [[alltests:Any] [Any] [
+  def meta (
+    if (alltests is Map) [om-get alltests "OMNI"] [om-absent]
+  )
+  def r (
+    if (om-isabsent meta) [0] [
+      def version (
+        if (meta is Map) [om-get meta "version"] [om-absent]
+      )
+      def wellformed (
+        if (meta is Map) [
+          if (version is Integer) [true] [false]
+        ] [false]
+      )
+      if (wellformed eq false) [
+        (om-fail-raise "omni: malformed OMNI version block") drop
+        none
+      ] [
+        if ((version lt 0) or (version gt om-specversion)) [
+          def vs (om-stringify version)
+          (om-fail-raise `omni: unsupported spec version: ${vs}`) drop
+          none
+        ] [
+          def reqs (om-get meta "requires")
+          if (om-isabsent reqs) [version] [
+            if ((reqs is List) not) [
+              (om-fail-raise "omni: malformed OMNI requires list") drop
+              none
+            ] [
+              (oml-caps 0 reqs) drop
+              version
+            ]
+          ]
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
+# --- fixjson -----------------------------------------------------------------
+
+def oml-fix-map fn [[i:Integer ks:Any v:Any donull:Boolean o:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [o] [
+      def k (ks get i)
+      def fv (om-fixjson (v get (k)) donull)
+      (o set (k) fv) drop
+      def i1 (i add 1)
+      def rr (oml-fix-map i1 ks v donull o)
+      rr
+    ]
+  )
+  r
+]]
+
+def oml-fix-list fn [[i:Integer v:Any donull:Boolean acc:Any] [Any] [
+  def r (
+    if (i gte (size v)) [acc] [
+      def fv (om-fixjson (v get i) donull)
+      (append [fv] acc) drop
+      def i1 (i add 1)
+      def rr (oml-fix-list i1 v donull acc)
+      rr
+    ]
+  )
+  r
+]]
+
+# Nulls (and absent values) become NULLMARK under `donull`. Always a fresh
+# copy. Without `donull` the value is returned UNCHANGED, which is what
+# keeps absent distinct from null: normalising an ABSENT to null here would
+# stop a subject that returned nothing from ever matching an entry with no
+# `out`.
+def om-fixjson fn [[v:Any donull:Boolean] [Any] [
+  def r (
+    if (om-isnone v) [
+      if (donull eq true) [om-nullmark] [v]
+    ] [
+      if (v is Map) [
+        def ks (keys v)
+        def o0 (flex {})
+        def rr (oml-fix-map 0 ks v donull o0)
+        rr
+      ] [
+        if (v is List) [
+          def acc0 (flex [])
+          def rr (oml-fix-list 0 v donull acc0)
+          rr
+        ] [v]
+      ]
+    ]
+  )
+  r
+]]
+
+# --- leaf match --------------------------------------------------------------
+
+# Match one leaf: /regex/, or case-insensitive substring for strings.
+def om-matchval fn [[check:Any bv:Any] [Boolean] [
+  def r (
+    if (om-deepequal check bv) [true] [
+      if (om-isnone check) [
+        ((om-isnone bv) or (bv eq om-nullmark))
+      ] [
+        if (check is String) [
+          # An empty want would substring-match anything: reject it.
+          if (check eq "") [false] [
+            def basestr (om-stringify bv)
+            def n (size check)
+            def isre (
+              if (n gt 2) [
+                def c0 (check slice 0 1)
+                def cn (check slice (n sub 1) n)
+                ((c0 eq "/") and (cn eq "/"))
+              ] [false]
+            )
+            if (isre eq true) [
+              def pat (check slice 1 (n sub 1))
+              def m (basestr mini re (pat) {})
+              (m.ok)
+            ] [
+              def cl (StringUtil.lower check)
+              def bl (StringUtil.lower basestr)
+              StringUtil.contains (cl) (bl)
+            ]
+          ]
+        ] [om-deepequal check bv]
+      ]
+    ]
+  )
+  r
+]]
+
+# Convert NULLMARK sentinels back into real nulls.
+def om-nullmodifier fn [[v:Any] [Any] [
+  def r (
+    if (v eq om-nullmark) [none] [
+      if (v is String) [StringUtil.replace (v) (om-nullmark) "null"] [v]
+    ]
+  )
+  r
+]]
+
+# --- failure messages --------------------------------------------------------
+
+def oml-summary fn [[i:Integer ks:Any e:Any o:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [o] [
+      def k (ks get i)
+      def skip (((k eq "res") or (k eq "thrown")) or (k eq "ctx"))
+      if (skip eq true) [none] [(o set (k) (e get (k))) drop none] drop
+      def i1 (i add 1)
+      def rr (oml-summary i1 ks e o)
+      rr
+    ]
+  )
+  r
+]]
+
+# The spec-defined part of an entry (drop runner bookkeeping).
+def om-entrysummary fn [[e:Any] [Any] [
+  def r (
+    if (e is Map) [
+      def ks (keys e)
+      def o0 (flex {})
+      def rr (oml-summary 0 ks e o0)
+      rr
+    ] [e]
+  )
+  r
+]]
+
+def om-entryref fn [[label:Any index:Integer entry:Any] [String] [
+  def id (om-get entry "id")
+  def idpart (
+    if (om-isabsent id) [""] [
+      def ids (om-stringify id)
+      StringUtil.concat [" (" ids ")"]
+    ]
+  )
+  def istr (convert String index)
+  def r (StringUtil.concat [`${label}` "[" istr "]" idpart])
+  r
+]]
+
+def om-fail fn [[label:Any index:Integer entry:Any reason:String expected:Any actual:Any] [Any] [
+  def ref (om-entryref label index entry)
+  def head (StringUtil.concat ["omni: " ref ": " reason])
+  def m1 (
+    if (om-isabsent expected) [head] [
+      StringUtil.concat [head "\n  expected: " (om-stringify expected)]
+    ]
+  )
+  def m2 (
+    if (om-isabsent actual) [m1] [
+      StringUtil.concat [m1 "\n  actual:   " (om-stringify actual)]
+    ]
+  )
+  def sum (om-jsonstr (om-entrysummary entry))
+  def m3 (StringUtil.concat [m2 "\n  entry:    " sum])
+  (om-fail-raise m3) drop
+  none
+]]
+
+# --- strict entry validation -------------------------------------------------
+
+def oml-fieldok fn [[i:Integer k:Any] [Boolean] [
+  def r (
+    if (i gte (size om-entryfields)) [false] [
+      if ((om-entryfields get i) eq k) [true] [
+        def i1 (i add 1)
+        def rr (oml-fieldok i1 k)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+def oml-checkfields fn [[i:Integer ks:Any label:Any index:Integer entry:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [none] [
+      def k (ks get i)
+      if (oml-fieldok 0 k) [none] [
+        (om-fail label index entry (StringUtil.concat ["unknown entry field: " k]) om-absent om-absent) drop
+        none
+      ] drop
+      def i1 (i add 1)
+      def rr (oml-checkfields i1 ks label index entry)
+      rr
+    ]
+  )
+  r
+]]
+
+# Applied when the spec declares version 1 or later. The lenient format
+# turns each of these mistakes into a silent pass or a dead field; here they
+# fail with the entry named.
+def om-checkentry fn [[label:Any index:Integer entry:Any] [Any] [
+  if ((entry is Map) not) [
+    (om-fail label index entry "entry is not a map" om-absent om-absent) drop
+    none
+  ] [none] drop
+
+  (oml-checkfields 0 (keys entry) label index entry) drop
+
+  def nin (if (om-has entry "in") [1] [0])
+  def nargs (if (om-has entry "args") [1] [0])
+  def nctx (if (om-has entry "ctx") [1] [0])
+  def argsources ((nin add nargs) add nctx)
+  if (argsources gt 1) [
+    (om-fail label index entry "entry has more than one of in, args, ctx" om-absent om-absent) drop
+    none
+  ] [none] drop
+
+  def haserr ((om-isnone (om-get entry "err")) not)
+  if (haserr eq true) [
+    if (om-has entry "out") [
+      (om-fail label index entry "entry has both err and out" om-absent om-absent) drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+
+  if (om-has entry "id") [
+    if (((om-get entry "id") is String) not) [
+      (om-fail label index entry "entry id is not a string" om-absent om-absent) drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+
+  def r none
+  r
+]]
+
+def oml-checkset fn [[i:Integer origset:Any label:Any] [Any] [
+  def r (
+    if (i gte (size origset)) [none] [
+      (om-checkentry label i (origset get i)) drop
+      def i1 (i add 1)
+      def rr (oml-checkset i1 origset label)
+      rr
+    ]
+  )
+  r
+]]
+
+# Validate a version-1 group against the AUTHORED entries: null-normalisation
+# would otherwise rewrite an authored `id: null` into a sentinel string and
+# hide it from validation.
+def om-checkset fn [[label:Any testspec:Any normalset:Any] [Any] [
+  def origset (
+    if (testspec is Map) [
+      def s (om-get testspec "set")
+      if (s is List) [s] [normalset]
+    ] [normalset]
+  )
+  def empty (
+    if (testspec is Map) [om-get testspec "empty"] [om-absent]
+  )
+  if ((size origset) eq 0) [
+    if ((empty eq true) not) [
+      (om-fail-raise `omni: empty test set: ${label}`) drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+  def r (oml-checkset 0 origset label)
+  r
+]]
+
+# --- structural match --------------------------------------------------------
+
+def oml-match-list fn [[i:Integer check:Any label:Any index:Integer entry:Any bv:Any path:Any] [Any] [
+  def r (
+    if (i gte (size check)) [none] [
+      def cp (om-clone path)
+      (append [(convert String i)] cp) drop
+      (om-match label index entry (check get i) bv cp) drop
+      def i1 (i add 1)
+      def rr (oml-match-list i1 check label index entry bv path)
+      rr
+    ]
+  )
+  r
+]]
+
+def oml-match-map fn [[i:Integer ks:Any check:Any label:Any index:Integer entry:Any bv:Any path:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [none] [
+      def k (ks get i)
+      def cp (om-clone path)
+      (append [k] cp) drop
+      (om-match label index entry (check get (k)) bv cp) drop
+      def i1 (i add 1)
+      def rr (oml-match-map i1 ks check label index entry bv path)
+      rr
+    ]
+  )
+  r
+]]
+
+# Check that every leaf of `check` is present, and matches, in `base`.
+def om-match fn [[label:Any index:Integer entry:Any check:Any bv:Any path:Any] [Any] [
+  def p (if (path is List) [path] [flex []])
+  def where (if ((size p) eq 0) ["<root>"] [om-pathify p])
+  def r (
+    if (check is List) [
+      def rr (oml-match-list 0 check label index entry bv p)
+      rr
+    ] [
+      if (check is Map) [
+        def rr (oml-match-map 0 (keys check) check label index entry bv p)
+        rr
+      ] [
+        def baseval (om-getpath bv p)
+
+        # The sentinels are tested BEFORE the identity check below. Otherwise
+        # a subject returning the literal string "__UNDEF__" satisfies an
+        # assertion that the key is ABSENT — two mutually exclusive states
+        # passing one check. A sentinel that accepts its own literal is not a
+        # sentinel.
+        if (check eq om-undefmark) [
+          if (om-isabsent baseval) [none] [
+            (om-fail label index entry `expected absent at ${where}` "absent" baseval) drop
+            none
+          ]
+        ] [
+          if (check eq om-nullmark) [
+            if ((om-isnull baseval) or (baseval eq om-nullmark)) [none] [
+              (om-fail label index entry `expected null at ${where}` "null" baseval) drop
+              none
+            ]
+          ] [
+            if (check eq om-existsmark) [
+              if ((om-isabsent baseval) not) [none] [
+                (om-fail label index entry `expected present at ${where}` "present" "absent") drop
+                none
+              ]
+            ] [
+              if (om-deepequal check baseval) [none] [
+                # A concrete expectation never matches a missing key.
+                if (om-isabsent baseval) [
+                  (om-fail label index entry `match failed at ${where}` check "absent") drop
+                  none
+                ] [
+                  if (om-matchval check baseval) [none] [
+                    (om-fail label index entry `match failed at ${where}` check baseval) drop
+                    none
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
+# --- result and error checking -----------------------------------------------
+
+def om-checkresult fn [[label:Any index:Integer entry:Any alist:Any res:Any] [Any] [
+  def entryerr (om-get entry "err")
+  if ((om-isnone entryerr) not) [
+    (om-fail label index entry "expected error did not occur" entryerr res) drop
+    none
+  ] [none] drop
+
+  def check (om-get entry "match")
+  def matched (
+    if ((om-isnone check) not) [
+      def bv (flex {
+        in: (om-get entry "in")
+        args: (alist)
+        out: (om-get entry "res")
+        ctx: (om-get entry "ctx")
+      })
+      (om-match label index entry check bv (flex [])) drop
+      true
+    ] [false]
+  )
+
+  def out (om-get entry "out")
+  def r (
+    if (om-deepequal res out) [none] [
+      # A match with no explicit out is a complete check on its own.
+      def outempty ((om-isnone out) or (out eq om-nullmark))
+      if ((matched eq true) and (outempty eq true)) [none] [
+        (om-fail label index entry "result mismatch" out res) drop
+        none
+      ]
+    ]
+  )
+  r
+]]
+
+def om-handleerror fn [[label:Any index:Integer entry:Any e:Any] [Any] [
+  def entryerr (om-get entry "err")
+  def emsg (om-errmessage e)
+  def r (
+    if (om-isnone entryerr) [
+      (om-fail label index entry "unexpected error" om-absent emsg) drop
+      none
+    ] [
+      def hit (
+        if (entryerr eq true) [true] [om-matchval entryerr emsg]
+      )
+      if (hit eq true) [
+        def check (om-get entry "match")
+        if ((om-isnone check) not) [
+          def bv (flex {
+            in: (om-get entry "in")
+            out: (om-get entry "res")
+            ctx: (om-get entry "ctx")
+            err: (om-errify e)
+          })
+          (om-match label index entry check bv (flex [])) drop
+          none
+        ] [none] drop
+        none
+      ] [
+        (om-fail label index entry "error mismatch" entryerr emsg) drop
+        none
+      ]
+    ]
+  )
+  r
+]]
+
+def oml-copyargs fn [[i:Integer raw:Any acc:Any] [Any] [
+  def r (
+    if (i gte (size raw)) [acc] [
+      (append [(raw get i)] acc) drop
+      def i1 (i add 1)
+      def rr (oml-copyargs i1 raw acc)
+      rr
+    ]
+  )
+  r
+]]
+
+# Unwrap a fn-box ([f/v]) to the Function inside it.
+#
+# NOTE: no bind-then-return here, deliberately. This returns a FUNCTION, and
+# a bare `r` holding a function is a CALL, not a value - the engine reports
+# it as "cannot call `r`". The `if` expression is the tail instead.
+def om-unbox fn [[fw:Any] [Any] [
+  if (fw is List) [
+    if ((size fw) eq 1) [fw get 0] [fw]
+  ] [fw]
+]]
+
+# Build the argument list: `ctx`, `args`, or `in`. `client` is the provider
+# that owns this entry's subject — the runner attaches it to a contextified
+# map argument, so a subject can reach the provider that owns it.
+def om-resolveargs fn [[entry:Any client:Any provider:Any] [Any] [
+  def hasctx (om-has entry "ctx")
+  def hasargs (om-has entry "args")
+  def alist (
+    if (hasctx eq true) [flex [(om-get entry "ctx")]] [
+      if (hasargs eq true) [
+        def raw (om-get entry "args")
+        if (raw is List) [oml-copyargs 0 raw (flex [])] [flex []]
+      ] [
+        flex [(om-clone (om-get entry "in"))]
+      ]
+    ]
+  )
+  if ((hasctx eq true) or (hasargs eq true)) [
+    def a0 (if ((size alist) gt 0) [alist get 0] [om-absent])
+    if (a0 is Map) [
+      def first0 (om-clone a0)
+      def cfy (om-get provider "contextify")
+      def first (
+        if (om-isabsent cfy) [first0] [
+          def f (om-unbox cfy)
+          [first0] f/v apply
+        ]
+      )
+      (alist set 0 first) drop
+      (entry set "ctx" first) drop
+      if (first is Map) [(first set "client" client) drop none] [none] drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+  def r alist
+  r
+]]
+
+# --- the runner --------------------------------------------------------------
+
+# A runner is state plus module-level functions rather than a closure: the
+# engine's closures capture values correctly, but a closure returning a map
+# of further closures is exactly the nesting its InstallDef overlap removal
+# mishandles. Every other port with no closures at all — go, zig, c — carries
+# the same RunPack-and-methods shape.
+def om-makerunner fn [[specref:Any provider:Any] [Any] [
+  def alltests (
+    if (specref is String) [om-loadspec specref] [specref]
+  )
+  def sv (om-resolveversion alltests)
+  def p (if (provider is Map) [provider] [flex {}])
+  def r (flex {alltests: (alltests) provider: (p) specversion: (sv)})
+  r
+]]
+
+def oml-clients fn [[i:Integer ks:Any defclient:Any prov:Any store:Any out:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [out] [
+      def cname (ks get i)
+      def cdef (defclient get (cname))
+      def copts0 (om-get (om-get cdef "test") "options")
+      def copts1 (if (om-isabsent copts0) [flex {}] [copts0])
+      def inj (om-get prov "inject")
+      def copts (
+        if (om-isabsent inj) [copts1] [
+          if (store is Map) [
+            def f (om-unbox inj)
+            [copts1 store] f/v apply
+          ] [copts1]
+        ]
+      )
+      def cf (om-unbox (om-get prov "client"))
+      def cl ([copts] cf/v apply)
+      (out set (cname) cl) drop
+      def i1 (i add 1)
+      def rr (oml-clients i1 ks defclient prov store out)
+      rr
+    ]
+  )
+  r
+]]
+
+# Resolve one named section of the spec into a run pack.
+def om-runner fn [[rn:Any name:Any store:Any] [Any] [
+  def alltests (rn get "alltests")
+  def prov (rn get "provider")
+  def spec (om-resolvespec name alltests)
+
+  def defclient (om-get (om-get spec "DEF") "client")
+  def clients (
+    if (defclient is Map) [
+      def cf (om-get prov "client")
+      if (om-isabsent cf) [flex {}] [
+        def rr (oml-clients 0 (keys defclient) defclient prov store (flex {}))
+        rr
+      ]
+    ] [flex {}]
+  )
+
+  def sf (om-get prov "subject")
+  def subject (
+    if (om-isabsent sf) [om-absent] [
+      if (name is None) [om-absent] [
+        def f (om-unbox sf)
+        [name] f/v apply
+      ]
+    ]
+  )
+
+  def r (flex {
+    spec: (spec)
+    subject: (subject)
+    client: (prov)
+    clients: (clients)
+    name: (name)
+    specversion: (rn get "specversion")
+  })
+  r
+]]
+
+# A named group of the resolved spec.
+def om-set fn [[pack:Any setname:Any] [Any] [
+  def r (om-get (pack get "spec") setname)
+  r
+]]
+
+def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean usesubject:Any] [Any] [
+  def r (
+    if (i gte (size testset)) [none] [
+      def entry (testset get i)
+      if ((entry is Map) not) [
+        (om-fail-raise `omni: ${label}[${i}]: entry is not a map`) drop
+        none
+      ] [none] drop
+
+      # An entry with no `out` expects a null (or absent) result.
+      if (donull eq true) [
+        if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
+        none
+      ] [none] drop
+
+      def prov (pack get "client")
+      def clients (pack get "clients")
+      def cname (om-get entry "client")
+      def entryclient (
+        if (cname is String) [
+          if (clients has (cname)) [clients get (cname)] [
+            (om-fail-raise `omni: unknown client: ${cname}`) drop
+            none
+          ]
+        ] [prov]
+      )
+      def entrysubject (
+        if (cname is String) [
+          def csf (om-get entryclient "subject")
+          if (om-isabsent csf) [usesubject] [
+            def f (om-unbox csf)
+            def cs ([(pack get "name")] f/v apply)
+            if (om-isnone cs) [usesubject] [cs]
+          ]
+        ] [usesubject]
+      )
+
+      def av (om-resolveargs entry entryclient prov)
+
+      def outcome (do [
+        def f (om-unbox entrysubject)
+        def res0 (av f/v apply)
+        def res (om-fixjson res0 donull)
+        (entry set "res" res) drop
+        (om-checkresult label i entry av res) drop
+        {ok: true}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "err" e) drop
+        o
+      ]])
+
+      if ((outcome get "ok") eq true) [none] [
+        def e (outcome get "err")
+        # An omni failure is already a verdict; only a subject's own error
+        # is a candidate for the entry's `err` expectation.
+        if ((e get "code") eq omni_fail/q) [raise (e)] [
+          (om-handleerror label i entry e) drop
+          none
+        ] drop
+        none
+      ] drop
+
+      def i1 (i add 1)
+      def rr (oml-runentry i1 testset pack label donull usesubject)
+      rr
+    ]
+  )
+  r
+]]
+
+# Run one set of test entries with flags.
+def om-runsetflags fn [[pack:Any testspec:Any flags:Any subject:Any] [Any] [
+  def fl (if (flags is Map) [flags] [flex {}])
+  def nullflag (om-get fl "null")
+  def donull (if (om-isabsent nullflag) [true] [nullflag eq true])
+  def nm (pack get "name")
+  def label0 (
+    if (om-isnone nm) ["set"] [if (nm eq "") ["set"] [nm]]
+  )
+  def fname (om-get fl "name")
+  def label (if (om-isabsent fname) [label0] [fname])
+
+  def usesubject (
+    if (om-isnone subject) [pack get "subject"] [subject]
+  )
+  if (om-isnone usesubject) [
+    (om-fail-raise `omni: no test subject for: ${label}`) drop
+    none
+  ] [none] drop
+
+  def testspecmap (om-fixjson testspec donull)
+  def testset (om-get testspecmap "set")
+  if ((testset is List) not) [
+    (om-fail-raise `omni: test spec has no set: ${label}`) drop
+    none
+  ] [none] drop
+
+  if ((pack get "specversion") gte 1) [
+    (om-checkset label testspec testset) drop
+    none
+  ] [none] drop
+
+  def r (oml-runentry 0 testset pack label donull usesubject)
+  r
+]]
+
+def om-runset fn [[pack:Any testspec:Any subject:Any] [Any] [
+  def r (om-runsetflags pack testspec (flex {}) subject)
+  r
+]]
+
+export "Omni" {
+  makeRunner: om-makerunner/v
+  runner: om-runner/v
+  set: om-set/v
+  runset: om-runset/v
+  runsetflags: om-runsetflags/v
+  loadspec: om-loadspec/v
+  resolvespec: om-resolvespec/v
+  fixjson: om-fixjson/v
+  errify: om-errify/v
+  match: om-match/v
+  matchval: om-matchval/v
+  nullmodifier: om-nullmodifier/v
+  OmniError: om-fail-raise/v
+  errmessage: om-errmessage/v
+  SPECVERSION: om-specversion
+  CAPABILITIES: om-capabilities
+  NULLMARK: om-nullmark
+  UNDEFMARK: om-undefmark
+  EXISTSMARK: om-existsmark
+  ABSENT: om-absent
+  clone: om-clone/v
+  deepequal: om-deepequal/v
+  getpath: om-getpath/v
+  walk: om-walk/v
+  jsonstr: om-jsonstr/v
+  stringify: om-stringify/v
+  pathify: om-pathify/v
+  isabsent: om-isabsent/v
+  isnull: om-isnull/v
+  isnone: om-isnone/v
+  ismap: om-ismap/v
+  islist: om-islist/v
+  isstr: om-isstr/v
+  isnum: om-isnum/v
+  get: om-get/v
+  has: om-has/v
+  unbox: om-unbox/v
+}
