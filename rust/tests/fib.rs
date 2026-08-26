@@ -698,3 +698,64 @@ fn regex_matching() {
     assert!(Regex::new("\\d+\\.\\d+").unwrap().is_match("pi is 3.14"));
     assert!(!Regex::new("\\d+\\.\\d+").unwrap().is_match("pi is 314"));
 }
+
+// deepequal is structural, not IEEE: two NaNs are equal, however they were
+// made. spec/fib.json cannot pin this - JSON has no NaN literal - so it is
+// pinned here.
+#[test]
+fn deepequal_nan() {
+    use voxgig_omni::deepequal;
+
+    // Two NaNs from two DIFFERENT expressions. A test written with one
+    // shared NaN constant used twice can pass on an identity fast-path
+    // while proving nothing.
+    let zero = 0.0f64;
+    let n1 = zero / zero;
+    let n2 = f64::INFINITY - f64::INFINITY;
+
+    assert!(n1.is_nan() && n2.is_nan(), "omni: expected two NaNs");
+
+    // Rust f64 values have no object identity, so IEEE inequality is the
+    // check that keeps the two honestly distinct: if this ever holds,
+    // someone has replaced a NaN with an ordinary number.
+    assert!(n1 != n2, "omni: NaN must not be IEEE-equal to NaN");
+
+    let nan1 = Json::Num(n1);
+    let nan2 = Json::Num(n2);
+
+    assert!(deepequal(&nan1, &nan2), "omni: NaN must equal NaN");
+    assert!(
+        deepequal(
+            &Json::list(vec![nan1.clone()]),
+            &Json::list(vec![nan2.clone()])
+        ),
+        "omni: NaN must equal NaN inside a list"
+    );
+    assert!(
+        deepequal(
+            &Json::map(vec![("x", nan1.clone())]),
+            &Json::map(vec![("x", nan2.clone())])
+        ),
+        "omni: NaN must equal NaN inside a map"
+    );
+
+    // Regressions: the NaN rule must not loosen anything else. Json::Num
+    // is always f64, so an integer and a float of the same value are the
+    // same value once inside the model - this port has no separate int.
+    assert!(
+        deepequal(&Json::Num(1i64 as f64), &Json::Num(1.0)),
+        "omni: 1 must equal 1.0"
+    );
+    assert!(
+        !deepequal(&nan1, &Json::Num(1.0)),
+        "omni: NaN must not equal a real number"
+    );
+    assert!(
+        !deepequal(&Json::Bool(true), &Json::Num(1.0)),
+        "omni: a bool is never a number"
+    );
+    assert!(
+        !deepequal(&Json::Num(1.0), &Json::Num(2.0)),
+        "omni: 1 must not equal 2"
+    );
+}

@@ -8,9 +8,11 @@
 // any host framework (Catch2, GoogleTest) reports it as a failure. This
 // harness keeps `make test` dependency-free.
 
+#include <cmath>
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -419,6 +421,49 @@ void legacystayslenient() {
   pack.runset(pack.set("g"), FIB);
 }
 
+// deepequal is structural, not IEEE: NaN equals NaN, at the top level and
+// nested inside containers. spec/fib.json cannot pin this - JSON has no NaN
+// literal - so it is pinned here instead.
+//
+// The two NaNs come from two DIFFERENT expressions, and the guard below
+// requires them to be genuine NaNs that are not IEEE-equal to each other.
+// Json is a value type, so there is no object identity to defeat, but a
+// single shared NaN constant used twice would still prove nothing: the
+// point is that deepequal answers true for values that `==` calls unequal.
+// The `volatile` reads keep the compiler from folding the two expressions
+// into one constant.
+void nanequality() {
+  auto check = [](bool got, bool want, const std::string& what) {
+    if (got != want) {
+      throw std::runtime_error("omni: expected " + what + " to be " +
+                               (want ? "true" : "false"));
+    }
+  };
+
+  volatile double zero = 0.0;
+  volatile double huge = std::numeric_limits<double>::infinity();
+  const double nan1 = zero / zero;  // 0.0 / 0.0
+  const double nan2 = huge - huge;  // INFINITY - INFINITY
+
+  check(std::isnan(nan1) && std::isnan(nan2), true, "two NaN values");
+  check(nan1 == nan2, false, "the two NaNs IEEE-equal");
+
+  const omni::Json n1 = omni::Json::num(nan1);
+  const omni::Json n2 = omni::Json::num(nan2);
+
+  check(omni::deepequal(n1, n2), true, "deepequal(NaN, NaN)");
+  check(omni::deepequal(omni::Json::list({n1}), omni::Json::list({n2})), true,
+        "deepequal([NaN], [NaN])");
+  check(omni::deepequal(omni::Json::map({{"x", n1}}), omni::Json::map({{"x", n2}})), true,
+        "deepequal({x:NaN}, {x:NaN})");
+
+  check(omni::deepequal(omni::Json::num(1), omni::Json::num(1.0)), true, "deepequal(1, 1.0)");
+  check(omni::deepequal(n1, omni::Json::num(1.0)), false, "deepequal(NaN, 1.0)");
+  check(omni::deepequal(omni::Json::boolean(true), omni::Json::num(1)), false,
+        "deepequal(true, 1)");
+  check(omni::deepequal(omni::Json::num(1), omni::Json::num(2)), false, "deepequal(1, 2)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -468,6 +513,8 @@ int main(int argc, char** argv) {
   testcase("a legacy spec (no OMNI block) stays lenient", legacystayslenient);
 
   testcase("reports entry index and id", checkmessage);
+
+  testcase("deepequal: two distinct NaNs are structurally equal", nanequality);
 
   std::cout << "\n" << PASSCOUNT << " passed, " << FAILCOUNT << " failed\n";
 

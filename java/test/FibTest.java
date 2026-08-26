@@ -186,6 +186,8 @@ public final class FibTest {
 
     testcase("reports entry index and id", FibTest::checkmessage);
 
+    testcase("deepequal: NaN equals NaN, structurally", FibTest::deepequalNaN);
+
     System.out.println("\n" + passcount + " passed, " + failcount + " failed");
     System.exit(0 == failcount ? 0 : 1);
   }
@@ -426,6 +428,40 @@ public final class FibTest {
                     list(map("in", 6.0, "matches", map("out", 999.0), "out", 8.0)))));
     RunPack R = Runner.makeRunner(spec, null).runner("fib");
     R.runset(R.set("g"), FIB);
+  }
+
+  static void require(boolean cond, String what) {
+    if (!cond) {
+      throw new IllegalStateException("omni: " + what);
+    }
+  }
+
+  // deepequal is structural, not IEEE: two NaNs are equal, however they
+  // were made. spec/fib.json cannot pin this - JSON has no NaN literal -
+  // so it is pinned here.
+  static void deepequalNaN() {
+    // Two NaNs from two DIFFERENT expressions, boxed into two DIFFERENT
+    // Double objects. Util.deepequal opens with an `a == b` identity
+    // fast-path, so a test written with one shared NaN constant used
+    // twice can pass while proving nothing.
+    double zero = 0.0;
+    Object n1 = Double.valueOf(zero / zero);
+    Object n2 = Double.valueOf(Double.POSITIVE_INFINITY - Double.POSITIVE_INFINITY);
+
+    require(Double.isNaN((Double) n1), "expected a NaN from 0.0/0.0");
+    require(
+        Double.isNaN((Double) n2), "expected a NaN from Infinity-Infinity");
+    require(n1 != n2, "the two NaNs must not be the same object");
+
+    require(Util.deepequal(n1, n2), "NaN must equal NaN");
+    require(Util.deepequal(list(n1), list(n2)), "NaN must equal NaN inside a list");
+    require(Util.deepequal(map("x", n1), map("x", n2)), "NaN must equal NaN inside a map");
+
+    // Regressions: the NaN rule must not loosen anything else.
+    require(Util.deepequal(1, 1.0), "an int must equal the same float");
+    require(!Util.deepequal(n1, 1.0), "NaN must not equal a real number");
+    require(!Util.deepequal(true, 1), "a bool is never a number");
+    require(!Util.deepequal(1, 2), "1 must not equal 2");
   }
 
   static void checkmessage() {

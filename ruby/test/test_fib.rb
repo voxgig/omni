@@ -287,3 +287,53 @@ class TestRunner < Minitest::Test
     assert_includes err.message, 'actual:   1'
   end
 end
+
+# deepequal is structural, not IEEE: NaN equals NaN. Nothing in spec/fib.json
+# can pin that - the spec is JSON, and JSON has no NaN literal - so it is
+# pinned here instead.
+#
+# The two NaNs MUST come from two different expressions. Float::NAN is a
+# single frozen object, so writing the test with that constant on both sides
+# is answered by the `a.equal?(b)` fast-path at the top of deepequal and
+# proves nothing about the number branch below it. The identity assertion
+# below fails loudly if anyone ever "simplifies" that away.
+class TestDeepEqual < Minitest::Test
+  U = VoxgigOmni::Util
+
+  NAN1 = 0.0 / 0.0
+  NAN2 = Float::INFINITY - Float::INFINITY
+
+  def test_the_two_nans_are_distinct_objects
+    assert NAN1.nan?, 'NAN1 must be NaN'
+    assert NAN2.nan?, 'NAN2 must be NaN'
+    refute NAN1.equal?(NAN2), 'the two NaNs must not be the same object'
+  end
+
+  def test_nan_equals_nan
+    assert U.deepequal(NAN1, NAN2)
+  end
+
+  def test_nan_equals_nan_inside_a_list
+    assert U.deepequal([NAN1], [NAN2])
+  end
+
+  def test_nan_equals_nan_inside_a_map
+    assert U.deepequal({ 'x' => NAN1 }, { 'x' => NAN2 })
+  end
+
+  def test_an_integer_equals_the_same_float
+    assert U.deepequal(1, 1.0)
+  end
+
+  def test_nan_does_not_equal_a_real_number
+    refute U.deepequal(NAN1, 1.0)
+  end
+
+  def test_a_bool_is_never_a_number
+    refute U.deepequal(true, 1)
+  end
+
+  def test_different_numbers_are_not_equal
+    refute U.deepequal(1, 2)
+  end
+end

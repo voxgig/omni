@@ -18,6 +18,7 @@ import voxgig.omni.OmniError
 import voxgig.omni.Provider
 import voxgig.omni.RunPack
 import voxgig.omni.Subject
+import voxgig.omni.deepequal
 import voxgig.omni.errmessage
 import voxgig.omni.makeRunner
 
@@ -264,6 +265,47 @@ fun checkmessage() {
     throw IllegalStateException("omni: expected OmniError")
 }
 
+fun checkequal(want: Boolean, a: Json, b: Json, what: String) {
+    if (want != deepequal(a, b)) {
+        throw IllegalStateException("omni: deepequal($what) should be $want")
+    }
+}
+
+/**
+ * deepequal is structural, not IEEE: NaN equals NaN, at the top level and
+ * inside nodes, so a subject that returns NaN can still be pinned by a
+ * spec. spec/fib.json is the only suite, it is JSON, and JSON has no NaN
+ * literal - so this is the only place the rule is checked.
+ *
+ * The two NaNs come from two *different* expressions and are two
+ * different objects. Using one NaN constant twice would let an identity
+ * fast-path pass the test while proving nothing.
+ */
+fun checknan() {
+    val n1 = Json.num(0.0 / 0.0)
+    val n2 = Json.num(Double.POSITIVE_INFINITY - Double.POSITIVE_INFINITY)
+
+    val d1 = n1.asnum ?: 0.0
+    val d2 = n2.asnum ?: 0.0
+    if (!d1.isNaN() || !d2.isNaN()) {
+        throw IllegalStateException("omni: both values must be NaN")
+    }
+
+    if (n1 === n2) {
+        throw IllegalStateException("omni: the two NaNs must be distinct objects")
+    }
+
+    checkequal(true, n1, n2, "NaN, NaN")
+    checkequal(true, Json.list(n1), Json.list(n2), "[NaN], [NaN]")
+    checkequal(true, Json.map("x" to n1), Json.map("x" to n2), "{x:NaN}, {x:NaN}")
+
+    // Regressions: the NaN rule must not loosen anything else.
+    checkequal(true, Json.num(1), Json.num(1.0), "1, 1.0")
+    checkequal(false, n1, Json.num(1.0), "NaN, 1.0")
+    checkequal(false, Json.Bool(true), Json.num(1), "true, 1")
+    checkequal(false, Json.num(1), Json.num(2), "1, 2")
+}
+
 fun main(args: Array<String>) {
     if (args.isNotEmpty()) {
         only = args[0]
@@ -294,6 +336,7 @@ fun main(args: Array<String>) {
     }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
+    testcase("deepequal matches NaN with NaN, structurally") { checknan() }
 
     testcase("rejects an unsupported spec version") {
         expectmakerunnerfail(

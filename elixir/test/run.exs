@@ -317,6 +317,70 @@ defmodule OmniTest do
         end)
     end
   end
+
+  # deepequal is structural, not IEEE: NaN equals NaN, as canonical. Nothing
+  # in spec/fib.json can reach that rule - JSON has no NaN literal - so each
+  # port pins it in its own suite.
+  #
+  # Erlang floats CANNOT represent NaN. There is no NaN value to hand to
+  # deepequal and no expression that yields one, so this port cannot carry
+  # the two-distinct-NaNs assertions the other ports carry. What it pins
+  # instead is the reason: every route to a NaN raises or refuses. If a
+  # future runtime ever admits NaN, this test goes red rather than quietly
+  # skipping the contract, and whoever sees it must add the real cases here -
+  # deepequal(n1, n2), deepequal([n1], [n2]), deepequal(%{"x" => n1},
+  # %{"x" => n2}) all true, and deepequal(n1, 1.0) false, with n1 and n2 built
+  # by two DIFFERENT expressions. The number regressions below run either way.
+  def checkdeepequal(label, got, want) do
+    if want != got do
+      raise "omni: deepequal #{label}: expected #{inspect(want)}, got #{inspect(got)}"
+    end
+  end
+
+  # `build` must raise ArithmeticError. It is called through an anonymous
+  # function so the compiler cannot fold the arithmetic away at build time -
+  # a folded expression would fail at compile time, not here.
+  def expectnonan(label, build) do
+    try do
+      got = build.()
+      raise "omni: #{label} produced #{inspect(got)} - this runtime now has NaN"
+    rescue
+      _err in ArithmeticError -> :ok
+    end
+  end
+
+  def nan_is_unrepresentable do
+    divide = fn a, b -> a / b end
+    log = fn val -> :math.log(val) end
+
+    expectnonan("0.0 / 0.0", fn -> divide.(0.0, 0.0) end)
+    # And no infinity to subtract from itself, either.
+    expectnonan("1.0 / 0.0", fn -> divide.(1.0, 0.0) end)
+    expectnonan(":math.log(-1.0)", fn -> log.(-1.0) end)
+
+    if :error != Float.parse("nan") do
+      raise ~s|omni: Float.parse("nan") no longer refuses NaN|
+    end
+
+    # Bit syntax refuses to decode the IEEE-754 quiet-NaN pattern as a float.
+    try do
+      <<_::float-64>> = <<0x7F, 0xF8, 0, 0, 0, 0, 0, 0>>
+      raise "omni: bit syntax now decodes NaN as a float"
+    rescue
+      _err in MatchError -> :ok
+    end
+  end
+
+  def deepequal_structural do
+    nan_is_unrepresentable()
+
+    # Numbers compare by value across int/float, and bools are never numbers.
+    checkdeepequal("1, 1.0", U.deepequal(1, 1.0), true)
+    checkdeepequal("[1], [1.0]", U.deepequal([1], [1.0]), true)
+    checkdeepequal(~s|{"x" => 1}, {"x" => 1.0}|, U.deepequal(%{"x" => 1}, %{"x" => 1.0}), true)
+    checkdeepequal("true, 1", U.deepequal(true, 1), false)
+    checkdeepequal("1, 2", U.deepequal(1, 2), false)
+  end
 end
 
 only = List.first(System.argv())
@@ -482,6 +546,13 @@ state =
   OmniTest.testcase(
     "a legacy spec (no OMNI block) stays lenient",
     &OmniTest.legacy_stays_lenient/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "deepequal: NaN equals NaN (no NaN in this runtime), number regressions",
+    &OmniTest.deepequal_structural/0,
     state
   )
 

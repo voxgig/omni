@@ -7,6 +7,7 @@
 package omni_test
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -440,4 +441,52 @@ func TestRunner(t *testing.T) {
 			}
 		}
 	})
+}
+
+// DeepEqual is structural, not IEEE: two NaNs are equal, however they were
+// made. spec/fib.json cannot pin this - JSON has no NaN literal - so it is
+// pinned here.
+func TestDeepEqualNaN(t *testing.T) {
+	// Two NaNs from two DIFFERENT expressions. A test written with one
+	// shared NaN constant used twice can pass on an identity fast-path
+	// while proving nothing.
+	zero := 0.0
+	n1 := zero / zero
+	n2 := math.Inf(1) - math.Inf(1)
+
+	if !math.IsNaN(n1) || !math.IsNaN(n2) {
+		t.Fatalf("omni: expected two NaNs, got: %v %v", n1, n2)
+	}
+
+	// Go floats have no object identity, so IEEE inequality is the check
+	// that keeps the two values honestly distinct: if this ever holds,
+	// someone has replaced a NaN with an ordinary number.
+	if n1 == n2 {
+		t.Fatalf("omni: NaN must not be IEEE-equal to NaN: %v %v", n1, n2)
+	}
+
+	cases := []struct {
+		name string
+		a    any
+		b    any
+		want bool
+	}{
+		{"NaN equals NaN", n1, n2, true},
+		{"NaN nested in a list", []any{n1}, []any{n2}, true},
+		{"NaN nested in a map", map[string]any{"x": n1}, map[string]any{"x": n2}, true},
+		{"an int equals the same float", 1, 1.0, true},
+		{"NaN does not equal a real number", n1, 1.0, false},
+		{"a bool is never a number", true, 1, false},
+		{"plain inequality still fails", 1, 2, false},
+	}
+
+	for _, kase := range cases {
+		t.Run(kase.name, func(t *testing.T) {
+			got := omni.DeepEqual(kase.a, kase.b)
+			if got != kase.want {
+				t.Fatalf("omni: DeepEqual(%v, %v) = %v, want %v",
+					kase.a, kase.b, got, kase.want)
+			}
+		})
+	}
 }

@@ -231,6 +231,38 @@ object Main:
 
     throw IllegalStateException("omni: expected OmniError")
 
+  def checkequal(want: Boolean, a: Json, b: Json, what: String): Unit =
+    if want != Util.deepequal(a, b) then
+      throw IllegalStateException(s"omni: deepequal($what) should be $want")
+
+  /** deepequal is structural, not IEEE: NaN equals NaN, at the top level
+    * and inside nodes, so a subject that returns NaN can still be pinned
+    * by a spec. spec/fib.json is the only suite, it is JSON, and JSON has
+    * no NaN literal - so this is the only place the rule is checked.
+    *
+    * The two NaNs come from two *different* expressions and are two
+    * different objects. Using one NaN constant twice would let an
+    * identity fast-path pass the test while proving nothing.
+    */
+  def checknan(): Unit =
+    val n1 = Json.num(0.0 / 0.0)
+    val n2 = Json.num(Double.PositiveInfinity - Double.PositiveInfinity)
+
+    if !n1.asnum.exists(_.isNaN) || !n2.asnum.exists(_.isNaN) then
+      throw IllegalStateException("omni: both values must be NaN")
+
+    if n1.eq(n2) then throw IllegalStateException("omni: the two NaNs must be distinct objects")
+
+    checkequal(true, n1, n2, "NaN, NaN")
+    checkequal(true, Json.list(n1), Json.list(n2), "[NaN], [NaN]")
+    checkequal(true, Json.map("x" -> n1), Json.map("x" -> n2), "{x:NaN}, {x:NaN}")
+
+    // Regressions: the NaN rule must not loosen anything else.
+    checkequal(true, Json.num(1), Json.num(1.0), "1, 1.0")
+    checkequal(false, n1, Json.num(1.0), "NaN, 1.0")
+    checkequal(false, Json.Bool(true), Json.num(1), "true, 1")
+    checkequal(false, Json.num(1), Json.num(2), "1, 2")
+
   def main(args: Array[String]): Unit =
     if args.nonEmpty then only = Some(args(0))
 
@@ -257,6 +289,7 @@ object Main:
     testcase("__UNDEF__ does not match its own literal") { expectfail("wrongundef", FIBUNDEF) }
     testcase("an empty-string match leaf is not a wildcard") { expectfail("emptystr", FIBINFO) }
     testcase("reports entry index and id") { checkmessage() }
+    testcase("deepequal matches NaN with NaN, structurally") { checknan() }
 
     testcase("rejects an unsupported spec version") {
       expectmakerunnerfail(

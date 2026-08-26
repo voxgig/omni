@@ -7,7 +7,7 @@
 import os
 import unittest
 
-from voxgig_omni import OmniError, makeRunner
+from voxgig_omni import OmniError, deepequal, makeRunner
 
 try:
     from .fib import fib, fibinfo, fibrange, fibseq
@@ -245,6 +245,45 @@ class TestRunner(unittest.TestCase):
         self.assertIn('fib[1] (x#2)', msg)
         self.assertIn('expected: 42', msg)
         self.assertIn('actual:   1', msg)
+
+
+# Two distinct NaNs, from two DIFFERENT expressions. Reusing a single NaN
+# object twice can be caught by the `a is b` fast path at the top of
+# deepequal, so such a test would pass while proving nothing about the NaN
+# branch. (0.0 / 0.0 is not usable here: Python raises ZeroDivisionError.)
+NAN1 = float('nan')
+NAN2 = float('inf') - float('inf')
+
+
+class TestDeepEqual(unittest.TestCase):
+    """deepequal is structural, not IEEE: NaN equals NaN, everywhere.
+
+    The conformance suite cannot reach this - spec/fib.json is JSON, and
+    JSON has no NaN literal - so it is pinned here directly.
+    """
+
+    def test_the_two_nans_are_distinct_objects(self):
+        self.assertNotEqual(NAN1, NAN1)
+        self.assertNotEqual(NAN2, NAN2)
+        # If someone later "simplifies" these to one shared constant, the
+        # identity fast path would answer for deepequal and the tests below
+        # would stop testing anything. Fail loudly instead.
+        self.assertIsNot(NAN1, NAN2)
+
+    def test_nan_equals_nan(self):
+        self.assertTrue(deepequal(NAN1, NAN2))
+
+    def test_nan_equals_nan_in_a_list(self):
+        self.assertTrue(deepequal([NAN1], [NAN2]))
+
+    def test_nan_equals_nan_in_a_map(self):
+        self.assertTrue(deepequal({'x': NAN1}, {'x': NAN2}))
+
+    def test_nan_equality_does_not_loosen_the_ordinary_comparisons(self):
+        self.assertTrue(deepequal(1, 1.0))
+        self.assertFalse(deepequal(NAN1, 1.0))
+        self.assertFalse(deepequal(True, 1))
+        self.assertFalse(deepequal(1, 2))
 
 
 if __name__ == '__main__':

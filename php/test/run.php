@@ -18,6 +18,7 @@ namespace Voxgig\Omni\Test;
 
 use Voxgig\Omni\OmniError;
 use Voxgig\Omni\Runner;
+use Voxgig\Omni\Util;
 
 require_once __DIR__ . '/../src/Runner.php';
 require_once __DIR__ . '/Fib.php';
@@ -283,6 +284,50 @@ testcase('reports entry index and id', function () use ($fib) {
     }
     throw new \RuntimeException('omni: expected OmniError');
 });
+
+/**
+ * deepequal is structural, not IEEE: NaN equals NaN. Nothing in spec/fib.json
+ * can pin that - the spec is JSON, and JSON has no NaN literal - so it is
+ * pinned here instead.
+ *
+ * The two NaNs MUST come from two different expressions. A test written with
+ * one NaN on both sides can be answered by an identity or same-value
+ * shortcut and prove nothing about the number branch of deepequal.
+ */
+function expectequal($a, $b, bool $want, string $what): void
+{
+    $got = Util::deepequal($a, $b);
+    if ($got !== $want) {
+        throw new \RuntimeException(
+            'omni: deepequal(' . $what . '): expected ' . ($want ? 'true' : 'false')
+            . ', actual ' . ($got ? 'true' : 'false')
+        );
+    }
+}
+
+$nan1 = fdiv(0.0, 0.0);
+$nan2 = INF - INF;
+
+testcase('deepequal: the two NaNs come from two different expressions', function () use ($nan1, $nan2) {
+    if (!is_nan($nan1) || !is_nan($nan2)) {
+        throw new \RuntimeException('omni: both values must be NaN');
+    }
+    // PHP floats are values, not objects, so there is no identity fast-path
+    // for deepequal to take: plain === already separates these two NaNs, and
+    // this pins that, so the assertions below can only pass structurally.
+    if ($nan1 === $nan2) {
+        throw new \RuntimeException('omni: the two NaNs must not compare identical');
+    }
+});
+
+testcase('deepequal: NaN equals NaN', fn() => expectequal($nan1, $nan2, true, 'NaN, NaN'));
+testcase('deepequal: NaN equals NaN inside a list', fn() => expectequal([$nan1], [$nan2], true, '[NaN], [NaN]'));
+testcase('deepequal: NaN equals NaN inside a map', fn() => expectequal(['x' => $nan1], ['x' => $nan2], true, '{x:NaN}, {x:NaN}'));
+testcase('deepequal: an integer equals the same float', fn() => expectequal(1, 1.0, true, '1, 1.0'));
+testcase('deepequal: NaN does not equal a real number', fn() => expectequal($nan1, 1.0, false, 'NaN, 1.0'));
+testcase('deepequal: a bool is never a number', fn() => expectequal(true, 1, false, 'true, 1'));
+testcase('deepequal: different numbers are not equal', fn() => expectequal(1, 2, false, '1, 2'));
+
 
 echo "\n$pass passed, $fail failed\n";
 exit(0 === $fail ? 0 : 1);

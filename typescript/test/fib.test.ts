@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { before, describe, test } from 'node:test'
 import assert from 'node:assert'
 
-import { OmniError, Provider, RunPack, Subject, makeRunner } from '../src'
+import { OmniError, Provider, RunPack, Subject, deepequal, makeRunner } from '../src'
 import { fib, fibinfo, fibrange, fibseq } from './fib'
 
 // Find the shared spec directory by walking up from this file.
@@ -298,5 +298,36 @@ describe('runner', () => {
         return true
       },
     )
+  })
+})
+
+// deepequal is structural, not IEEE: NaN equals NaN, everywhere, including
+// inside containers. The spec suite cannot reach this - spec/fib.json is
+// JSON, and JSON has no NaN literal - so it is pinned here directly.
+//
+// The two NaNs come from two DIFFERENT expressions, deliberately. A test
+// written with one NaN constant used twice can be satisfied by an identity
+// fast-path alone (`a === b` at the top of deepequal) and would prove
+// nothing about the NaN branch.
+describe('deepequal', () => {
+  const n1 = 0 / 0
+  const n2 = Number.POSITIVE_INFINITY - Number.POSITIVE_INFINITY
+
+  test('NaN equals NaN, structurally', () => {
+    assert.ok(isNaN(n1) && isNaN(n2))
+    // Neither the `a === b` fast path nor Object.is can be doing the work:
+    // no NaN is === to any NaN, and these two are not the same expression.
+    assert.equal(n1 === n2, false)
+
+    assert.equal(deepequal(n1, n2), true)
+    assert.equal(deepequal([n1], [n2]), true)
+    assert.equal(deepequal({ x: n1 }, { x: n2 }), true)
+  })
+
+  test('NaN equality does not loosen the ordinary comparisons', () => {
+    assert.equal(deepequal(1, 1.0), true)
+    assert.equal(deepequal(n1, 1.0), false)
+    assert.equal(deepequal(true, 1), false)
+    assert.equal(deepequal(1, 2), false)
   })
 })
