@@ -73,11 +73,14 @@
   (cond
     (or (boolean? a) (boolean? b)) (and (boolean? a) (boolean? b) (= a b))
     ;; NaN equals NaN: deepequal is structural, not IEEE (as canonical).
+    ;; NaN-ness is tested AFTER numeric coercion, the way numstr does it below:
+    ;; isnum accepts every number? type, so a `double?` guard would miss
+    ;; Float/NaN - which isnum accepts and == still reports unequal.
     (or (isnum a) (isnum b))
     (and (isnum a) (isnum b)
          (or (== a b)
-             (and (double? a) (Double/isNaN a)
-                  (double? b) (Double/isNaN b))))
+             (and (Double/isNaN (double a))
+                  (Double/isNaN (double b)))))
     (or (isabsent a) (isabsent b)) (and (isabsent a) (isabsent b))
     (or (nil? a) (nil? b)) (and (nil? a) (nil? b))
 

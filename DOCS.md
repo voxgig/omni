@@ -825,12 +825,17 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,
 failure text - is *intended* to be identical across all twenty-three ports,
-and the Fibonacci suite proves it **for every value JSON can express**.
+and the Fibonacci suite proves it **only for the cases the corpus actually
+exercises**.
 
 That qualifier is load-bearing, and it is the honest limit of what is
-checked. The corpus is JSON, so a value JSON has no literal for cannot
-appear in an entry, and port behaviour on such a value is unproven by
-construction. `tools/check_parity.py` does not close the gap either: it is
+checked. It is narrower than it may first appear, in two stacked ways.
+First, the corpus is JSON, so a value JSON has no literal for cannot appear
+in an entry at all, and port behaviour on such a value is unproven by
+construction. Second - and this is the larger gap - `fib.aontu` is a finite
+set of entries, not an enumeration of JSON: a port can diverge on a
+perfectly JSON-expressible value, magnitude or nesting shape that simply is
+not in the corpus, and every suite stays green. `tools/check_parity.py` does not close the gap either: it is
 a NAME check by design and says so in its own docstring - it confirms each
 canonical identifier appears as a token in a port's source, and a port
 whose `deepequal` was `return true` would pass it.
