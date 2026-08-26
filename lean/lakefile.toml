@@ -1,5 +1,12 @@
 name = "omni"
-defaultTargets = ["omnitest"]
+
+# `Omni` is the default target, not `omnitest`.
+#
+# A consumer takes this port as a Lake dependency and wants the RUNNER;
+# `omnitest` is omni's own self-test executable, built from Main.lean
+# against the Fib fixture, and is no part of what a consumer requires.
+# omni's own `make test` names it explicitly instead.
+defaultTargets = ["Omni"]
 
 [[lean_lib]]
 name = "Omni"

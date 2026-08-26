@@ -1,2 +1,12 @@
-{:paths ["src" "test"]
- :deps {}}
+;; `test` is deliberately NOT in :paths.
+;;
+;; A consumer takes this port as a git dependency with :deps/root "clojure",
+;; and every path listed here lands on THEIR classpath. omni's own self-test
+;; namespaces (voxgig.omni.test.*) are not part of the runner and have no
+;; business being shipped to a consumer - the clojure form of register 4.15,
+;; "a shim must not put its own tree on a consumer's module path".
+;;
+;; The :test alias adds it back for omni's own `make test`.
+{:paths ["src"]
+ :deps {}
+ :aliases {:test {:extra-paths ["test"]}}}

@@ -1,0 +1,119 @@
+# Cuts a release TAG for a port that publishes no package.
+#
+# `go`, `clojure`, `rust`, `dart` and `lean` are consumed by git ref rather
+# than from a registry (register 4.16, DOCS 8.3), so a release here is the tag
+# and nothing else. That is why this is not release.yml: that file publishes to
+# npm, it is registered with npm trusted publishing against its FILENAME, and
+# nothing that does not need a registry credential belongs anywhere near it.
+# This workflow holds `contents: write` and no token of any other kind.
+#
+# THE TAG NAME IS `<port>/vX.Y.Z` AND THE PREFIX IS LOAD-BEARING. Go requires a
+# subdirectory module's tags to carry the subdirectory name - `go/v1.2.3` is
+# what the go command resolves version v1.2.3 to, and it IGNORES every tag
+# without the prefix. Cargo, pub, tools.deps and Lake impose no naming rule and
+# take the same shape for consistency.
+#
+# A GO TAG CANNOT BE TAKEN BACK. proxy.golang.org and sum.golang.org cache a
+# version permanently and hostilely: moving or deleting a tag surfaces to users
+# as a SECURITY ERROR, not a missing version, and withdrawal is only via
+# `retract` in a NEW version. Hence the guards below - dispatch only from main,
+# the tag must not already exist, and the port's own suite must pass on the
+# exact commit being tagged.
+name: tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      port:
+        description: 'Port to tag (these publish no package - the tag IS the release)'
+        required: true
+        type: choice
+        options: [go, clojure, rust, dart, lean]
+      version:
+        description: 'Version, without the port prefix or the v (e.g. 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: the commit must be sound before it is tagged
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # TAGS COME FROM main. `gh workflow run --ref` accepts any branch, so
+      # without this the Actions UI could tag a feature branch - irreversibly,
+      # for go.
+      - name: Dispatches must come from main
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF_NAME" = "main" ] || {
+            echo "::error::dispatch ref is $GITHUB_REF_NAME; tags must come from main"
+            exit 1
+          }
+
+      - name: Resolve and validate the tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          PORT='${{ inputs.port }}'
+          VERSION='${{ inputs.version }}'
+
+          case "$PORT" in
+            go|clojure|rust|dart|lean) ;;
+            *) echo "::error::$PORT does not publish by git ref"; exit 1 ;;
+          esac
+
+          # Plain semver. Go rejects anything else outright, and the other four
+          # gain nothing from being looser than the strictest consumer.
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::version '$VERSION' is not X.Y.Z"
+            exit 1
+          }
+
+          TAG="$PORT/v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::$TAG already exists - a published tag is never moved"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tagging $TAG at $(git rev-parse HEAD)"
+
+      - name: The port's own suite must pass on this commit
+        run: make test-${{ inputs.port }}
+
+  tag:
+    name: tag
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # git, and nothing else.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Tag the release
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
