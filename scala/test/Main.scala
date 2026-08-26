@@ -245,8 +245,8 @@ object Main:
     * identity fast-path pass the test while proving nothing.
     */
   def checknan(): Unit =
-    val n1 = Json.num(0.0 / 0.0)
-    val n2 = Json.num(Double.PositiveInfinity - Double.PositiveInfinity)
+    val n1 = Json.num(Double.PositiveInfinity - Double.PositiveInfinity)
+    val n2 = Json.num("NaN".toDouble)
 
     if !n1.asnum.exists(_.isNaN) || !n2.asnum.exists(_.isNaN) then
       throw IllegalStateException("omni: both values must be NaN")

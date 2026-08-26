@@ -282,8 +282,8 @@ fun checkequal(want: Boolean, a: Json, b: Json, what: String) {
  * fast-path pass the test while proving nothing.
  */
 fun checknan() {
-    val n1 = Json.num(0.0 / 0.0)
-    val n2 = Json.num(Double.POSITIVE_INFINITY - Double.POSITIVE_INFINITY)
+    val n1 = Json.num(Double.POSITIVE_INFINITY - Double.POSITIVE_INFINITY)
+    val n2 = Json.num("NaN".toDouble())
 
     val d1 = n1.asnum ?: 0.0
     val d2 = n2.asnum ?: 0.0

@@ -377,6 +377,45 @@ let checkmessage () =
           raise (Failure ("omni: message missing [" ^ want ^ "]: " ^ message)))
       [ "fib[1] (x#2)"; "expected: 42"; "actual:   1" ]
 
+(* ---- deepequal: NaN is structurally equal to NaN ---------------------
+
+   deepequal is structural, not IEEE: two NaNs are equal however each one
+   was made (src/omni.ml: `Float.is_nan x && Float.is_nan y`). Nothing in
+   spec/fib.json can pin that - JSON has no NaN literal - so it is pinned
+   here.
+
+   The two NaNs come from different expressions and differ bit for bit.
+   A test that used one NaN constant twice could pass on an equality or
+   sharing fast path while proving nothing, so the distinctness is
+   asserted first: collapse the pair into a single shared constant and
+   this test fails loudly instead of going quiet. *)
+
+let nan1 = 0.0 /. 0.0
+let nan2 = Int64.float_of_bits 0x7FF8000000000001L
+
+let checkequal want a b label =
+  if deepequal a b <> want then
+    raise
+      (Failure ("omni: deepequal " ^ label ^ ": expected " ^ (if want then "true" else "false")))
+
+let checkdeepequalnan () =
+  if not (Float.is_nan nan1 && Float.is_nan nan2) then
+    raise (Failure "omni: nan1 and nan2 must both be NaN");
+  if Int64.bits_of_float nan1 = Int64.bits_of_float nan2 then
+    raise (Failure "omni: nan1 and nan2 must be two distinct NaN values");
+
+  checkequal true (Num nan1) (Num nan2) "NaN, NaN";
+  checkequal true (JList [ Num nan1 ]) (JList [ Num nan2 ]) "[NaN], [NaN]";
+  checkequal true (JMap [ ("x", Num nan1) ]) (JMap [ ("x", Num nan2) ]) "{x: NaN}, {x: NaN}";
+
+  (* Regressions: the NaN branch must not loosen anything else. OCaml has
+     a single numeric constructor, so the int/float case is one Num value
+     reached two ways. *)
+  checkequal true (Num 1.0) (Num (float_of_int 1)) "1, 1.0";
+  checkequal false (Num nan1) (Num 1.0) "NaN, 1.0";
+  checkequal false (Bool true) (Num 1.0) "true, 1";
+  checkequal false (Num 1.0) (Num 2.0) "1, 2"
+
 let () =
   if Array.length Sys.argv > 1 then only := Some Sys.argv.(1);
 
@@ -408,6 +447,7 @@ let () =
   testcase "the literal __UNDEF__ as data does not match __UNDEF__" (fun () ->
       expectfail "wrongundef" undefsub);
   testcase "reports entry index and id" checkmessage;
+  testcase "deepequal: NaN equals NaN, structurally" checkdeepequalnan;
 
   testcase "rejects an unsupported spec version" (fun () ->
       expectloadfail badversion "unsupported spec version");

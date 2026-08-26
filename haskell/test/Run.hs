@@ -14,6 +14,7 @@ import Control.Exception (SomeException, fromException, throwIO, try)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Fib
+import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 import Omni
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
@@ -417,6 +418,51 @@ legacySpecStaysLenient = do
   pack <- makeRunnerSpec spec emptyProvider "fib"
   runset pack (packSet pack "g") (Just fibsub)
 
+-- ---- deepequal: NaN is structurally equal to NaN ---------------------
+--
+-- deepequal is structural, not IEEE: two NaNs are equal however each one
+-- was made (src/Omni.hs: `isNaN x && isNaN y`). Nothing in spec/fib.json
+-- can pin that - JSON has no NaN literal - so it is pinned here.
+--
+-- The two NaNs come from different expressions and differ bit for bit. A
+-- test that used one NaN constant twice could pass on an equality fast
+-- path while proving nothing, so the distinctness is asserted first:
+-- collapse the pair into a single shared constant and this test fails
+-- loudly instead of going quiet.
+
+nan1 :: Double
+nan1 = 0 / 0
+
+nan2 :: Double
+nan2 = castWord64ToDouble 0x7FF8000000000001
+
+checkequal :: Bool -> Json -> Json -> String -> IO ()
+checkequal want a b label =
+  if deepequal a b == want
+    then pure ()
+    else throwIO (OmniError ("omni: deepequal " ++ label ++ ": expected " ++ show want))
+
+deepequalNaN :: IO ()
+deepequalNaN = do
+  if isNaN nan1 && isNaN nan2
+    then pure ()
+    else throwIO (OmniError "omni: nan1 and nan2 must both be NaN")
+  if castDoubleToWord64 nan1 /= castDoubleToWord64 nan2
+    then pure ()
+    else throwIO (OmniError "omni: nan1 and nan2 must be two distinct NaN values")
+
+  checkequal True (Num nan1) (Num nan2) "NaN, NaN"
+  checkequal True (JList [Num nan1]) (JList [Num nan2]) "[NaN], [NaN]"
+  checkequal True (JMap [("x", Num nan1)]) (JMap [("x", Num nan2)]) "{x: NaN}, {x: NaN}"
+
+  -- Regressions: the NaN branch must not loosen anything else. Haskell
+  -- has a single numeric constructor, so the int/float case is one Num
+  -- value reached two ways.
+  checkequal True (Num 1) (Num 1.0) "1, 1.0"
+  checkequal False (Num nan1) (Num 1.0) "NaN, 1.0"
+  checkequal False (Bool True) (Num 1) "True, 1"
+  checkequal False (Num 1) (Num 2) "1, 2"
+
 main :: IO ()
 main = do
   args <- getArgs
@@ -467,6 +513,7 @@ main = do
   run "a legacy spec (no OMNI block) stays lenient" legacySpecStaysLenient
 
   run "reports entry index and id" checkmessage
+  run "deepequal: NaN equals NaN, structurally" deepequalNaN
 
   passed <- readIORef passcount
   failed <- readIORef failcount
