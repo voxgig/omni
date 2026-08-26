@@ -3,7 +3,7 @@
 omni's goal: be the single multi-language test-spec utility of the voxgig
 ecosystem. `voxgig/sekreto` already runs every port's conformance suite
 through omni; `voxgig/struct` has replaced its in-situ runners with omni in
-22 of 24 ports, the remaining two blocked (zig) and undecided (boru);
+22 of 24 ports, the remaining two not started (zig) and undecided (boru);
 `senecajs/Sekreto` is to validate omni from outside the sibling-checkout
 world. This document is the plan; the live status is the register
 in [`progress.md`](progress.md), which changes in the same commit as the
@@ -59,9 +59,14 @@ struct-compat gate), then **python** (voxgig/struct#86), **ruby**
 eighteen. typescript was planned second and ran late - omni's side had been
 ready since `typescript/compat/struct.ts`, but `@voxgig/sdkgen` copies the
 version-stamped TS runner - and landed as voxgig/struct#96. **Twenty-two of
-the twenty-four are merged.** The two that are not: `zig` is BLOCKED (struct/zig
-pins Zig 0.13, omni-zig needs 0.16) and `boru` needs a decision, because omni
-has no boru port to migrate onto. Both are measured in voxgig/struct#112.
+the twenty-four are merged.** The two that are not: `zig` is NOT STARTED - the
+blocker that held it, struct/zig pinning Zig 0.13 while omni-zig needs 0.16,
+was **cleared by voxgig/struct#119**, which moved the port to 0.16 on its own
+"before the omni swap, so that a mechanical toolchain move and a test-runner
+change are never in the same diff"; `struct/zig` names omni nowhere yet, so the
+swap itself is what remains. `boru` needs a decision, because omni has no boru
+port to migrate onto. Both were measured in voxgig/struct#112, whose zig
+conclusion #119 corrected.
 
 Both the ruby and go swaps needed omni-side work first, and neither was
 visible until a struct port was actually run through the shim: #8's shims

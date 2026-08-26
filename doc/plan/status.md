@@ -16,9 +16,10 @@ merges.)
 
 **Nothing open in voxgig/struct.** The port migration is finished: all sixteen
 of the drafts this file previously listed are merged, so **22 of 24 ports are
-on omni**. The two that are not are `zig` (BLOCKED on a Zig 0.13→0.16 move in
-struct/zig) and `boru` (DECISION NEEDED — omni has no boru port), both measured
-in voxgig/struct#112.
+on omni**. The two that are not are `zig` (the Zig 0.13→0.16 blocker is
+**cleared** — voxgig/struct#119 — so only the omni swap itself remains; see
+*Pick up first* item 3) and `boru` (DECISION NEEDED — omni has no boru port).
+Both were measured in voxgig/struct#112, whose zig conclusion #119 corrected.
 
 **The npm pair is published with provenance.** `@voxgig/omni` and
 `@voxgig/omni-js` are both at 0.1.1, released over trusted publishing (OIDC),
@@ -31,7 +32,13 @@ Five more ports are now consumable by **git ref** (register 4.16):
 and `lean/v0.1.0` at `a710fcd`. Two are verified end to end against live
 infrastructure — `proxy.golang.org` serves `github.com/voxgig/omni/go v0.1.0`
 to a module with no checkout, and a consumer crate compiles against the rust
-tag. clojure, dart and lean are cut but not consumer-verified. `swift` is a
+tag. **The go tag now has a real consumer**: voxgig/struct#119 moved struct's
+go port onto `github.com/voxgig/omni/go v0.1.0`, and its `go.sum` records
+`h1:WT+WAzBE6wjUldsYbj4+9t8vUV4aOjHq9khgY+D4K7E=` - byte-identical to the
+checksum this repo saw when the tag was verified, so an independent consumer
+resolves the same bytes through the proxy. It sits in a separate `testutil`
+module, so `go mod tidy` in the published module still cannot reach omni
+(register 4.13). clojure, dart and lean are cut but not consumer-verified. `swift` is a
 decided **no** and the remaining sixteen keep the checkout as their only route;
 the reasons are in [`../design/git-refs.md`](../design/git-refs.md).
 
@@ -100,11 +107,31 @@ The `fixjson` *absent/null* half is now closed in every port but **php and
 python**, both of which need a paired consumer change (voxgig/omni#17, #23,
 \#25, #26, #27, #28, #32, #33). Those two are the remainder.
 
-**3. zig and boru.** zig needs struct/zig moved from Zig 0.13 to 0.16 first —
-89 `.init(allocator)` sites, 146 `.append(` sites and a moved
-`std.StringArrayHashMap` across 5,201 lines. omni-zig is ready and its
-`runsetflagsargs` shipped with a self-test rather than a consumer
-(voxgig/omni#34). boru needs a decision: an omni boru port, or a documented
+**3. zig and boru.** ~~zig needs struct/zig moved from Zig 0.13 to 0.16
+first~~ — **done, in voxgig/struct#119 (`ae9c295`), and the omni swap is now
+the only thing left.** It landed on its own on purpose, "so that a mechanical
+toolchain move and a test-runner change are never in the same diff", and
+`struct/zig` still names omni nowhere.
+
+Worth carrying: struct#112 counted the work accurately and **drew the wrong
+conclusion from it**. Zig 0.16 still ships the managed array list, renamed to
+`std.array_list.Managed`, so a single type alias absorbed every `ArrayList`
+use — the declarations and their `.append(` call sites alike — and only
+`std.StringArrayHashMap` genuinely lost its managed form, landing on `MapRef`,
+which already wrapped the map. After those two typedefs the compiler reported
+**eight** real sites.
+
+No site count is quoted here on purpose. #112 said 89 `.init(allocator)` and
+146 `.append(`; struct#119's message says "all 90 sites"; counting `zig/src` at
+`ae9c295^` gives 92 `ArrayList` declarations, 91 `.init(allocator)` and 152
+`.append(`. The three disagree because they count different things over
+different scopes, and none of them is the number that mattered. **A count is
+not a cost until someone checks what the counted thing turns into** — that is
+the transferable part, and a precise-looking figure attached to it would only
+invite the same mistake again.
+
+omni-zig is ready and its `runsetflagsargs` shipped with a self-test rather
+than a consumer (voxgig/omni#34). boru needs a decision: an omni boru port, or a documented
 in-situ exception. Both are written up in voxgig/struct#112.
 
 **4. Phase 0's two leftovers**, both cheap and both already having cost
