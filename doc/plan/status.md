@@ -15,11 +15,13 @@ a tip recorded in the same commit that moves the tip is false the moment it
 merges.)
 
 **Nothing open in voxgig/struct.** The port migration is finished: all sixteen
-of the drafts this file previously listed are merged, so **22 of 24 ports are
-on omni**. The two that are not are `zig` (the Zig 0.13→0.16 blocker is
-**cleared** — voxgig/struct#119 — so only the omni swap itself remains; see
-*Pick up first* item 3) and `boru` (DECISION NEEDED — omni has no boru port).
-Both were measured in voxgig/struct#112, whose zig conclusion #119 corrected.
+of the drafts this file previously listed are merged, and the last two ports
+have followed, so **24 of 24 ports are on omni**. `zig` swapped once the Zig
+0.13→0.16 blocker cleared (voxgig/struct#119); `boru` needed the decision
+this file used to record as open, and it was taken the ambitious way — omni
+gained a boru port (the twenty-fourth), and struct/boru moved onto it rather
+than keeping an in-situ exception. Both were measured in voxgig/struct#112,
+whose zig conclusion #119 corrected.
 
 **The npm pair is published with provenance.** `@voxgig/omni` and
 `@voxgig/omni-js` are both at 0.1.1, released over trusted publishing (OIDC),
@@ -131,8 +133,14 @@ the transferable part, and a precise-looking figure attached to it would only
 invite the same mistake again.
 
 omni-zig is ready and its `runsetflagsargs` shipped with a self-test rather
-than a consumer (voxgig/omni#34). boru needs a decision: an omni boru port, or a documented
-in-situ exception. Both are written up in voxgig/struct#112.
+than a consumer (voxgig/omni#34). boru no longer needs a decision: omni has a
+boru port and struct/boru runs on it, which deleted a 951-line reimplementation
+of the runner from that repo. Writing the port also surfaced two runner bugs
+the fib suite could not see — `raise` cannot re-raise a caught Error on that
+engine, and a subject that returns nothing had no way to satisfy an entry with
+no `out` — both fixed, both now pinned by tests. **A port with no consumer is
+not proof; the first consumer is.** Both items were written up in
+voxgig/struct#112.
 
 **4. Phase 0's two leftovers**, both cheap and both already having cost
 something: 0.4 single-source `build-spec.js`, and 0.5 pin the struct-compat CI

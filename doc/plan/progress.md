@@ -29,7 +29,9 @@ lessons a landed item left behind are in [`handover.md`](handover.md).
 
 Wire local checkout → provider adapter → import swap → delete
 `<lang>/test/runner.*` → full suite green. One port per commit.
-**22 of 24 merged.** The two that are not are `zig` (NOT STARTED - the Zig 0.16 blocker cleared in voxgig/struct#119, so only the omni swap itself remains) and `boru` (DECISION NEEDED). Original note: `zig` (BLOCKED on a toolchain
+**24 of 24 merged.** The last two were `zig` (which needed the Zig 0.16 blocker
+cleared in voxgig/struct#119 first) and `boru` (which needed an omni boru port
+to exist at all — it does now). Original note: `zig` (BLOCKED on a toolchain
 gap) and `boru` (DECISION NEEDED — omni has no boru port to migrate onto);
 both are measured in voxgig/struct#112. omni's struct-compat gate covers the
 **JavaScript** swap only: it copies struct's `javascript/test` files,
@@ -65,7 +67,7 @@ Whether to add per-port gates is open — see 1.1 below.
 | elixir | DONE | **Merged as voxgig/struct#105.** Needed voxgig/omni#27 (`fixjson` collapsed absent into null, plus mutable subject args). |
 | haskell | DONE | **Merged as voxgig/struct#106.** Needed voxgig/omni#28. `test/Runner.hs` is a bridge plus a list of subjects: `tostruct`/`toomni` convert between omni's immutable `Json` and this port's `IORef`-backed nodes, and everything else is omni's. Because omni's `Json` is immutable, a subject cannot write through the argument list even though this port's nodes are mutable - hence `runsetFlagsArgs`, which returns `(args, result)`. Delete it and `minor.setpath` and `merge.integrity` fail, which is the check that it is load-bearing. |
 | lean | DONE | **Merged as voxgig/struct#111.** The heaviest omni-side change after swift: voxgig/omni#33 widened `fixjson` from `Json` to `Val` (the absent/null collapse was *structurally impossible* to fix otherwise), added `SubjectArgs`, and fixed four portability defects so omni-lean builds on 4.16 and 4.32 alike - `jget`/`jset`/`deepequal` through `getObjVal?`/`setObjVal!` rather than the map type (`RBNode` through v4.16, `Std.TreeMap.Raw` by v4.32), and `meta` renamed because 4.32 reserves it. Consumer side, the interesting part is the pure/IO boundary: `runsio` is an `opaque` backed by an `unsafeIO` `@[implemented_by]` implementation. 77 groups, 0 failed. |
-| boru | DECISION NEEDED | **Decision still needed, and now the only port with no path at all: omni has no boru port to migrate onto.** Recorded alongside zig in voxgig/struct#112. Either omni gains a boru port, or struct/boru keeps its in-situ runner as a documented exception. |
+| boru | MERGED | Decision taken the ambitious way: omni gained a boru port (the twenty-fourth) and struct/boru moved onto it, deleting a 951-line reimplementation of the runner. The migration was also the port's first consumer, and found two runner bugs the fib suite could not see. |
 
 | Item | Status | Notes |
 |---|---|---|
@@ -76,7 +78,7 @@ Whether to add per-port gates is open — see 1.1 below.
 | Item | Status | Notes |
 |---|---|---|
 | 2.1 Depend on omni's build-spec (drop local copy) | NOT STARTED | Pairs with 0.4. |
-| 2.2 Fix "all 22 ports" comment in `spec/def/resolve.aontu` | NOT STARTED | sekreto has **10** ports (csharp, go, java, javascript, perl, php, python, ruby, rust, typescript). 22 is wrong on every reading — omni has 23 implementations, struct 24 with boru. |
+| 2.2 Fix "all 22 ports" comment in `spec/def/resolve.aontu` | NOT STARTED | sekreto has **10** ports (csharp, go, java, javascript, perl, php, python, ruby, rust, typescript). 22 is wrong on every reading — omni and struct both have 24. |
 
 ## Phase 3 — senecajs/Sekreto validation use case
 
