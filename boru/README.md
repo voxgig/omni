@@ -28,7 +28,7 @@ behind `mini re`, and `boru:string-util` the string helpers.
 
 ## What is different about this port
 
-Five engine properties shape the code. Each was measured, and each is
+Six engine properties shape the code. Each was measured, and each is
 load-bearing.
 
 **Absent is an atom, not `none`.** boru has one `none`, which plays JSON
@@ -76,10 +76,19 @@ verdict `e` was carrying is gone. The runner rebuilds instead:
 for a while, because a set that fails for the wrong reason still fails;
 `test/run.boru` now pins the message, not just the failure.
 
+**A function-valued word is a call, wherever it appears.** One rule with two
+faces. Every function body ends `def r (...)` then `r`, because a bare tail
+call loses a `none` result at the return boundary — *except* where the value
+returned is itself a Function, where a bare `r` is a call rather than a value
+(`om-unbox`). The same holds in argument position: passing a captured
+function on needs `f/v`, since a bare `f` starts its own dispatch, and the
+engine says so plainly —
+
+    rn-nullhooks is still waiting for 1 argument(s) when `fibfn` begins its
+    own dispatch — a function word is a barrier and never feeds forward
+
 **House rules that look redundant and are not.** Every function body ends
-`def r (...)` then `r`, because a bare tail call loses a `none` result at
-the return boundary — *except* where the value returned is itself a
-Function, where a bare `r` is a call rather than a value (`om-unbox`). All
+`def r (...)` then `r`, for the reason above. All
 recursion lives in module-level `oml-*` loops with explicit parameters; a
 named `def f fn …` inside a body corrupts recursion. `and`/`or` do not
 short-circuit, so a type test never guards a typed call in the same
@@ -97,14 +106,16 @@ the block yields two values.
 
 Ten groups from `spec/fib.json`, plus nine negative tests that assert the
 runner *fails* when it should — a green suite that cannot go red proves
-nothing — and two regressions those nine could not see, where the runner
-failed for the wrong reason.
+nothing — and seven regressions those nine could not see: two where the
+runner failed for the wrong reason, and five where it agreed with the corpus
+while disagreeing with the canonical runner. Each of the seven was checked by
+reverting its fix and watching its own test go red.
 
     $ make test
     ok   - basic
     ...
-    ok   - a failing set reports its verdict
-    21 passed, 0 failed
+    ok   - the public API takes the canonical arguments
+    26 passed, 0 failed
 
 `make test` takes a group name to run one of them:
 

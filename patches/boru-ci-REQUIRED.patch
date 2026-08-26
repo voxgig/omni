@@ -1,0 +1,68 @@
+From 417e2127581a9e2a845f7a9e8117be9d760ef81f Mon Sep 17 00:00:00 2001
+From: Richard Rodger <richard@ricebridge.com>
+Date: Wed, 26 Aug 2026 19:14:24 +0000
+Subject: [PATCH] ci(boru): the job the twenty-fourth port never had
+
+Adding `boru` to LANGS makes `make test` cover it; it does not make CI cover
+it, because every job here invokes an individual `make test-<port>` and there
+was no boru job to invoke one. A syntax or runtime regression in that port
+could merge with every required check green - which is exactly how the same
+port in voxgig/struct once spent two days broken on an engine rename without
+anyone noticing.
+
+The engine has no release channel of any kind: no tags, no published
+binaries, and no `go install` (cmd/go is a module of its own whose go.mod
+carries `replace` directives into sibling modules, which go install refuses).
+So the job builds the CLI from a pinned commit, for the same reason
+STRUCT_REF is pinned: unpinned, a green run is not reproducible from this
+repo's commit alone.
+
+`make test-boru BORU=$RUNNER_TEMP/boru` is the exact command, verified
+locally on that engine: 26 passed, 0 failed.
+---
+ .github/workflows/ci.yml | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 4b9fc90..f2a0e9a 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -309,6 +309,35 @@ jobs:
+       # see this: they run against the working tree.
+       - run: make pack-check
+ 
++  boru:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
++      # The boru CLI has no release channel of any kind: no tags, no
++      # published binaries, and no `go install` (cmd/go is a module of its
++      # own whose go.mod carries `replace` directives into sibling modules,
++      # which go install refuses outright). Building from a pinned commit is
++      # the only reproducible version there is, and pinning it is the same
++      # argument STRUCT_REF already makes: unpinned, a green run here is not
++      # reproducible from this repo's commit alone.
++      - name: Check out boru-lang/boru (the engine)
++        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
++        with:
++          repository: boru-lang/boru
++          path: .boru-lang
++          ref: 8181f78fae7cd335ae3a3513507c7474b5f03663
++      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
++        with:
++          go-version: '1.24'
++      - name: Build the boru CLI
++        shell: bash
++        run: |
++          set -euo pipefail
++          cd "$GITHUB_WORKSPACE/.boru-lang/cmd/go"
++          go build -o "$RUNNER_TEMP/boru" ./boru
++          "$RUNNER_TEMP/boru" help | head -1
++      - run: make test-boru BORU=$RUNNER_TEMP/boru
++
+   struct-compat:
+     name: struct compatibility
+     runs-on: ubuntu-latest
+-- 
+2.43.0
+

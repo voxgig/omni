@@ -822,6 +822,7 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | Lean | Checks are pure: failures are returned as `Except String`, so there is no `OmniError`. The regex matcher is a `partial def`. |
 | Clojure, Elixir, Scala, Lean | Map key order is not preserved (or is sorted). Order is never significant for equality. |
 | OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |
+| boru | One `none` plays both JSON null and "no value", so under `null: false` an entry with no `out` is satisfied by a null result as well as by no result - canonical `deepequal` holds those apart (*"undefined and null are distinct"*) and reports a mismatch for the first. Under `null: true` the question does not arise: both sides become `__NULL__` first. The regex engine behind `mini re` is RE2, so a `/.../` match leaf using a backreference or lookaround cannot behave as it does in TypeScript; the common subset - literals, classes, groups, alternation, `* + ? {m,n}`, `\d \w \s`, anchors - is what is available, as in Rust and C. |
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,
 failure text - is *intended* to be identical across all twenty-four ports,

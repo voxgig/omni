@@ -266,8 +266,58 @@ def rn-regress-spec (flex {
   fib: {
     nothingback: {set: [{in: 6}]}
     mismatch: {set: [{in: 6 out: 999}]}
+    hooks: {set: [{ctx: {n: 6} out: 8}]}
+    cfyerr: {set: [{ctx: {n: 6} err: "/contextify boom/"}]}
+    badclient: {set: [{in: 6 client: 7 out: 8}]}
+    errval: {set: [{in: 6 out: {name: "Error" message: "caught"}}]}
   }
 })
+
+# Run one set of rn-regress-spec and report whether it raised; `wantfail`
+# says which outcome is the passing one, and `wantmsg` (when given) has to
+# appear in the failure message.
+def rn-regress fn [[label:Any setname:Any provider:Any subject:Any flags:Any wantfail:Boolean wantmsg:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      # Building the pack is inside the protected block too: a provider hook
+      # can raise in `runner`, before any set runs, and that has to be a
+      # recorded failure rather than a crash that takes the suite with it.
+      def outcome (do [
+        def rn (Omni.makeRunner rn-regress-spec provider)
+        def pack (Omni.runner rn "fib" none)
+        (Omni.runsetflags pack (Omni.set pack setname) flags subject) drop
+        {ok: true msg: ""}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      def failed ((outcome get "ok") not)
+      if (failed eq wantfail) [
+        def m (outcome get "msg")
+        def wantstr (wantmsg is String)
+        def hasmsg (if (wantstr eq true) [StringUtil.contains wantmsg m] [true])
+        if (hasmsg eq true) [
+          def rr (rn-ok label)
+          rr
+        ] [
+          def rr (rn-bad label `omni: wrong message - ${m}`)
+          rr
+        ]
+      ] [
+        if (wantfail eq true) [
+          def rr (rn-bad label `omni: expected a failure for set: ${setname}`)
+          rr
+        ] [
+          def rr (rn-bad label (outcome get "msg"))
+          rr
+        ]
+      ]
+    ]
+  )
+  r
+]]
 
 # An entry with no `out`, under null:false, expects nothing back - and boru
 # has one `none` and no `undefined`, so `none` is the only thing a subject can
@@ -341,6 +391,100 @@ def rn-verdict fn [[label:Any subject:Any] [Any] [
   r
 ]]
 
+# The provider hooks are OPTIONAL, and canonical tests them with `null != x`
+# - true of a missing key and of a key holding null alike. Testing only for
+# ABSENT made a provider that stores `contextify: none` look callable, and
+# the runner then applied `none`.
+def rn-nullhooks fn [[label:Any fibsub:Any] [Any] [
+  def prov (flex {subject: none contextify: none client: none inject: none})
+  def ctxsub ([av:Any] => [
+    def ctx (av get 0)
+    def n (if (ctx is Map) [if (ctx has "n") [ctx get "n"] [none]] [none])
+    def r (fibsub n)
+    r
+  ])
+  def r (rn-regress label "hooks" prov [ctxsub/v] (flex {}) false none)
+  r
+]]
+
+# A hook that raises belongs to the ENTRY, not to the set: canonical resolves
+# arguments inside the entry `try`, so `err` can expect a contextify failure.
+# Resolving them outside it aborted the whole set instead.
+def rn-hookerr fn [[label:Any fibsub:Any] [Any] [
+  def boom ([av:Any] => [
+    raise {code: cfy_fail/q message: "contextify boom"}
+  ])
+  def prov (flex {contextify: [boom/v]})
+  def ctxsub ([av:Any] => [
+    def r (fibsub 6)
+    r
+  ])
+  def r (rn-regress label "cfyerr" prov [ctxsub/v] (flex {}) false none)
+  r
+]]
+
+# Canonical selects a client for any non-null `client` and raises when it
+# names none it has. Accepting only a String let `client: 7` run silently
+# against the root provider - passing against the wrong subject.
+def rn-badclient fn [[label:Any fibsub:Any] [Any] [
+  def sub2 ([av:Any] => [
+    def r (fibsub (av get 0))
+    r
+  ])
+  def r (rn-regress label "badclient" (flex {}) [sub2/v] (flex {}) true "unknown client: 7")
+  r
+]]
+
+# A subject may CATCH an error and return it as data; canonical normalises
+# that through errify, so an {name,message} expectation matches.
+def rn-errval fn [[label:Any] [Any] [
+  def catcher ([av:Any] => [
+    def e (do [
+      raise {code: boom/q message: "caught"}
+    ] error [var [[er] er]])
+    def r e
+    r
+  ])
+  def r (rn-regress label "errval" (flex {}) [catcher/v] (flex {}) false none)
+  r
+]]
+
+# The public names have to accept what the canonical API accepts. Nothing
+# else here calls them that way - the runner uses the internal helpers - so
+# without this the signatures could drift and every other test stay green.
+def rn-publicapi fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def outcome (do [
+        # loadspec: a parsed spec comes back unchanged, not read as a path.
+        def spec (Omni.loadspec rn-regress-spec)
+        def okspec (spec is Map)
+        # fixjson: an optional FLAGS MAP, not a boolean.
+        def kept (Omni.fixjson none (flex {null: false}))
+        def marked (Omni.fixjson none (flex {}))
+        def okfix ((kept is None) and (marked eq Omni.NULLMARK))
+        # match: (flags, index, entry, check, base) - no path argument.
+        (Omni.match (flex {name: "api"}) 0 (flex {}) (flex {a: 1}) (flex {a: 1})) drop
+        def allok (okspec and okfix)
+        {ok: (allok)}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label "omni: public API does not take the canonical arguments")
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
 # --- main --------------------------------------------------------------------
 
 def rn-main fn [[av:Any] [Any] [
@@ -385,6 +529,16 @@ def rn-main fn [[av:Any] [Any] [
 
   (rn-nothingback "an entry with no out expects nothing back") drop
   (rn-verdict "a failing set reports its verdict" sfib) drop
+
+  def fibfn (Fib.fib/v)
+  # `fibfn/v`, not `fibfn`: a function-valued word is a call barrier in
+  # argument position too, so a bare one starts its own dispatch instead of
+  # being handed over.
+  (rn-nullhooks "a null provider hook is not a hook" fibfn/v) drop
+  (rn-hookerr "a raising hook is the entry's error" fibfn/v) drop
+  (rn-badclient "a non-string client selector is still a selector" fibfn/v) drop
+  (rn-errval "a returned Error normalises through errify") drop
+  (rn-publicapi "the public API takes the canonical arguments") drop
 
   def np (rn-tally get "npass")
   def nf (rn-tally get "nfail")

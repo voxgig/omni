@@ -67,6 +67,15 @@ def om-isabsent fn [[v:Any] [Boolean] [
   r
 ]]
 
+# Canonical tests an optional hook, or an optional flag, with `null != x` -
+# true of BOTH a missing key and a key holding null. ABSENT alone is the
+# narrower test, and using it made a provider that stores `contextify: none`
+# look callable.
+def om-isunset fn [[v:Any] [Boolean] [
+  def r ((om-isabsent v) or (v is None))
+  r
+]]
+
 def om-isnull fn [[v:Any] [Boolean] [
   def r (v is None)
   r
@@ -445,10 +454,15 @@ def om-errify fn [[e:Any] [Any] [
 
 # --- spec --------------------------------------------------------------------
 
-# Load a spec: a path to a JSON file. The engine's IO.read parses by
-# extension, so this port needs no JSON reader of its own.
-def om-loadspec fn [[path:String] [Any] [
-  def r (IO.read (make Pathon path))
+# Load a spec: a path to a JSON file, or a spec already parsed. The engine's
+# IO.read parses by extension, so this port needs no JSON reader of its own.
+# A spec reference is a path to read, or a spec already parsed - canonical
+# returns the latter unchanged, and a consumer calling `loadspec` with one is
+# entitled to the same here.
+def om-loadspec fn [[specref:Any] [Any] [
+  def r (
+    if (specref is String) [IO.read (make Pathon specref)] [specref]
+  )
   r
 ]]
 
@@ -458,9 +472,9 @@ def om-resolvespec fn [[name:Any alltests:Any] [Any] [
     if (name is None) [alltests] [
       if (name eq "") [alltests] [
         def primary (om-get (om-get alltests "primary") name)
-        if ((om-isabsent primary) not) [primary] [
+        if ((om-isunset primary) not) [primary] [
           def section (om-get alltests name)
-          if ((om-isabsent section) not) [section] [alltests]
+          if ((om-isunset section) not) [section] [alltests]
         ]
       ]
     ]
@@ -571,6 +585,10 @@ def om-fixjson fn [[v:Any donull:Boolean] [Any] [
     if (om-isnone v) [
       if (donull eq true) [om-nullmark] [v]
     ] [
+      # A subject may CATCH an error and return it as data; canonical
+      # normalises that to {name,message} here rather than leaving an opaque
+      # object for deepequal to compare.
+      if (v is Error) [om-errify v] [
       if (v is Map) [
         def ks (keys v)
         def o0 (flex {})
@@ -582,6 +600,7 @@ def om-fixjson fn [[v:Any donull:Boolean] [Any] [
           def rr (oml-fix-list 0 v donull acc0)
           rr
         ] [v]
+      ]
       ]
     ]
   )
@@ -1006,7 +1025,14 @@ def om-resolveargs fn [[entry:Any client:Any provider:Any] [Any] [
     if (hasctx eq true) [flex [(om-get entry "ctx")]] [
       if (hasargs eq true) [
         def raw (om-get entry "args")
-        if (raw is List) [oml-copyargs 0 raw (flex [])] [flex []]
+        if (raw is List) [oml-copyargs 0 raw (flex [])] [
+          # Canonical spreads `entry.args` into the subject call, so a
+          # non-list dies at invocation and the entry's `err` can expect that.
+          # Erasing it to [] instead let a malformed entry pass here and
+          # nowhere else. Not an omni verdict: it belongs to the entry, the
+          # same as the TypeError canonical raises.
+          raise {code: args_type/q message: "omni: entry args is not a list"}
+        ]
       ] [
         flex [(om-clone (om-get entry "in"))]
       ]
@@ -1018,7 +1044,7 @@ def om-resolveargs fn [[entry:Any client:Any provider:Any] [Any] [
       def first0 (om-clone a0)
       def cfy (om-get provider "contextify")
       def first (
-        if (om-isabsent cfy) [first0] [
+        if (om-isunset cfy) [first0] [
           def f (om-unbox cfy)
           [first0] f/v apply
         ]
@@ -1042,9 +1068,7 @@ def om-resolveargs fn [[entry:Any client:Any provider:Any] [Any] [
 # mishandles. Every other port with no closures at all — go, zig, c — carries
 # the same RunPack-and-methods shape.
 def om-makerunner fn [[specref:Any provider:Any] [Any] [
-  def alltests (
-    if (specref is String) [om-loadspec specref] [specref]
-  )
+  def alltests (om-loadspec specref)
   def sv (om-resolveversion alltests)
   def p (if (provider is Map) [provider] [flex {}])
   def r (flex {alltests: (alltests) provider: (p) specversion: (sv)})
@@ -1057,10 +1081,10 @@ def oml-clients fn [[i:Integer ks:Any defclient:Any prov:Any store:Any out:Any] 
       def cname (ks get i)
       def cdef (defclient get (cname))
       def copts0 (om-get (om-get cdef "test") "options")
-      def copts1 (if (om-isabsent copts0) [flex {}] [copts0])
+      def copts1 (if (om-isunset copts0) [flex {}] [copts0])
       def inj (om-get prov "inject")
       def copts (
-        if (om-isabsent inj) [copts1] [
+        if (om-isunset inj) [copts1] [
           if (store is Map) [
             def f (om-unbox inj)
             [copts1 store] f/v apply
@@ -1088,7 +1112,7 @@ def om-runner fn [[rn:Any name:Any store:Any] [Any] [
   def clients (
     if (defclient is Map) [
       def cf (om-get prov "client")
-      if (om-isabsent cf) [flex {}] [
+      if (om-isunset cf) [flex {}] [
         def rr (oml-clients 0 (keys defclient) defclient prov store (flex {}))
         rr
       ]
@@ -1097,7 +1121,7 @@ def om-runner fn [[rn:Any name:Any store:Any] [Any] [
 
   def sf (om-get prov "subject")
   def subject (
-    if (om-isabsent sf) [om-absent] [
+    if (om-isunset sf) [om-absent] [
       if (name is None) [om-absent] [
         def f (om-unbox sf)
         [name] f/v apply
@@ -1131,37 +1155,47 @@ def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean us
         none
       ] [none] drop
 
-      # An entry with no `out` expects a null (or absent) result.
-      if (donull eq true) [
-        if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
-        none
-      ] [none] drop
-
       def prov (pack get "client")
       def clients (pack get "clients")
-      def cname (om-get entry "client")
-      def entryclient (
-        if (cname is String) [
-          if (clients has (cname)) [clients get (cname)] [
-            (om-fail-raise `omni: unknown client: ${cname}`) drop
-            none
-          ]
-        ] [prov]
-      )
-      def entrysubject (
-        if (cname is String) [
-          def csf (om-get entryclient "subject")
-          if (om-isabsent csf) [usesubject] [
-            def f (om-unbox csf)
-            def cs ([(pack get "name")] f/v apply)
-            if (om-isnone cs) [usesubject] [cs]
-          ]
-        ] [usesubject]
-      )
 
-      def av (om-resolveargs entry entryclient prov)
-
+      # Everything from here to the check runs INSIDE the protected block,
+      # as canonical's entry `try` does. A provider hook that raises - a
+      # contextify, a client factory - is then a candidate for the entry's
+      # `err` expectation, rather than an exception that aborts the whole
+      # set from outside any handler.
       def outcome (do [
+        # An entry with no `out` expects a null (or absent) result.
+        if (donull eq true) [
+          if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
+          none
+        ] [none] drop
+
+        # Canonical selects a client for ANY non-null `client`, and raises
+        # when it names no client it has. Accepting only a String let a spec
+        # with `client: 7` run silently against the root provider.
+        def cname (om-get entry "client")
+        def named ((om-isunset cname) not)
+        def entryclient (
+          if (named eq true) [
+            def ckey (if (cname is String) [cname] [om-stringify cname])
+            if (clients has (ckey)) [clients get (ckey)] [
+              (om-fail-raise `omni: unknown client: ${ckey}`) drop
+              none
+            ]
+          ] [prov]
+        )
+        def entrysubject (
+          if (named eq true) [
+            def csf (om-get entryclient "subject")
+            if (om-isunset csf) [usesubject] [
+              def sf2 (om-unbox csf)
+              def cs ([(pack get "name")] sf2/v apply)
+              if (om-isnone cs) [usesubject] [cs]
+            ]
+          ] [usesubject]
+        )
+
+        def av (om-resolveargs entry entryclient prov)
         def f (om-unbox entrysubject)
         def res0 (av f/v apply)
         def res (om-fixjson res0 donull)
@@ -1204,13 +1238,15 @@ def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean us
 def om-runsetflags fn [[pack:Any testspec:Any flags:Any subject:Any] [Any] [
   def fl (if (flags is Map) [flags] [flex {}])
   def nullflag (om-get fl "null")
-  def donull (if (om-isabsent nullflag) [true] [nullflag eq true])
+  def donull (if (om-isunset nullflag) [true] [nullflag eq true])
   def nm (pack get "name")
   def label0 (
     if (om-isnone nm) ["set"] [if (nm eq "") ["set"] [nm]]
   )
   def fname (om-get fl "name")
-  def label (if (om-isabsent fname) [label0] [fname])
+  def label (
+    if (om-isunset fname) [label0] [if (fname eq "") [label0] [fname]]
+  )
 
   def usesubject (
     if (om-isnone subject) [pack get "subject"] [subject]
@@ -1241,6 +1277,30 @@ def om-runset fn [[pack:Any testspec:Any subject:Any] [Any] [
   r
 ]]
 
+# --- canonical-signature wrappers ---------------------------------------------
+# The internal helpers carry the arguments this port's own call sites need:
+# `om-fixjson` takes the resolved boolean, `om-match` takes a label and the
+# path it is walking. The PUBLIC names have to take what the canonical API
+# takes, or a consumer following the docs gets an arity error - and
+# check_parity.py would not catch it, because it checks that a name exists,
+# not what it accepts.
+
+def om-fixjsonapi fn [[v:Any flags:Any] [Any] [
+  def nullflag (if (flags is Map) [om-get flags "null"] [om-absent])
+  def donull (if (om-isunset nullflag) [true] [nullflag eq true])
+  def r (om-fixjson v donull)
+  r
+]]
+
+def om-matchapi fn [[flags:Any index:Integer entry:Any check:Any base:Any] [Any] [
+  def fname (if (flags is Map) [om-get flags "name"] [om-absent])
+  def label (
+    if (om-isunset fname) ["set"] [if (fname eq "") ["set"] [fname]]
+  )
+  def r (om-match label index entry check base (flex []))
+  r
+]]
+
 export "Omni" {
   makeRunner: om-makerunner/v
   runner: om-runner/v
@@ -1249,9 +1309,9 @@ export "Omni" {
   runsetflags: om-runsetflags/v
   loadspec: om-loadspec/v
   resolvespec: om-resolvespec/v
-  fixjson: om-fixjson/v
+  fixjson: om-fixjsonapi/v
   errify: om-errify/v
-  match: om-match/v
+  match: om-matchapi/v
   matchval: om-matchval/v
   nullmodifier: om-nullmodifier/v
   OmniError: om-fail-raise/v
@@ -1270,6 +1330,7 @@ export "Omni" {
   stringify: om-stringify/v
   pathify: om-pathify/v
   isabsent: om-isabsent/v
+  isunset: om-isunset/v
   isnull: om-isnull/v
   isnone: om-isnone/v
   ismap: om-ismap/v
