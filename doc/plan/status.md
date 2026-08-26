@@ -26,6 +26,15 @@ each carrying a SLSA v1 attestation whose subject digest matches the published
 tarball. Tags `typescript/v0.1.1` and `javascript/v0.1.1`. No consumer has been
 migrated onto that route yet — doing so is a separate change, port by port.
 
+Five more ports are now consumable by **git ref** (register 4.16):
+`go/v0.1.0` at `37f3ca4`, and `clojure/v0.1.0`, `rust/v0.1.0`, `dart/v0.1.0`
+and `lean/v0.1.0` at `a710fcd`. Two are verified end to end against live
+infrastructure — `proxy.golang.org` serves `github.com/voxgig/omni/go v0.1.0`
+to a module with no checkout, and a consumer crate compiles against the rust
+tag. clojure, dart and lean are cut but not consumer-verified. `swift` is a
+decided **no** and the remaining sixteen keep the checkout as their only route;
+the reasons are in [`../design/git-refs.md`](../design/git-refs.md).
+
 What landed and what each swap cost is in [`handover.md`](handover.md) §1; the
 two findings that recurred across ports are §5 (drivers that could not fail)
 and §6 (getprop's default `alt`).
