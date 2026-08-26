@@ -40,7 +40,12 @@ go port onto `github.com/voxgig/omni/go v0.1.0`, and its `go.sum` records
 checksum this repo saw when the tag was verified, so an independent consumer
 resolves the same bytes through the proxy. It sits in a separate `testutil`
 module, so `go mod tidy` in the published module still cannot reach omni
-(register 4.13). clojure, dart and lean are cut but not consumer-verified. `swift` is a
+(register 4.13). clojure, dart and rust now have real consumers in
+voxgig/struct - 77 groups, 77 groups and 1371 corpus checks, each resolved
+from the tag with no checkout present. lean is cut but not consumer-verified,
+and is consumed by a Makefile fetch rather than a Lake `[[require]]`: Lake has
+no test-scoped dependency, so requiring omni would put the runner in every
+consumer's graph. `swift` is a
 decided **no** and the remaining sixteen keep the checkout as their only route;
 the reasons are in [`../design/git-refs.md`](../design/git-refs.md).
 
