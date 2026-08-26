@@ -106,16 +106,21 @@ the block yields two values.
 
 Ten groups from `spec/fib.json`, plus nine negative tests that assert the
 runner *fails* when it should — a green suite that cannot go red proves
-nothing — and seven regressions those nine could not see: two where the
-runner failed for the wrong reason, and five where it agreed with the corpus
-while disagreeing with the canonical runner. Each of the seven was checked by
-reverting its fix and watching its own test go red.
+nothing — and ten regressions those nine could not see: two where the runner failed for
+the wrong reason, and eight where it agreed with the corpus while disagreeing
+with the canonical runner. Each of the ten was checked by reverting its fix
+and watching its own test go red.
+
+One fix ships without a test, and says so rather than shipping a green one
+that proves nothing: client options are cloned before a provider hook sees
+them, as canonical clones them, but no arrangement of spec and hook on this
+engine could be made to observe the difference.
 
     $ make test
     ok   - basic
     ...
-    ok   - the public API takes the canonical arguments
-    26 passed, 0 failed
+    ok   - a non-list args is refused, not erased
+    29 passed, 0 failed
 
 `make test` takes a group name to run one of them:
 

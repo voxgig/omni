@@ -47,7 +47,7 @@ commit (`.info`, `Origin.Hash`), not from expanding a short one.
 ### Verified locally, on that engine
 
 `make test-boru BORU=$RUNNER_TEMP/boru` is the exact command the job runs.
-Here, with the same target: **26 passed, 0 failed**.
+Here, with the same target: **29 passed, 0 failed**.
 
 The job's own steps are not verified — they cannot be, from here. What is
 verified is the command they run.

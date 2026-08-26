@@ -265,11 +265,12 @@ def rn-expectfail fn [[label:Any setname:Any subject:Any] [Any] [
 def rn-regress-spec (flex {
   fib: {
     nothingback: {set: [{in: 6}]}
-    mismatch: {set: [{in: 6 out: 999}]}
+    mismatch: {set: [{id: "regress/mismatch" in: 6 out: 999}]}
     hooks: {set: [{ctx: {n: 6} out: 8}]}
     cfyerr: {set: [{ctx: {n: 6} err: "/contextify boom/"}]}
     badclient: {set: [{in: 6 client: 7 out: 8}]}
     errval: {set: [{in: 6 out: {name: "Error" message: "caught"}}]}
+    badargs: {set: [{args: 5 err: "/args is not a list/"}]}
   }
 })
 
@@ -365,7 +366,7 @@ def rn-verdict fn [[label:Any subject:Any] [Any] [
       def rn (Omni.makeRunner rn-regress-spec (flex {}))
       def pack (Omni.runner rn "fib" none)
       def outcome (do [
-        (Omni.runset pack (Omni.set pack "mismatch") subject) drop
+        (Omni.runsetflags pack (Omni.set pack "mismatch") (flex {name: "mismatch"}) subject) drop
         {ok: true msg: ""}
       ] error [var [[e]
         def o (flex {})
@@ -378,7 +379,12 @@ def rn-verdict fn [[label:Any subject:Any] [Any] [
         rr
       ] [
         def m (outcome get "msg")
-        if (StringUtil.contains "result mismatch" m) [
+        # The whole reference, not just the verdict: index and id are what
+        # tell one failing entry from another, and a suite that checks only
+        # "result mismatch" stays green if `om-entryref` drops either.
+        def hasref (StringUtil.contains "mismatch[0] (regress/mismatch)" m)
+        def hasverdict (StringUtil.contains "result mismatch" m)
+        if (hasref and hasverdict) [
           def rr (rn-ok label)
           rr
         ] [
@@ -485,6 +491,69 @@ def rn-publicapi fn [[label:Any] [Any] [
   r
 ]]
 
+# `jsonstr` has to emit JSON, and every code point below U+0020 has to be
+# escaped for it to be JSON at all. This rendered quote, backslash, newline,
+# return and tab and passed the rest through raw, so a control character in a
+# spec string produced invalid JSON and failure text no other port prints.
+def rn-ctrlesc fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def raw "a\u0008b\u0000c\u000cd"
+      def out (Omni.jsonstr raw)
+      def okb (StringUtil.contains "\\b" out)
+      def oknul (StringUtil.contains "\\u0000" out)
+      def okf (StringUtil.contains "\\f" out)
+      def allok ((okb and oknul) and okf)
+      if (allok eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label `omni: control characters not escaped - ${out}`)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# A sentinel check means null before anything else looks at it. Treating
+# __NULL__ and __UNDEF__ as ordinary strings made `matchval(NULLMARK, none)`
+# false and let `err: "__NULL__"` accept any message carrying that literal.
+def rn-matchsentinel fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def a (Omni.matchval Omni.NULLMARK none)
+      def b (Omni.matchval Omni.UNDEFMARK none)
+      def c (Omni.matchval Omni.NULLMARK "not null at all")
+      # An empty want matches an empty base, and nothing else.
+      def d (Omni.matchval "" "")
+      def e (Omni.matchval "" "x")
+      def allok ((((a and b) and (c not)) and d) and (e not))
+      if (allok eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label "omni: sentinel or empty-want matching is wrong")
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# `args` is spread into the subject call canonically, so a non-list dies at
+# invocation and the entry's `err` can expect it. Erasing it to an empty list
+# let a malformed entry pass here - against a subject that ignores its
+# arguments - and nowhere else.
+def rn-badargs fn [[label:Any] [Any] [
+  def ignorer ([av:Any] => [
+    def r 8
+    r
+  ])
+  def r (rn-regress label "badargs" (flex {}) [ignorer/v] (flex {}) false none)
+  r
+]]
+
 # --- main --------------------------------------------------------------------
 
 def rn-main fn [[av:Any] [Any] [
@@ -539,6 +608,9 @@ def rn-main fn [[av:Any] [Any] [
   (rn-badclient "a non-string client selector is still a selector" fibfn/v) drop
   (rn-errval "a returned Error normalises through errify") drop
   (rn-publicapi "the public API takes the canonical arguments") drop
+  (rn-ctrlesc "jsonstr escapes every control character") drop
+  (rn-matchsentinel "a sentinel check is null before anything reads it") drop
+  (rn-badargs "a non-list args is refused, not erased") drop
 
   def np (rn-tally get "npass")
   def nf (rn-tally get "nfail")

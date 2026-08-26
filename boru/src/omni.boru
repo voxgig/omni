@@ -289,6 +289,46 @@ def om-numstr fn [[v:Any] [String] [
   r
 ]]
 
+# Every code point below U+0020 has to be escaped for the output to be JSON
+# at all, and `JSON.stringify` - which is what canonical renders with - uses
+# the five short forms and \u00xx for the rest. Emitting the raw character
+# instead, as this did for everything but quote/backslash/newline/return/tab,
+# produced invalid JSON and failure text that no other port would print.
+def om-ctrlesc {
+  "\u0000": "\\u0000"
+  "\u0001": "\\u0001"
+  "\u0002": "\\u0002"
+  "\u0003": "\\u0003"
+  "\u0004": "\\u0004"
+  "\u0005": "\\u0005"
+  "\u0006": "\\u0006"
+  "\u0007": "\\u0007"
+  "\u0008": "\\b"
+  "\u0009": "\\t"
+  "\u000a": "\\n"
+  "\u000b": "\\u000b"
+  "\u000c": "\\f"
+  "\u000d": "\\r"
+  "\u000e": "\\u000e"
+  "\u000f": "\\u000f"
+  "\u0010": "\\u0010"
+  "\u0011": "\\u0011"
+  "\u0012": "\\u0012"
+  "\u0013": "\\u0013"
+  "\u0014": "\\u0014"
+  "\u0015": "\\u0015"
+  "\u0016": "\\u0016"
+  "\u0017": "\\u0017"
+  "\u0018": "\\u0018"
+  "\u0019": "\\u0019"
+  "\u001a": "\\u001a"
+  "\u001b": "\\u001b"
+  "\u001c": "\\u001c"
+  "\u001d": "\\u001d"
+  "\u001e": "\\u001e"
+  "\u001f": "\\u001f"
+}
+
 def oml-quote fn [[i:Integer s:String acc:Any] [Any] [
   def r (
     if (i gte (size s)) [acc] [
@@ -296,11 +336,7 @@ def oml-quote fn [[i:Integer s:String acc:Any] [Any] [
       def esc (
         if (c eq "\"") ["\\\""] [
           if (c eq "\\") ["\\\\"] [
-            if (c eq "\n") ["\\n"] [
-              if (c eq "\r") ["\\r"] [
-                if (c eq "\t") ["\\t"] [c]
-              ]
-            ]
+            if (om-ctrlesc has (c)) [om-ctrlesc get (c)] [c]
           ]
         ]
       )
@@ -613,32 +649,41 @@ def om-fixjson fn [[v:Any donull:Boolean] [Any] [
 def om-matchval fn [[check:Any bv:Any] [Boolean] [
   def r (
     if (om-deepequal check bv) [true] [
-      if (om-isnone check) [
+      # A SENTINEL check means null before anything else looks at it, exactly
+      # as canonical folds __NULL__ and __UNDEF__ and then applies the null
+      # rule. Treating them as ordinary strings made `matchval(NULLMARK, none)`
+      # false, and let an `err: "__NULL__"` expectation accept any message
+      # with that literal in it.
+      def want (
+        if ((check eq om-nullmark) or (check eq om-undefmark)) [none] [check]
+      )
+      if (om-isnone want) [
         ((om-isnone bv) or (bv eq om-nullmark))
       ] [
-        if (check is String) [
-          # An empty want would substring-match anything: reject it.
-          if (check eq "") [false] [
+        if (want is String) [
+          # An empty want would substring-match anything, so it matches only
+          # an empty base - it is not a wildcard, and not a refusal either.
+          if (want eq "") [bv eq ""] [
             def basestr (om-stringify bv)
-            def n (size check)
+            def n (size want)
             def isre (
               if (n gt 2) [
-                def c0 (check slice 0 1)
-                def cn (check slice (n sub 1) n)
+                def c0 (want slice 0 1)
+                def cn (want slice (n sub 1) n)
                 ((c0 eq "/") and (cn eq "/"))
               ] [false]
             )
             if (isre eq true) [
-              def pat (check slice 1 (n sub 1))
+              def pat (want slice 1 (n sub 1))
               def m (basestr mini re (pat) {})
               (m.ok)
             ] [
-              def cl (StringUtil.lower check)
+              def cl (StringUtil.lower want)
               def bl (StringUtil.lower basestr)
               StringUtil.contains (cl) (bl)
             ]
           ]
-        ] [om-deepequal check bv]
+        ] [om-deepequal want bv]
       ]
     ]
   )
@@ -1081,7 +1126,10 @@ def oml-clients fn [[i:Integer ks:Any defclient:Any prov:Any store:Any out:Any] 
       def cname (ks get i)
       def cdef (defclient get (cname))
       def copts0 (om-get (om-get cdef "test") "options")
-      def copts1 (if (om-isunset copts0) [flex {}] [copts0])
+      # Cloned, as canonical clones: an inject or client hook that mutates
+      # its options would otherwise edit the spec's own DEF block, and the
+      # next `runner(...)` would see different options.
+      def copts1 (if (om-isunset copts0) [flex {}] [om-clone copts0])
       def inj (om-get prov "inject")
       def copts (
         if (om-isunset inj) [copts1] [
