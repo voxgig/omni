@@ -438,6 +438,74 @@ fn checkmessage() !void {
     report(label, null);
 }
 
+// deepequal is structural, not IEEE: NaN equals NaN. Nothing in
+// spec/fib.json can pin that - JSON has no NaN literal - so the contract
+// is pinned here instead.
+fn checknan() !void {
+    const label = "deepequal is structural: NaN equals NaN";
+    if (!wanted(label)) {
+        return;
+    }
+
+    // Two NaNs, from two different expressions and with two different bit
+    // patterns: one NaN used twice would still pass a runner that only
+    // ever compares a value with itself, and prove nothing. `_ = &payload`
+    // keeps the second one out of comptime, which does not carry a NaN
+    // payload through @bitCast.
+    const n1 = std.math.inf(f64) - std.math.inf(f64);
+
+    var payload: u64 = 0x7FF8000000000001;
+    _ = &payload;
+    const n2: f64 = @bitCast(payload);
+
+    if (!std.math.isNan(n1) or !std.math.isNan(n2)) {
+        report(label, "omni: both values must be NaN");
+        return;
+    }
+    if (@as(u64, @bitCast(n1)) == @as(u64, @bitCast(n2))) {
+        report(label, "omni: the two NaNs must not be bit-identical");
+        return;
+    }
+    // IEEE says a NaN equals nothing at all, itself included. deepequal
+    // says otherwise, so prove that `==` is not what is saying it.
+    if (n1 == n2) {
+        report(label, "omni: the two NaNs must not be IEEE-equal");
+        return;
+    }
+
+    const one = Json{ .integer = 1 };
+
+    const cases = [_]struct { []const u8, bool, bool }{
+        .{ "NaN, NaN", true, omni.deepequal(omni.jnum(n1), omni.jnum(n2)) },
+        .{ "[NaN], [NaN]", true, omni.deepequal(
+            try omni.jlist(ALLOC, &.{omni.jnum(n1)}),
+            try omni.jlist(ALLOC, &.{omni.jnum(n2)}),
+        ) },
+        .{ "{x:NaN}, {x:NaN}", true, omni.deepequal(
+            try omni.jmap(ALLOC, &.{.{ "x", omni.jnum(n1) }}),
+            try omni.jmap(ALLOC, &.{.{ "x", omni.jnum(n2) }}),
+        ) },
+        // Regressions: the rest of the numeric rule the NaN branch sits in.
+        .{ "1, 1.0", true, omni.deepequal(one, omni.jnum(1)) },
+        .{ "NaN, 1.0", false, omni.deepequal(omni.jnum(n1), omni.jnum(1)) },
+        .{ "true, 1", false, omni.deepequal(omni.jbool(true), one) },
+        .{ "1, 2", false, omni.deepequal(one, Json{ .integer = 2 }) },
+    };
+
+    for (cases) |case| {
+        if (case[1] != case[2]) {
+            report(label, try std.fmt.allocPrint(
+                ALLOC,
+                "omni: deepequal({s}) should be {s}",
+                .{ case[0], if (case[1]) "true" else "false" },
+            ));
+            return;
+        }
+    }
+
+    report(label, null);
+}
+
 // ---- version-1 negative tests -----------------------------------------
 
 // A spec whose OMNI block this runner must refuse at load time: expects
@@ -771,6 +839,7 @@ pub fn main(init: std.process.Init) !void {
     try expectsetpass("a legacy spec (no OMNI block) stays lenient", speclegacyunknownfield, "g", &FIB);
 
     try checkmessage();
+    try checknan();
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ PASSCOUNT, FAILCOUNT });
 

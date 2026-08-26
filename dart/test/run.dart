@@ -9,6 +9,7 @@
 // dependency-free.
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../lib/omni.dart';
 import 'fib.dart';
@@ -392,6 +393,58 @@ void checkmessage() {
   throw StateError('omni: expected OmniError');
 }
 
+// deepequal is structural, not IEEE: NaN equals NaN. Nothing in
+// spec/fib.json can pin that - JSON has no NaN literal - so the contract
+// is pinned here instead.
+void expectequal(dynamic a, dynamic b, bool want, String what) {
+  if (want != deepequal(a, b)) {
+    throw StateError('omni: deepequal($what) should be $want');
+  }
+}
+
+// A NaN carrying a payload bit: a different NaN from `0.0 / 0.0` right
+// down to its bits. Dart's `identical` compares doubles bit for bit, so a
+// pair of canonical NaNs is caught by the identity fast path at the top of
+// deepequal and never reaches the NaN branch this test exists to pin.
+double payloadnan() {
+  final bits = ByteData(8);
+  bits.setUint32(0, 0x7FF80000, Endian.big);
+  bits.setUint32(4, 0x00000001, Endian.big);
+  return bits.getFloat64(0, Endian.big);
+}
+
+void checknan() {
+  final n1 = 0.0 / 0.0;
+  final n2 = payloadnan();
+
+  if (!n1.isNaN || !n2.isNaN) {
+    throw StateError('omni: both values must be NaN');
+  }
+
+  // IEEE says a NaN equals nothing at all, itself included. deepequal
+  // says otherwise, so prove that `==` is not what is saying it.
+  if (n1 == n2) {
+    throw StateError('omni: the two NaNs must not be IEEE-equal');
+  }
+
+  // Two NaNs, not one used twice. If this ever fails, Dart canonicalised
+  // the payload away: build the second NaN some other way rather than
+  // dropping the check, or the test proves nothing.
+  if (identical(n1, n2)) {
+    throw StateError('omni: the two NaNs must not be the same double');
+  }
+
+  expectequal(n1, n2, true, 'NaN, NaN');
+  expectequal([n1], [n2], true, '[NaN], [NaN]');
+  expectequal({'x': n1}, {'x': n2}, true, '{x:NaN}, {x:NaN}');
+
+  // Regressions: the rest of the numeric rule the NaN branch sits in.
+  expectequal(1, 1.0, true, '1, 1.0');
+  expectequal(n1, 1.0, false, 'NaN, 1.0');
+  expectequal(true, 1, false, 'true, 1');
+  expectequal(1, 2, false, '1, 2');
+}
+
 void main(List<String> args) {
   if (args.isNotEmpty) {
     ONLY = args[0];
@@ -425,6 +478,7 @@ void main(List<String> args) {
   testcase('an empty-string match leaf is not a wildcard',
       () => expectfail('emptystr', FIBINFO));
   testcase('reports entry index and id', checkmessage);
+  testcase('deepequal is structural: NaN equals NaN', checknan);
 
   testcase('rejects an unsupported spec version', checkunsupportedversion);
   testcase('rejects an unknown required capability', checkunknowncapability);
