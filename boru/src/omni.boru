@@ -921,11 +921,19 @@ def om-checkresult fn [[label:Any index:Integer entry:Any alist:Any res:Any] [An
   def out (om-get entry "out")
   def r (
     if (om-deepequal res out) [none] [
+      # An entry with no `out` expects nothing back, which a subject on this
+      # engine reports as `none` - boru has no `undefined` to tell "returned
+      # null" from "returned nothing", so the two are one value here. With
+      # null:true the runner has already rewritten both to __NULL__ above, so
+      # this only carries the null:false groups.
+      def nothingback ((om-isabsent out) and (om-isnone res))
       # A match with no explicit out is a complete check on its own.
       def outempty ((om-isnone out) or (out eq om-nullmark))
+      if (nothingback eq true) [none] [
       if ((matched eq true) and (outempty eq true)) [none] [
         (om-fail label index entry "result mismatch" out res) drop
         none
+      ]
       ]
     ]
   )
@@ -1171,7 +1179,13 @@ def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean us
         def e (outcome get "err")
         # An omni failure is already a verdict; only a subject's own error
         # is a candidate for the entry's `err` expectation.
-        if ((e get "code") eq omni_fail/q) [raise (e)] [
+        # `raise` takes a fresh map, never a caught Error value: re-raising
+        # the value itself dies with "cannot call `raise`" and buries the
+        # verdict it was carrying. Rebuild it.
+        if ((e get "code") eq omni_fail/q) [
+          (om-fail-raise (om-errmessage e)) drop
+          none
+        ] [
           (om-handleerror label i entry e) drop
           none
         ] drop

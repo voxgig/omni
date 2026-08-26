@@ -1,5 +1,5 @@
-# RUN: boru run -no-check -no-compile test/run.boru
-# RUN-SOME: boru run -no-check -no-compile test/run.boru basic
+# RUN: boru run -no-check -no-compile test/main.boru
+# RUN-SOME: boru run -no-check -no-compile test/main.boru basic
 #
 # The Fibonacci conformance suite: every omni port runs this same set of
 # groups, from the same spec/fib.json, against the same fib library.
@@ -258,6 +258,89 @@ def rn-expectfail fn [[label:Any setname:Any subject:Any] [Any] [
   r
 ]]
 
+# --- regressions the negative tests above cannot see --------------------------
+# Both of these were live at once, and all nine expectfail tests stayed green
+# through them: the runner still failed when it should, for the wrong reason.
+
+def rn-regress-spec (flex {
+  fib: {
+    nothingback: {set: [{in: 6}]}
+    mismatch: {set: [{in: 6 out: 999}]}
+  }
+})
+
+# An entry with no `out`, under null:false, expects nothing back - and boru
+# has one `none` and no `undefined`, so `none` is the only thing a subject can
+# return to say "nothing". The runner used to compare that against ABSENT and
+# call it a mismatch. No group above reaches the comparison: under null:true
+# the runner rewrites both sides to __NULL__ first, and the one null:false
+# group gives every entry an explicit `out`.
+def rn-nothingback fn [[label:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def nothing ([av:Any] => [
+        def r2 none
+        r2
+      ])
+      def rn (Omni.makeRunner rn-regress-spec (flex {}))
+      def pack (Omni.runner rn "fib" none)
+      def outcome (do [
+        (Omni.runsetflags pack (Omni.set pack "nothingback") (flex {null: false}) [nothing/v]) drop
+        {ok: true}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-ok label)
+        rr
+      ] [
+        def rr (rn-bad label (outcome get "msg"))
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# A failing set has to say what failed. `raise` takes a fresh map, never a
+# caught Error value: re-raising the value itself died with "cannot call
+# `raise`", which still failed the set - so every expectfail above passed
+# while the verdict it was there to prove was thrown away.
+def rn-verdict fn [[label:Any subject:Any] [Any] [
+  def r (
+    if ((rn-wanted label) not) [none] [
+      def rn (Omni.makeRunner rn-regress-spec (flex {}))
+      def pack (Omni.runner rn "fib" none)
+      def outcome (do [
+        (Omni.runset pack (Omni.set pack "mismatch") subject) drop
+        {ok: true msg: ""}
+      ] error [var [[e]
+        def o (flex {})
+        (o set "ok" false) drop
+        (o set "msg" (Omni.errmessage e)) drop
+        o
+      ]])
+      if ((outcome get "ok") eq true) [
+        def rr (rn-bad label "omni: expected a failure for set: mismatch")
+        rr
+      ] [
+        def m (outcome get "msg")
+        if (StringUtil.contains "result mismatch" m) [
+          def rr (rn-ok label)
+          rr
+        ] [
+          def rr (rn-bad label `omni: verdict lost - ${m}`)
+          rr
+        ]
+      ]
+    ]
+  )
+  r
+]]
+
 # --- main --------------------------------------------------------------------
 
 def rn-main fn [[av:Any] [Any] [
@@ -299,6 +382,9 @@ def rn-main fn [[av:Any] [Any] [
   (rn-expectfail "__UNDEF__ does not match its own literal" "wrongundef" sundef) drop
   (rn-expectfail "__NULL__ does not match an absent key" "nullonabsent" sinfo) drop
   (rn-expectfail "an empty-string match leaf is not a wildcard" "emptystr" sinfo) drop
+
+  (rn-nothingback "an entry with no out expects nothing back") drop
+  (rn-verdict "a failing set reports its verdict" sfib) drop
 
   def np (rn-tally get "npass")
   def nf (rn-tally get "nfail")

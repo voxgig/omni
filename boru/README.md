@@ -28,7 +28,7 @@ behind `mini re`, and `boru:string-util` the string helpers.
 
 ## What is different about this port
 
-Four engine properties shape the code. Each was measured, and each is
+Five engine properties shape the code. Each was measured, and each is
 load-bearing.
 
 **Absent is an atom, not `none`.** boru has one `none`, which plays JSON
@@ -36,6 +36,15 @@ null. The runner has to tell "no such key" from "key holding null" — that
 distinction is the whole point of `__NULL__` and `__UNDEF__` — so ABSENT is
 a quoted atom (`om-absent`), unforgeable by spec data in a way a string
 marker would not be. `om-get` returns it for a missing slot.
+
+The atom is the runner's own, though, and stops at the boundary. A subject
+returning "nothing" has only `none` to say it with, so under `null: false`
+an entry with no `out` is satisfied by a `none` result — the port's
+rendering of the `undefined === undefined` every other port gets for free.
+(Under `null: true` the question never arises: both sides become
+`__NULL__` first.) A subject that receives ABSENT as its argument, for an
+entry with no `in`, reads it as whatever its own language calls "not
+given": voxgig/struct's boru port maps it to that library's `NOARG`.
 
 **A callback receives its arguments as one list.** `apply` does not spread
 on this engine: `[a b] f/v apply` hands the callee the list whatever its
@@ -59,6 +68,14 @@ Fib` — and so does reaching a module-level `def` in the consumer's own file.
 `test/run.boru` is the worked example. voxgig/struct's boru port records the
 same rule for its walker callbacks.
 
+**`raise` takes a fresh map, never a caught Error.** `raise (e)` on a value
+from `do … error [var [[e] …]]` does not re-raise it — it dies with
+*"cannot call `raise` — no signature matches the arguments"*, and whatever
+verdict `e` was carrying is gone. The runner rebuilds instead:
+`om-fail-raise (om-errmessage e)`. This one hid inside the negative tests
+for a while, because a set that fails for the wrong reason still fails;
+`test/run.boru` now pins the message, not just the failure.
+
 **House rules that look redundant and are not.** Every function body ends
 `def r (...)` then `r`, because a bare tail call loses a `none` result at
 the return boundary — *except* where the value returned is itself a
@@ -80,10 +97,15 @@ the block yields two values.
 
 Ten groups from `spec/fib.json`, plus nine negative tests that assert the
 runner *fails* when it should — a green suite that cannot go red proves
-nothing.
+nothing — and two regressions those nine could not see, where the runner
+failed for the wrong reason.
 
     $ make test
     ok   - basic
     ...
-    ok   - an empty-string match leaf is not a wildcard
-    19 passed, 0 failed
+    ok   - a failing set reports its verdict
+    21 passed, 0 failed
+
+`make test` takes a group name to run one of them:
+
+    $ boru run -no-check -no-compile test/main.boru basic
