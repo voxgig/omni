@@ -254,6 +254,49 @@ internal static class Program
         throw new InvalidOperationException("omni: expected OmniError");
     }
 
+    // deepequal is structural, not IEEE: NaN equals NaN, at the top level
+    // and nested inside containers. spec/fib.json cannot pin this - JSON
+    // has no NaN literal - so it is pinned here instead.
+    //
+    // The two NaNs come from two DIFFERENT expressions and are boxed
+    // separately, so neither the ReferenceEquals fast-path at the top of
+    // DeepEqual nor one shared NaN constant can be what makes the
+    // comparison come out true.
+    private static void NanEquality()
+    {
+        double zero = 0.0;
+        double huge = double.PositiveInfinity;
+        double nan1 = zero / zero; // 0.0 / 0.0
+        double nan2 = huge - huge; // INFINITY - INFINITY
+
+        ExpectEqual(double.IsNaN(nan1) && double.IsNaN(nan2), true, "two NaN values");
+        ExpectEqual(nan1 == nan2, false, "the two NaNs IEEE-equal");
+
+        object n1 = nan1;
+        object n2 = nan2;
+
+        ExpectEqual(ReferenceEquals(n1, n2), false, "the two boxed NaNs one object");
+
+        ExpectEqual(Util.DeepEqual(n1, n2), true, "DeepEqual(NaN, NaN)");
+        ExpectEqual(Util.DeepEqual(List(n1), List(n2)), true, "DeepEqual([NaN], [NaN])");
+        ExpectEqual(Util.DeepEqual(Map("x", n1), Map("x", n2)), true,
+            "DeepEqual({x:NaN}, {x:NaN})");
+
+        ExpectEqual(Util.DeepEqual(1, 1.0), true, "DeepEqual(1, 1.0)");
+        ExpectEqual(Util.DeepEqual(n1, 1.0), false, "DeepEqual(NaN, 1.0)");
+        ExpectEqual(Util.DeepEqual(true, 1), false, "DeepEqual(true, 1)");
+        ExpectEqual(Util.DeepEqual(1, 2), false, "DeepEqual(1, 2)");
+    }
+
+    private static void ExpectEqual(bool got, bool want, string what)
+    {
+        if (got != want)
+        {
+            throw new InvalidOperationException(
+                "omni: expected " + what + " to be " + (want ? "true" : "false"));
+        }
+    }
+
     private static int Main(string[] args)
     {
         if (0 < args.Length)
@@ -343,6 +386,8 @@ internal static class Program
             RunPack r = Runner.MakeRunner(spec).Run("fib");
             r.RunSet(r.Set("g"), FIB);
         });
+
+        TestCase("deepequal: two distinct NaNs are structurally equal", NanEquality);
 
         Console.WriteLine("\n" + passcount + " passed, " + failcount + " failed");
 

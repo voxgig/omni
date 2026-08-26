@@ -207,6 +207,46 @@ local function checkmessage()
   end
 end
 
+-- deepequal is structural, not IEEE: NaN equals NaN, as canonical. Nothing in
+-- spec/fib.json can reach this rule - JSON has no NaN literal - so it is
+-- pinned here, in the port's own suite.
+--
+-- The two NaNs come from two DIFFERENT expressions on purpose. Lua numbers
+-- have no identity (rawequal on numbers is `==`, and that is false for every
+-- NaN), so no identity fast-path can be what makes the comparison pass here;
+-- but reusing a single NaN constant is what let this hole hide in the ports
+-- that DO have identity, and the two-expression form is the contract.
+--
+-- Containers are built with u.list/u.map: a bare Lua table carries no omni
+-- metatable, so islist/ismap would be false and the container branch would
+-- never be reached at all.
+local function checkdeepequal(label, got, want)
+  if want ~= got then
+    error('omni: deepequal ' .. label .. ': expected ' .. tostring(want) ..
+      ', got ' .. tostring(got), 0)
+  end
+end
+
+local function checknan()
+  local n1 = 0.0 / 0.0
+  local n2 = math.huge - math.huge
+
+  if n1 == n1 or n2 == n2 then
+    error('omni: expected two NaN values', 0)
+  end
+
+  checkdeepequal('nan, nan', u.deepequal(n1, n2), true)
+  checkdeepequal('[nan], [nan]', u.deepequal(u.list({ n1 }), u.list({ n2 })), true)
+  checkdeepequal('{x=nan}, {x=nan}',
+    u.deepequal(u.map({ x = n1 }), u.map({ x = n2 })), true)
+
+  -- Regressions: the NaN branch must not disturb ordinary numbers.
+  checkdeepequal('1, 1.0', u.deepequal(1, 1.0), true)
+  checkdeepequal('nan, 1.0', u.deepequal(n1, 1.0), false)
+  checkdeepequal('true, 1', u.deepequal(true, 1), false)
+  checkdeepequal('1, 2', u.deepequal(1, 2), false)
+end
+
 local R = runner.makeRunner(specfile('fib.json'), fibprovider(0))('fib')
 
 testcase('basic', function() R.runset(R.set('basic'), FIB) end)
@@ -324,6 +364,8 @@ testcase('a legacy spec (no OMNI block) stays lenient', function()
 end)
 
 testcase('reports entry index and id', checkmessage)
+
+testcase('deepequal: NaN equals NaN, plain and nested', checknan)
 
 print('\n' .. PASSCOUNT .. ' passed, ' .. FAILCOUNT .. ' failed')
 

@@ -10,7 +10,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use Test::More tests => 29;
+use Test::More tests => 30;
 
 use Voxgig::Omni::Runner qw(makeRunner);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -247,4 +247,36 @@ subtest 'reports entry index and id' => sub {
     like( $msg, qr/\Qfib[1] (x#2)\E/, 'has entry ref' );
     like( $msg, qr/expected: 42/,     'has expected' );
     like( $msg, qr/actual:   1/,      'has actual' );
+};
+
+# deepequal is structural, not IEEE: NaN equals NaN. Nothing in spec/fib.json
+# can pin that - the spec is JSON, and JSON has no NaN literal - so it is
+# pinned here instead.
+#
+# The two NaNs MUST come from two different expressions. A test that compares
+# one NaN scalar with itself can be answered by a shortcut above the number
+# branch of deepequal, and would prove nothing. Perl scalars are values, not
+# objects, so there is no object identity to assert here - the distinctness
+# is carried by the two expressions below. Do not collapse them into one.
+subtest 'deepequal: NaN equals NaN, structurally' => sub {
+    plan tests => 10;
+
+    my $inf  = 9**9**9;
+    my $nan1 = $inf - $inf;
+    my $nan2 = 'NaN' + 0;
+
+    ok( $nan1 != $nan1, 'the first expression really is NaN' );
+    ok( $nan2 != $nan2, 'the second expression really is NaN' );
+
+    ok( Voxgig::Omni::Util::deepequal( $nan1, $nan2 ), 'NaN equals NaN' );
+    ok( Voxgig::Omni::Util::deepequal( [$nan1], [$nan2] ), 'NaN equals NaN inside a list' );
+    ok( Voxgig::Omni::Util::deepequal( { x => $nan1 }, { x => $nan2 } ),
+        'NaN equals NaN inside a map' );
+
+    ok( Voxgig::Omni::Util::deepequal( 1, 1.0 ), 'an integer equals the same float' );
+
+    ok( !Voxgig::Omni::Util::deepequal( $nan1, 1.0 ), 'NaN does not equal a real number' );
+    ok( !Voxgig::Omni::Util::deepequal( 1.0, $nan1 ), 'a real number does not equal NaN' );
+    ok( !Voxgig::Omni::Util::deepequal( JSON::PP::true, 1 ), 'a bool is never a number' );
+    ok( !Voxgig::Omni::Util::deepequal( 1, 2 ), 'different numbers are not equal' );
 };

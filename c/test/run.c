@@ -10,6 +10,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -762,6 +763,74 @@ static void checkmessage(void) {
   report(label, 0, NULL);
 }
 
+/* ---- NaN structural equality ---------------------------------------- */
+
+/* deepequal is structural, not IEEE: NaN equals NaN, at the top level and
+ * nested inside containers. spec/fib.json cannot pin this - JSON has no
+ * NaN literal - so it is pinned here instead.
+ *
+ * The two NaNs come from two DIFFERENT expressions and land in two
+ * separately allocated omni_json nodes, so neither the `a == b` pointer
+ * fast-path at the top of omni_deepequal nor a single shared constant can
+ * be what makes the comparison come out true. The `volatile` reads keep
+ * the compiler from folding the two expressions into one constant.
+ */
+static void nanequality(void) {
+  const char *label = "deepequal: two distinct NaNs are structurally equal";
+  volatile double zero = 0.0;
+  volatile double huge = INFINITY;
+  double nan1 = zero / zero; /* 0.0 / 0.0 */
+  double nan2 = huge - huge; /* INFINITY - INFINITY */
+  const char *bad = NULL;
+  omni_json *n1;
+  omni_json *n2;
+  omni_json *list1;
+  omni_json *list2;
+  omni_json *map1;
+  omni_json *map2;
+
+  if (!wanted(label)) {
+    return;
+  }
+
+  n1 = omni_num(POOL, nan1);
+  n2 = omni_num(POOL, nan2);
+
+  list1 = omni_list(POOL);
+  omni_list_push(list1, n1);
+  list2 = omni_list(POOL);
+  omni_list_push(list2, n2);
+
+  map1 = omni_map(POOL);
+  omni_map_set(map1, "x", n1);
+  map2 = omni_map(POOL);
+  omni_map_set(map2, "x", n2);
+
+  if (!isnan(nan1) || !isnan(nan2)) {
+    bad = "omni: expected two NaN values";
+  } else if (nan1 == nan2) {
+    bad = "omni: the two NaNs must not be IEEE-equal";
+  } else if (n1 == n2) {
+    bad = "omni: expected two distinct nodes, not one shared node";
+  } else if (!omni_deepequal(n1, n2)) {
+    bad = "omni: expected deepequal(NaN, NaN)";
+  } else if (!omni_deepequal(list1, list2)) {
+    bad = "omni: expected deepequal([NaN], [NaN])";
+  } else if (!omni_deepequal(map1, map2)) {
+    bad = "omni: expected deepequal({x:NaN}, {x:NaN})";
+  } else if (!omni_deepequal(omni_num(POOL, 1), omni_num(POOL, 1.0))) {
+    bad = "omni: expected deepequal(1, 1.0)";
+  } else if (omni_deepequal(n1, omni_num(POOL, 1.0))) {
+    bad = "omni: expected deepequal(NaN, 1.0) to be false";
+  } else if (omni_deepequal(omni_bool(POOL, 1), omni_num(POOL, 1))) {
+    bad = "omni: expected deepequal(true, 1) to be false";
+  } else if (omni_deepequal(omni_num(POOL, 1), omni_num(POOL, 2))) {
+    bad = "omni: expected deepequal(1, 2) to be false";
+  }
+
+  report(label, NULL != bad, bad);
+}
+
 int main(int argc, char **argv) {
   char *path;
   char *err = NULL;
@@ -822,6 +891,7 @@ int main(int argc, char **argv) {
   emptysetnegative();
   legacylenient();
   checkmessage();
+  nanequality();
 
   printf("\n%d passed, %d failed\n", PASSCOUNT, FAILCOUNT);
 

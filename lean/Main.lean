@@ -293,6 +293,38 @@ def testLegacyLenient : Except String Unit := do
   let pack ← makeRunnerSpec spec emptyProvider "fib"
   pack.runset (pack.set "g") (some FIB)
 
+/-- Assert one `deepequal` answer, naming the pair in the failure. -/
+def expectequal (a b : Val) (want : Bool) (what : String) : Except String Unit :=
+  if want == deepequal a b then pure ()
+  else throw s!"omni: deepequal({what}) should be {want}"
+
+/-- deepequal is structural, not IEEE: `deepequal NaN NaN` is true in every
+port, and nothing in spec/fib.json can pin that - JSON has no NaN literal.
+
+This port cannot pin the NaN half of it either, and not for want of trying:
+a `Lean.Json` number is a `JsonNumber`, a decimal `mantissa : Int` over
+`exponent : Nat`, and no NaN can be built in it. There is no pair of NaNs to
+hand `deepequal` here, so the NaN case is pinned by the ports whose value
+model can hold one.
+
+What is pinned here is the rest of the numeric rule those ports share, and
+the reason the NaN case is missing, so that the next reader does not take
+its absence for an oversight: the same number written two ways is equal, a
+bool is never a number, and numbers that differ are not equal. -/
+def testDeepEqualNumbers : Except String Unit := do
+  -- `JsonNumber` is decimal, so 1 is ⟨1, 0⟩ and 1.0 is ⟨10, 1⟩: two
+  -- spellings of one number, which deepequal must not tell apart.
+  let one := jnum 1
+  let onepointzero := Json.num (JsonNumber.mk 10 1)
+
+  expectequal (some one) (some onepointzero) true "1, 1.0"
+  expectequal (some (jlist [one])) (some (jlist [onepointzero])) true "[1], [1.0]"
+  expectequal (some (jmap [("x", one)])) (some (jmap [("x", onepointzero)])) true
+    "{x:1}, {x:1.0}"
+
+  expectequal (some (jbool true)) (some one) false "true, 1"
+  expectequal (some one) (some (jnum 2)) false "1, 2"
+
 def main (argv : List String) : IO UInt32 := do
   let only := argv.head?
   let counts ← IO.mkRef ({} : Counts)
@@ -334,6 +366,8 @@ def main (argv : List String) : IO UInt32 := do
   run "strict: a null id fails even under null-normalisation" testStrictNullId
   run "strict: an empty set fails unless marked empty" testStrictEmptySet
   run "a legacy spec (no OMNI block) stays lenient" testLegacyLenient
+  run "deepequal is structural: numbers by value (Lean JSON has no NaN)"
+    testDeepEqualNumbers
 
   let final ← counts.get
   IO.println s!"\n{final.pass} passed, {final.fail} failed"

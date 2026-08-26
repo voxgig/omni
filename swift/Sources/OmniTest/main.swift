@@ -354,6 +354,40 @@ func checkmessage() throws {
   throw OmniError("omni: expected OmniError")
 }
 
+func checkequal(_ want: Bool, _ a: Json, _ b: Json, _ what: String) throws {
+  if want != deepequal(a, b) {
+    throw OmniError("omni: deepequal(\(what)) should be \(want)")
+  }
+}
+
+// deepequal is structural, not IEEE: NaN equals NaN, at the top level and
+// inside nodes, so a subject that returns NaN can still be pinned by a
+// spec. spec/fib.json is the only suite, it is JSON, and JSON has no NaN
+// literal - so this is the only place the rule is checked.
+//
+// The two NaNs come from two *different* expressions. Using one NaN
+// constant twice would let an identity fast-path pass the test while
+// proving nothing. Json is a Swift enum - a value type with no object
+// identity - so there is no such fast-path here to assert against.
+func checknan() throws {
+  let n1 = Json.num(Double.infinity - Double.infinity)
+  let n2 = Json.num(Double("nan") ?? 0.0)
+
+  guard let d1 = n1.asnum, let d2 = n2.asnum, d1.isNaN, d2.isNaN else {
+    throw OmniError("omni: both values must be NaN")
+  }
+
+  try checkequal(true, n1, n2, "NaN, NaN")
+  try checkequal(true, .list([n1]), .list([n2]), "[NaN], [NaN]")
+  try checkequal(true, Json.mapOf([("x", n1)]), Json.mapOf([("x", n2)]), "{x:NaN}, {x:NaN}")
+
+  // Regressions: the NaN rule must not loosen anything else.
+  try checkequal(true, .num(1), .num(1.0), "1, 1.0")
+  try checkequal(false, n1, .num(1.0), "NaN, 1.0")
+  try checkequal(false, .bool(true), .num(1), "true, 1")
+  try checkequal(false, .num(1), .num(2), "1, 2")
+}
+
 let args = CommandLine.arguments
 if 1 < args.count {
   ONLY = args[1]
@@ -499,6 +533,7 @@ testcase("a legacy spec (no OMNI block) stays lenient") {
 }
 
 testcase("reports entry index and id") { try checkmessage() }
+testcase("deepequal matches NaN with NaN, structurally") { try checknan() }
 
 print("\n\(passcount) passed, \(failcount) failed")
 

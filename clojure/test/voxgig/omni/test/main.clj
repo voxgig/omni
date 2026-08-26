@@ -168,6 +168,42 @@
     (let [ok ((runner/make-runner spec) "fib")]
       ((:runset ok) ((:set ok) "h") FIB))))
 
+;; deepequal is structural, not IEEE: NaN equals NaN, as canonical. Nothing in
+;; spec/fib.json can reach this rule - JSON has no NaN literal - so it is
+;; pinned here, in the port's own suite.
+;;
+;; The two NaNs come from two DIFFERENT expressions on purpose. A single
+;; shared constant is one boxed Double, so an identity fast-path anywhere in
+;; the chain would make such a test pass while proving nothing - which is
+;; exactly how this hole hid elsewhere. The `identical?` check keeps the two
+;; expressions honest if someone later folds them into one def.
+;;
+;; Containers are built the way the rest of this file builds them: a vector
+;; for a list (islist is vector?), an array-map for a map.
+(defn checkdeepequal [label got want]
+  (when (not= want got)
+    (throw (IllegalStateException.
+            (str "omni: deepequal " label ": expected " want ", got " got)))))
+
+(defn checknan []
+  (let [n1 (/ 0.0 0.0)
+        n2 (- Double/POSITIVE_INFINITY Double/POSITIVE_INFINITY)]
+    (when-not (and (Double/isNaN n1) (Double/isNaN n2))
+      (throw (IllegalStateException. "omni: expected two NaN values")))
+    (when (identical? n1 n2)
+      (throw (IllegalStateException. "omni: the two NaNs must not be one object")))
+
+    (checkdeepequal "NaN, NaN" (u/deepequal n1 n2) true)
+    (checkdeepequal "[NaN], [NaN]" (u/deepequal [n1] [n2]) true)
+    (checkdeepequal "{x NaN}, {x NaN}"
+                    (u/deepequal (array-map "x" n1) (array-map "x" n2)) true)
+
+    ;; Regressions: the NaN branch must not disturb ordinary numbers.
+    (checkdeepequal "1, 1.0" (u/deepequal 1 1.0) true)
+    (checkdeepequal "NaN, 1.0" (u/deepequal n1 1.0) false)
+    (checkdeepequal "true, 1" (u/deepequal true 1) false)
+    (checkdeepequal "1, 2" (u/deepequal 1 2) false)))
+
 (defn -main [& args]
   (when (seq args)
     (reset! ONLY (first args)))
@@ -237,6 +273,7 @@
                  ((:runset ok) ((:set ok) "g") FIB)))
 
     (testcase "reports entry index and id" checkmessage)
+    (testcase "deepequal: NaN equals NaN, plain and nested" checknan)
 
     (println (str "\n" @PASSCOUNT " passed, " @FAILCOUNT " failed"))
 
