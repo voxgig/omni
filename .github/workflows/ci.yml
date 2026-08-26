@@ -28,6 +28,15 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # struct-compat runs voxgig/struct's own JavaScript suite against omni's
+  # runner, so it checks that repo out. Pinned to a SHA rather than floating
+  # on struct's default branch: unpinned, a red run has three possible causes
+  # - omni regressed, struct's library regressed, or struct's tests moved -
+  # and only the first is actionable here. Pinning leaves just that one.
+  # Bump this line to gate against a newer struct. (Register item 0.5.)
+  STRUCT_REF: 9386f9de38eb6901f17994e7c0089443c3e656f3
+
 jobs:
   # Ports whose toolchain ships with ubuntu-latest, or installs in one
   # apt line. Grouped so 23 languages do not mean 23 near-identical blocks.
@@ -310,6 +319,7 @@ jobs:
         with:
           repository: voxgig/struct
           path: .struct
+          ref: ${{ env.STRUCT_REF }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24'
