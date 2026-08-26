@@ -31,24 +31,28 @@ migrated onto that route yet — doing so is a separate change, port by port.
 
 Five more ports are now consumable by **git ref** (register 4.16):
 `go/v0.1.0` at `37f3ca4`, and `clojure/v0.1.0`, `rust/v0.1.0`, `dart/v0.1.0`
-and `lean/v0.1.0` at `a710fcd`. Four of the five are verified end to end against live
-infrastructure — `proxy.golang.org` serves `github.com/voxgig/omni/go v0.1.0`
-to a module with no checkout; a consumer crate compiles against the rust tag;
-and clojure and dart both resolve their tags and pass, in voxgig/struct#121.
-lean is the one still unverified. **The go tag now has a real consumer**: voxgig/struct#119 moved struct's
+and `lean/v0.1.0` at `a710fcd`. **All five are now verified end to end against
+live infrastructure** — `proxy.golang.org` serves `github.com/voxgig/omni/go
+v0.1.0` to a module with no checkout; a consumer crate compiles against the
+rust tag; and clojure, dart and lean all resolve their tags and pass, in
+voxgig/struct#121. **The go tag now has a real consumer**: voxgig/struct#119 moved struct's
 go port onto `github.com/voxgig/omni/go v0.1.0`, and its `go.sum` records
 `h1:WT+WAzBE6wjUldsYbj4+9t8vUV4aOjHq9khgY+D4K7E=` - byte-identical to the
 checksum this repo saw when the tag was verified, so an independent consumer
 resolves the same bytes through the proxy. It sits in a separate `testutil`
 module, so `go mod tidy` in the published module still cannot reach omni
 (register 4.13). **In flight: voxgig/struct#121** moves clojure, dart, lean
-and rust onto their tags - 77 groups, 77 groups and 1371 corpus checks, each
-resolved from the tag with no checkout present; lean's own suite is unverified
-there, for want of a Lean toolchain. That PR is OPEN, so the four are evidence
-that the tags work, not yet a landed migration. lean is also consumed by a
-Makefile fetch rather than a Lake `[[require]]`: Lake has no test-scoped
-dependency, so requiring omni would put the runner in every consumer's graph
-(the durable half of that is in `handover.md` §8). `swift` is a
+and rust onto their tags - 77 groups, 77 groups, 77 groups and 1371 corpus
+checks, each resolved from the tag with no checkout present. That PR is OPEN,
+so the four are evidence that the tags work, not yet a landed migration.
+**lean closed last, and on CI rather than locally** - there is no Lean
+toolchain in that PR's authoring environment, so its own runner is the only
+thing that could prove it. `test-lean` on struct#121 at `e57b665` printed
+`omni: lean/v0.1.0 (a710fcda...)` and then `77 groups, 0 failed`, WITH
+`$OMNI_HOME` exported to a checkout that it correctly ignored. lean is also
+consumed by a Makefile fetch rather than a Lake `[[require]]`: Lake has no
+test-scoped dependency, so requiring omni would put the runner in every
+consumer's graph (the durable half of that is in `handover.md` §8). `swift` is a
 decided **no** and the remaining sixteen keep the checkout as their only route;
 the reasons are in [`../design/git-refs.md`](../design/git-refs.md).
 

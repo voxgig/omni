@@ -253,8 +253,8 @@ Register 4.16 asked which ecosystems could be served by a directory-prefixed
 release tag, and answered it per package manager: Go requires the prefix,
 SwiftPM cannot address a subdirectory at all, and Clojure (`:deps/root`),
 Cargo (traverses by crate name), pub (`path:` under `git:`) and Lake
-(`subDir`) are all permissive. Four of those five now have real consumers in
-voxgig/struct#121 and the answer held.
+(`subDir`) are all permissive. All five now have real consumers - go in
+voxgig/struct#119, the other four in voxgig/struct#121 - and the answer held.
 
 **Lake is the exception, and it is not a tagging problem.** Lake can address
 `subDir`, so by 4.16's question it passes. But Lake has no *test-scoped*
