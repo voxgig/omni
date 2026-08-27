@@ -246,3 +246,32 @@ Unchecked in **zig** and **boru**, the two ports still on in-situ runners.
   once) and 0.5 (pin the struct-compat CI checkout; it floats on struct's
   default branch, which is how struct#84's import change nearly broke
   omni's gate).
+
+## 8. A subdirectory-addressable tag is not always a consumable one
+
+Register 4.16 asked which ecosystems could be served by a directory-prefixed
+release tag, and answered it per package manager: Go requires the prefix,
+SwiftPM cannot address a subdirectory at all, and Clojure (`:deps/root`),
+Cargo (traverses by crate name), pub (`path:` under `git:`) and Lake
+(`subDir`) are all permissive. All five now have real consumers - go in
+voxgig/struct#119, the other four in voxgig/struct#121 - and the answer held.
+
+**Lake is the exception, and it is not a tagging problem.** Lake can address
+`subDir`, so by 4.16's question it passes. But Lake has no *test-scoped*
+dependency: a `[[require]]` is resolved by everyone who requires the
+CONSUMING package, so struct/lean declaring omni that way would put the test
+runner into every consumer of `voxgig-struct`'s dependency graph. That is
+register 4.13 broken at the consumer instead of in the manifest - the one
+place 4.13 cannot be checked by looking at the manifest alone.
+
+struct/lean therefore FETCHES the tag in its Makefile: a shallow clone of
+`lean/v0.1.0`, the resolved sha checked against a pin so a moved tag is an
+error rather than a silent swap, and `Omni.lean` copied into a `lean_lib`
+that only the runner imports. The pin and the isolation are both kept, which
+a `[[require]]` cannot do.
+
+The transferable part: **"can this package manager address a subdirectory?"
+and "can this package manager express a test-only dependency?" are different
+questions, and 4.16 only asked the first.** Any future ecosystem added to the
+tag list wants both asked. The ones that answer no to the second need a
+fetch, not a declaration.
