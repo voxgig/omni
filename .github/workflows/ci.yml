@@ -335,8 +335,18 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/.boru-lang/cmd/go"
           go build -o "$RUNNER_TEMP/boru" ./boru
-          "$RUNNER_TEMP/boru" help | head -1
-      - run: make test-boru BORU=$RUNNER_TEMP/boru
+          # `sed -n 1p`, NOT `head -1`: head exits after the first line and
+          # closes the pipe, so `boru help` dies of SIGPIPE writing the rest -
+          # exit 141, which the `set -o pipefail` above promotes to a step
+          # failure even though the build and the CLI are both fine. Measured:
+          # that is exactly how this job failed on its first run here, and in
+          # voxgig/struct's copy of it before that. sed drains its input, so
+          # there is nothing to signal, and pipefail still catches a genuine
+          # failure of the CLI. Do not add `;q` to the sed script.
+          "$RUNNER_TEMP/boru" help | sed -n '1p'
+      # Quoted: unquoted this is shellcheck SC2086, which actionlint reports
+      # in repos that run it (voxgig/struct does, and flagged the twin).
+      - run: make test-boru BORU="$RUNNER_TEMP/boru"
 
   struct-compat:
     name: struct compatibility
