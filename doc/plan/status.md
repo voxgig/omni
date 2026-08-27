@@ -24,10 +24,12 @@ than keeping an in-situ exception. Both were measured in voxgig/struct#112,
 whose zig conclusion #119 corrected.
 
 **The npm pair is published with provenance.** `@voxgig/omni` and
-`@voxgig/omni-js` are both at 0.1.1, released over trusted publishing (OIDC),
-each carrying a SLSA v1 attestation whose subject digest matches the published
-tarball. Tags `typescript/v0.1.1` and `javascript/v0.1.1`. No consumer has been
-migrated onto that route yet — doing so is a separate change, port by port.
+`@voxgig/omni-js` are released over trusted publishing (OIDC), each carrying a
+SLSA v1 attestation whose subject digest matches the published tarball. 0.1.1
+is the released pair (tags `typescript/v0.1.1`, `javascript/v0.1.1`); **0.1.2
+is bumped here and releases when this lands**, carrying the boru port and the
+runner fixes its review found. No consumer has been migrated onto the npm
+route yet — doing so is a separate change, port by port.
 
 Five more ports are now consumable by **git ref** (register 4.16):
 `go/v0.1.0` at `37f3ca4`, and `clojure/v0.1.0`, `rust/v0.1.0`, `dart/v0.1.0`
