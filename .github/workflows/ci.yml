@@ -309,6 +309,35 @@ jobs:
       # see this: they run against the working tree.
       - run: make pack-check
 
+  boru:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The boru CLI has no release channel of any kind: no tags, no
+      # published binaries, and no `go install` (cmd/go is a module of its
+      # own whose go.mod carries `replace` directives into sibling modules,
+      # which go install refuses outright). Building from a pinned commit is
+      # the only reproducible version there is, and pinning it is the same
+      # argument STRUCT_REF already makes: unpinned, a green run here is not
+      # reproducible from this repo's commit alone.
+      - name: Check out boru-lang/boru (the engine)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: boru-lang/boru
+          path: .boru-lang
+          ref: 8181f78fae7cd335ae3a3513507c7474b5f03663
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.24'
+      - name: Build the boru CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.boru-lang/cmd/go"
+          go build -o "$RUNNER_TEMP/boru" ./boru
+          "$RUNNER_TEMP/boru" help | head -1
+      - run: make test-boru BORU=$RUNNER_TEMP/boru
+
   struct-compat:
     name: struct compatibility
     runs-on: ubuntu-latest
