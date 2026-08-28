@@ -257,7 +257,8 @@ release from main would have dropped.
 
 ## Release and publish
 
-Twenty-four ports, released **two different ways**:
+Twenty-four ports, **seven of which have a release route**. Those seven go
+two different ways:
 
 | ports | released by | tag |
 | --- | --- | --- |
@@ -270,6 +271,15 @@ why it is not in `release.yml` — that file is registered with npm trusted
 publishing against its **filename**, and nothing needing no registry
 credential belongs near it.
 
+**The other seventeen ports have no release route at all**, and that is
+settled rather than pending. `swift` is deliberately excluded and *cannot* use
+the tag scheme: SwiftPM loads a source-control dependency's manifest from the
+repository ROOT, so serving `omni/swift` by ref would mean a `Package.swift`
+at `/` and this polyglot repository reading as "a Swift package" to every
+other consumer — and SwiftPM rejects a prefixed tag anyway, colliding with the
+scheme Go mandates. The remaining sixteen have no published artifact of any
+kind; **the checkout is their only route** (`DOCS.md` §8.3).
+
 **The `<port>/` prefix is load-bearing.** Go resolves a subdirectory module's
 version from `go/vX.Y.Z` and **ignores** every tag without the prefix. Cargo,
 pub, tools.deps and Lake impose no rule and take the same shape for
@@ -278,8 +288,19 @@ consistency.
 ### Releasing
 
 **Actions → release → Run workflow** on `main`, choosing the `port` — or
-**Actions → tag** for a registry-less port, giving port and version. Versions
-come from each port's own manifest, so **bump first in a reviewed PR**.
+**Actions → tag** for a registry-less port, giving port and version.
+
+**The two paths take their version from different places, and this is the
+easiest thing here to get wrong:**
+
+- `release.yml` reads the npm port's own `package.json`, so **bump it first in
+  a reviewed PR** and dispatch afterwards.
+- `tag.yml` does **not** read any manifest. The version is a required
+  operator-typed input (`X.Y.Z`), and the tag is built straight from it as
+  `<port>/v<version>`. There is nothing to bump beforehand — `go`, `clojure`
+  and `lean` declare no package version anywhere, and `rust`'s `Cargo.toml`
+  and `dart`'s `pubspec.yaml` do carry one that this workflow ignores. Read
+  the last tag for that port and pick the next number deliberately.
 
 `release.yml` also takes `allow_removals`. A release that would **remove**
 files from the published package fails unless you say it is deliberate:
@@ -315,10 +336,15 @@ credential. The publish job therefore never checks out the repository.
 - **npm never allows republishing a version.** If a run publishes then fails
   before tagging, re-dispatch: the registry check skips the completed publish
   and retries the tag.
-- **A tag for a registry-less port cannot be taken back.** `proxy.golang.org`
-  and `sum.golang.org` cache a version permanently; moving or deleting the tag
-  reaches users as a **security error**, not a missing version. Withdraw only
-  via `retract` in a new version.
+- **A Go tag cannot be taken back.** `proxy.golang.org` and `sum.golang.org`
+  cache a version permanently; moving or deleting the tag reaches users as a
+  **security error**, not a missing version. Withdrawal is only via `retract`
+  in a NEW version — a Go directive, so this remedy is Go's alone.
+- **The other four tag ports have no such proxy**, so a `clojure`, `rust`,
+  `dart` or `lean` tag can technically be moved or deleted. Do not treat that
+  as a licence to: anyone who pinned the ref silently gets different code, and
+  no `retract` equivalent exists to tell them. Bump to the next version
+  instead; the difference from Go is who finds out, not whether it is safe.
 
 `voxgig/apidef`'s `docs/how-to/release-and-tag.md` carries the fullest
 write-up of the shared design.
