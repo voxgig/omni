@@ -255,6 +255,69 @@ release from main would have dropped.
   environment, say so - do not guess that a change works.
 
 
+## Release and publish
+
+Twenty-four ports, released **two different ways**:
+
+| ports | released by | tag |
+| --- | --- | --- |
+| `typescript/` → npm `@voxgig/omni`, `javascript/` → npm `@voxgig/omni-js` | `release.yml` — publish **and** tag | `<port>/v<version>` |
+| `go`, `clojure`, `rust`, `dart`, `lean` | `tag.yml` — **the tag IS the release** | `<port>/v<version>` |
+
+The second row has no registry: those ports are consumed by git ref (register
+4.16, `DOCS.md` §8.3), so a release there is a tag and nothing else. That is
+why it is not in `release.yml` — that file is registered with npm trusted
+publishing against its **filename**, and nothing needing no registry
+credential belongs near it.
+
+**The `<port>/` prefix is load-bearing.** Go resolves a subdirectory module's
+version from `go/vX.Y.Z` and **ignores** every tag without the prefix. Cargo,
+pub, tools.deps and Lake impose no rule and take the same shape for
+consistency.
+
+### Releasing
+
+**Actions → release → Run workflow** on `main`, choosing the `port` — or
+**Actions → tag** for a registry-less port, giving port and version. Versions
+come from each port's own manifest, so **bump first in a reviewed PR**.
+
+`release.yml` also takes `allow_removals`. A release that would **remove**
+files from the published package fails unless you say it is deliberate:
+adding files is ordinary, silently dropping three source files is how a patch
+release breaks consumers. `make pack-diff` is the same check by hand.
+
+### Three jobs, each with the least it needs
+
+npm binds a trusted publisher to a single workflow **filename**, so the tag
+must live in the same file as the publish; they cannot be split across two
+files, because a ref pushed with `GITHUB_TOKEN` starts no further workflow
+run — "tag in A, publish on the tag" publishes nothing, silently. An
+unregistered workflow's OIDC token is refused as **404, not 403**.
+
+| job | holds | runs |
+| --- | --- | --- |
+| `build` | `contents: read` | install, build, tests, packaging checks — all project code and every dependency lifecycle script. Uploads the tarball. |
+| `publish` | `id-token: write` | downloads that tarball and publishes it. **No checkout at all.** |
+| `tag` | `contents: write` | git, and nothing else. |
+
+`id-token: write` is a **job-level** grant — it reaches every process in the
+job — so a compromised `postinstall` during `npm install` could mint a publish
+credential. The publish job therefore never checks out the repository.
+
+### Irreversible
+
+- **npm never allows republishing a version.** If a run publishes then fails
+  before tagging, re-dispatch: the registry check skips the completed publish
+  and retries the tag.
+- **A tag for a registry-less port cannot be taken back.** `proxy.golang.org`
+  and `sum.golang.org` cache a version permanently; moving or deleting the tag
+  reaches users as a **security error**, not a missing version. Withdraw only
+  via `retract` in a new version.
+
+`voxgig/apidef`'s `docs/how-to/release-and-tag.md` carries the fullest
+write-up of the shared design.
+
+
 ## The adoption plan register
 
 The cross-repo plan for omni becoming the shared test-spec utility of
