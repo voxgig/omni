@@ -10,7 +10,7 @@ comprehensive guide).
 >    [`typescript/src/Runner.ts`](typescript/src/Runner.ts) and
 >    [`typescript/src/Util.ts`](typescript/src/Util.ts). Every other port is
 >    a translation of those two files.
-> 2. **`spec/fib.aontu` is the contract.** It runs against every port (via
+> 2. **`spec/fib.aon` is the contract.** It runs against every port (via
 >    the generated `spec/fib.json`). If a port disagrees with it, the port
 >    is wrong.
 > 3. **Change the canonical first, then propagate.** A behaviour change
@@ -39,17 +39,17 @@ TypeScript, case for case, in idiomatic local style."
    bug (fix the port) or a canonical change (change TypeScript + spec +
    *all* ports). Never let one port drift.
 2. **Do not weaken the spec to make a failing port pass.**
-   `spec/fib.aontu` encodes canonical behaviour. Change it only when
+   `spec/fib.aon` encodes canonical behaviour. Change it only when
    deliberately changing that behaviour, and verify the canonical
    TypeScript still passes first.
 3. **The spec format has a shape, written in aontu.**
-   [`spec/def/omni-spec.aontu`](spec/def/omni-spec.aontu) is unified with
+   [`spec/def/omni-spec.aon`](spec/def/omni-spec.aon) is unified with
    every spec source by `make spec-check`, so a typo'd entry field or a
    mistyped `id` fails with an error code, a spec path and a source file.
    It is checked separately from `make spec` on purpose - unifying it into
    the build would drop optional keys holding empty containers (`out: []`)
    and silently rewrite entries. The runner is still the authority.
-4. **Never hand-edit `spec/*.json`.** It is generated from `spec/*.aontu`
+4. **Never hand-edit `spec/*.json`.** It is generated from `spec/*.aon`
    by `make spec` and committed so that no port needs a Node toolchain to
    run its tests. Edit the aontu, run `make spec`, commit both. CI's
    `spec-freshness` job rebuilds and fails on any drift.
@@ -77,12 +77,12 @@ TypeScript, case for case, in idiomatic local style."
 ├── AGENTS.md          # this file
 ├── Makefile           # aggregate targets
 ├── spec/
-│   ├── fib.aontu      # the shared test corpus - the contract, edit this
-│   ├── fib.json       # generated from fib.aontu; what the ports read
+│   ├── fib.aon      # the shared test corpus - the contract, edit this
+│   ├── fib.json       # generated from fib.aon; what the ports read
 │   └── def/
-│       └── omni-spec.aontu  # the spec-format shape, in aontu
+│       └── omni-spec.aon  # the spec-format shape, in aontu
 ├── tools/
-│   ├── build-spec.js      # compiles spec/*.aontu -> spec/*.json
+│   ├── build-spec.js      # compiles spec/*.aon -> spec/*.json
 │   ├── check-spec-shape.js # unifies each spec with the format shape
 │   ├── package.json       # tools/ is a node project (@voxgig/model)
 │   ├── check_parity.py    # every port defines the canonical API
@@ -182,7 +182,7 @@ release from main would have dropped.
 ### Change runner behaviour (affects everyone)
 
 1. Edit `typescript/src/Runner.ts` (and `Util.ts` if needed).
-2. Add or adjust the entries in `spec/fib.aontu` that pin the new
+2. Add or adjust the entries in `spec/fib.aon` that pin the new
    behaviour, then `make spec` to regenerate `spec/fib.json`.
 3. `make test-typescript` - the canonical passes.
 4. Propagate the same logic to **every** port; run each port's tests.
@@ -282,6 +282,6 @@ or deleted as it goes stale; `handover.md` is the durable half.
 
 - Spec format and semantics: [`DOCS.md`](DOCS.md)
 - Per-port specifics: `<lang>/README.md`
-- The contract: [`spec/fib.aontu`](spec/fib.aontu) (compiled to
+- The contract: [`spec/fib.aon`](spec/fib.aon) (compiled to
   [`spec/fib.json`](spec/fib.json) by `make spec`)
 - The struct replacement path: [`DOCS.md`](DOCS.md#8-replacing-structs-in-situ-runners)

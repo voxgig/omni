@@ -10,7 +10,7 @@
 #   make struct-compat - run voxgig/struct's own suite on omni's runner
 #   make pack-check    - install the npm ports from a tarball and use them
 #   make pack-diff     - what a release would add/remove vs the registry
-#   make spec          - recompile spec/*.json from spec/*.aontu
+#   make spec          - recompile spec/*.json from spec/*.aon
 #   make spec-check    - fail if a committed spec/*.json is stale
 
 # Every port directory. Target names are the directory names, used verbatim
@@ -64,10 +64,10 @@ clean:
 parity:
 	@python3 tools/check_parity.py
 
-# spec/*.json are COMMITTED artifacts compiled from spec/*.aontu by
-# @voxgig/model. The .aontu files are the source of truth; every port reads
+# spec/*.json are COMMITTED artifacts compiled from spec/*.aon by
+# @voxgig/model. The .aon files are the source of truth; every port reads
 # only the JSON, so no port needs a Node toolchain to run its tests. After
-# editing a *.aontu source, run `make spec` and commit the regenerated JSON —
+# editing a *.aon source, run `make spec` and commit the regenerated JSON —
 # CI's spec-freshness check fails on a stale artifact.
 spec:
 	@cd tools && npm install --no-audit --no-fund --silent && npm run --silent build-spec

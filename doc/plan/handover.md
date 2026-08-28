@@ -19,7 +19,7 @@ Last updated: 2026-08-21.
 | Where | What |
 |---|---|
 | voxgig/omni#5 | C1 spec versioning (`OMNI: {version, requires}`), strict entry validation, the `context` group and the `err.name` pin, across the canonical TypeScript and all 23 ports. |
-| voxgig/omni#6 | The spec-format shape moved from JSON Schema to aontu (`spec/def/omni-spec.aontu`, `make spec-check`); the ajv dependency dropped. |
+| voxgig/omni#6 | The spec-format shape moved from JSON Schema to aontu (`spec/def/omni-spec.aon`, `make spec-check`); the ajv dependency dropped. |
 | voxgig/omni#8 | Four struct compat shims — python (`voxgig_omni/compat/struct.py`), and in bb5ad6e the typescript (`typescript/compat/struct.ts`), go (`go/compat/struct/struct.go`) and ruby (`ruby/lib/voxgig_omni/compat/struct.rb`) peers. With `javascript/compat/struct.js` that is five ports whose omni side is ready — of which **javascript, python, ruby and go have since swapped** (voxgig/struct#84, #86, #88, #89), leaving **one** pending: typescript. (php and lua have since swapped too, on shims written later — voxgig/omni#16 and #17.) |
 | voxgig/omni#9 | The sentinels tested before the identity check in `match`, canonical and all 23 ports, each pinned by a `wrongundef` negative case. |
 | voxgig/struct#84 | The **javascript** port migrated to omni. In-situ runner deleted; `javascript/test/omni.js` resolves the local checkout. 95/95 — the same 95 the old runner passed. |

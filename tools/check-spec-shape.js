@@ -2,7 +2,7 @@
 /* Copyright © 2026 Voxgig Ltd, MIT License. */
 
 // check-spec-shape.js — check each spec source against the spec-format
-// shape (spec/def/omni-spec.aontu), using aontu itself.
+// shape (spec/def/omni-spec.aon), using aontu itself.
 //
 // The corpus is written in aontu, so the shape is written in aontu too: a
 // violation is an ordinary unification conflict, reported with an error
@@ -18,11 +18,11 @@
 // were unified into the build itself.
 //
 // The runner remains the authority on spec semantics; this catches the
-// subset a unifier can catch, at author time. See spec/def/omni-spec.aontu
+// subset a unifier can catch, at author time. See spec/def/omni-spec.aon
 // for exactly what is and is not covered.
 //
-// Usage: node check-spec-shape.js [spec.aontu ...]
-//   With no arguments, checks every entry *.aontu in ../spec.
+// Usage: node check-spec-shape.js [spec.aon ...]
+//   With no arguments, checks every entry *.aon in ../spec.
 //   --self-test additionally proves the shape can go red.
 
 'use strict'
@@ -34,17 +34,17 @@ const { spawnSync } = require('node:child_process')
 
 const TOOLS = __dirname
 const SPEC_DIR = Path.resolve(TOOLS, '..', 'spec')
-const SHAPE = Path.join(SPEC_DIR, 'def', 'omni-spec.aontu')
+const SHAPE = Path.join(SPEC_DIR, 'def', 'omni-spec.aon')
 const AONTU = Path.join(TOOLS, 'node_modules', '.bin', 'aontu')
 
-// Entry specs are the *.aontu files directly in spec/; the def/ directory
+// Entry specs are the *.aon files directly in spec/; the def/ directory
 // holds imported definitions, which are not compiled on their own.
 function entryspecs(args) {
   if (0 < args.length) {
     return args.map((a) => Path.resolve(a))
   }
   return Fs.readdirSync(SPEC_DIR)
-    .filter((n) => n.endsWith('.aontu'))
+    .filter((n) => n.endsWith('.aon'))
     .sort()
     .map((n) => Path.join(SPEC_DIR, n))
 }
@@ -53,7 +53,7 @@ function entryspecs(args) {
 // null on success.
 function checkspec(specfile) {
   const work = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'omni-shape-'))
-  const check = Path.join(work, 'check.aontu')
+  const check = Path.join(work, 'check.aon')
 
   try {
     Fs.writeFileSync(
@@ -98,7 +98,7 @@ function selftest() {
 
   try {
     for (const [name, src] of REDCASES) {
-      const spec = Path.join(work, 'red.aontu')
+      const spec = Path.join(work, 'red.aon')
       Fs.writeFileSync(spec, src + '\n')
 
       if (null === checkspec(spec)) {
