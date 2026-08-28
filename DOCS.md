@@ -47,7 +47,7 @@ port in any language can run the corpus with no toolchain beyond its own.
 
 How that JSON is *written* is a separate question. omni's own corpus is
 written in [aontu](https://github.com/voxgig/aontu) — see
-[`spec/fib.aontu`](spec/fib.aontu) — and compiled to
+[`spec/fib.aon`](spec/fib.aon) — and compiled to
 [`spec/fib.json`](spec/fib.json) by `make spec`, which is what lets it carry
 comments and share definitions. Your specs can be authored however you like;
 the runner only sees the JSON.
@@ -84,7 +84,7 @@ A group is any map with a `set` list. Groups may be nested under other
 keys - the runner only ever sees the group you hand to `runset`.
 
 Specs are plain JSON. Any authoring format that compiles to JSON works;
-`voxgig/struct` writes `.aontu` files (JSON with comments and imports) and
+`voxgig/struct` writes `.aon` files (JSON with comments and imports) and
 compiles them to `test.json`.
 
 ### 2.2 Entries
@@ -293,7 +293,7 @@ runner's `CAPABILITIES` registry; the registry is currently empty.
 
 A `version` newer than the runner's `SPECVERSION` is refused at load.
 
-[`spec/def/omni-spec.aontu`](spec/def/omni-spec.aontu) expresses the
+[`spec/def/omni-spec.aon`](spec/def/omni-spec.aon) expresses the
 version-1 entry shape **in aontu**, the language the corpus is written in,
 so checking a spec is unifying it with the shape rather than consulting a
 separate description that can drift. `make spec-check` runs it (and
@@ -833,7 +833,7 @@ That qualifier is load-bearing, and it is the honest limit of what is
 checked. It is narrower than it may first appear, in two stacked ways.
 First, the corpus is JSON, so a value JSON has no literal for cannot appear
 in an entry at all, and port behaviour on such a value is unproven by
-construction. Second - and this is the larger gap - `fib.aontu` is a finite
+construction. Second - and this is the larger gap - `fib.aon` is a finite
 set of entries, not an enumeration of JSON: a port can diverge on a
 perfectly JSON-expressible value, magnitude or nesting shape that simply is
 not in the corpus, and every suite stays green. `tools/check_parity.py` does not close the gap either: it is

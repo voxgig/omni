@@ -81,7 +81,7 @@ Two mechanisms, and this is a real decision rather than a detail:
   exported constant (so `check_parity.py`'s `CANONICAL` and every port's public
   surface), handling in `fixjson` and the match rules — `NULLMARK`/`UNDEFMARK`/
   `EXISTSMARK` have bespoke handling at roughly ten sites in `Runner.ts` alone —
-  new `fib.aontu` entries, and all 23 ports.
+  new `fib.aon` entries, and all 23 ports.
 - **Per-port unit tests.** Much smaller, touches no spec and no public API, and
   arguably the *right* home rather than a workaround: NaN is outside what a JSON
   corpus can express by definition, so a native-language test is the honest

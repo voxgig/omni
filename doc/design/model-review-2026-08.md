@@ -6,8 +6,8 @@ in [`review-2026-08.md`](review-2026-08.md) (OM-1..OM-5). Three
 independent lenses were run (semantic consistency, developer experience,
 formal portability) and converged on the same top findings. Every claim
 below was verified against `typescript/src/Runner.ts`, the fib spec, and
-the real downstream corpora (struct's `build/test/*.aontu`, sekreto's
-`spec/def/*.aontu`); migration costs were checked by scanning all three
+the real downstream corpora (struct's `build/test/*.aon`, sekreto's
+`spec/def/*.aon`); migration costs were checked by scanning all three
 corpora for reliance on the behaviour in question.
 
 The core judgment: the exact-comparison half of the model is excellent —
@@ -29,8 +29,8 @@ independently-updated runners.
 ### A1 (high) — Sentinels are in-band strings, and the `null` flag rewrites subject inputs
 Under default flags the whole group is normalised, so a spec's `in: null`
 delivers the *string* `"__NULL__"` to the subject. Corpus scars: struct's
-`walk.aontu` documents a test deleted for exactly this; struct's
-`minor.aontu` `{in: null, out: false}` for `isnode` never tests a real
+`walk.aon` documents a test deleted for exactly this; struct's
+`minor.aon` `{in: null, out: false}` for `isnode` never tests a real
 null; struct's canonical test file carries 29 `{null: false}` overrides to
 protect inputs. On the output side a subject returning the literal string
 `"__NULL__"` is indistinguishable from one returning null — in sekreto,
@@ -116,7 +116,7 @@ turned out to be a genuine port bug — Python's `bool` is a subclass of
 with `==`, under which `1 == True`, so its corpus cannot catch
 bool/number conflation in *any* port; omni's `deepequal` can, and did.)
 
-The blast radius in the other direction is nil: neither `spec/fib.aontu`
+The blast radius in the other direction is nil: neither `spec/fib.aon`
 (0 implicit entries of 68) nor sekreto's corpus (0 of 110) contains a
 single entry with no `in`/`args`/`ctx`, so no omni-authored spec depends
 on the current reading.
@@ -199,7 +199,7 @@ degrades non-atomically across independently-updated runners — the exact
 failure class the project exists to eliminate, at the meta level.
 **Fix (landed 2026-08):** top-level `OMNI {version, requires}` block with
 loud refusal of unknown capabilities; version-1 strict entry validation;
-an aontu format shape (`spec/def/omni-spec.aontu`) + `make spec-check` in
+an aontu format shape (`spec/def/omni-spec.aon`) + `make spec-check` in
 CI. See DOCS §2.7. (The fix originally shipped as a JSON Schema;
 voxgig/omni#6 replaced it with aontu, unifying the shape with each spec
 source and dropping the ajv dependency.)

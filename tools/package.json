@@ -16,6 +16,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@voxgig/model": "^9.3.0"
+    "@voxgig/model": "^10.0.1"
   }
 }

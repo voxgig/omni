@@ -98,7 +98,7 @@ Per-port status lives in the register's struct table.
 
 Sekreto is done as an adopter; what remains is plumbing: depend on omni's
 `build-spec` instead of its local copy, fix the "all 22 ports" comment in
-`spec/def/resolve.aontu`, and (if publishing ever happens) swap path
+`spec/def/resolve.aon`, and (if publishing ever happens) swap path
 discovery for the package.
 
 ## Phase 3 - the external validation use case (senecajs/Sekreto)
@@ -131,7 +131,7 @@ out safely:
    `{version, requires}` block; version-1 strict entry validation; the
    format schema. Ships to all 23 ports while `requires` is empty and
    nothing can break. (Landed as voxgig/omni#5; the schema is aontu -
-   `spec/def/omni-spec.aontu`, checked by `make spec-check` - not the JSON
+   `spec/def/omni-spec.aon`, checked by `make spec-check` - not the JSON
    Schema this originally named. voxgig/omni#6 made that swap and dropped
    the ajv dependency.)
 2. **A1 - sentinel soundness**: `nullin`-style split so subjects receive
