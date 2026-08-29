@@ -155,7 +155,17 @@ function deepequal(a: Json, b: Json): boolean {
 
 // Compact JSON text with map keys sorted, so that messages are identical
 // in every port regardless of local map ordering.
-function jsonstr(val: Json): string {
+//
+// CYCLE SAFE. Building a FAILURE MESSAGE must never be the thing that
+// crashes: a port driving entries with live objects rather than pure JSON
+// can carry a cyclic value in the entry bookkeeping fail() prints, and this
+// recursed until the stack gave out. A cycle renders as "[Circular]", as
+// the struct repository's original runner did.
+//
+// `seen` tracks the ANCESTORS of the current value, not every value
+// visited: it is removed again on the way out, so the same object appearing
+// twice as siblings - a DAG, not a cycle - still renders in full.
+function jsonstr(val: Json, seen?: Set<any>): string {
   if (undefined === val) {
     return 'undefined'
   }
@@ -176,13 +186,24 @@ function jsonstr(val: Json): string {
     return val ? 'true' : 'false'
   }
 
-  if (islist(val)) {
-    return '[' + val.map((entry: Json) => jsonstr(entry)).join(',') + ']'
-  }
+  if (islist(val) || ismap(val)) {
+    seen = seen || new Set()
 
-  if (ismap(val)) {
-    const keys = Object.keys(val).sort()
-    return '{' + keys.map((key) => JSON.stringify(key) + ':' + jsonstr(val[key])).join(',') + '}'
+    if (seen.has(val)) {
+      return '"[Circular]"'
+    }
+
+    seen.add(val)
+
+    const out = islist(val)
+      ? '[' + val.map((entry: Json) => jsonstr(entry, seen)).join(',') + ']'
+      : '{' + Object.keys(val).sort()
+        .map((key) => JSON.stringify(key) + ':' + jsonstr((val as any)[key], seen))
+        .join(',') + '}'
+
+    seen.delete(val)
+
+    return out
   }
 
   if ('function' === typeof val) {
