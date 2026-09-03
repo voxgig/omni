@@ -68,6 +68,26 @@
                (fibprovider (if (u/isnum shiftval) shiftval 0))))
    :contextify (fn [val] (assoc val "mark" "CTX"))})
 
+;; Derive fib's error code from its message.
+(defn fiberrcode [message]
+  (cond
+    (string/includes? message "negative index") "fib_negative"
+    (string/includes? message "non-integer") "fib_noninteger"
+    (string/includes? message "not a number") "fib_notanumber"
+    :else "fib_unknown"))
+
+;; The same provider, plus the `:errify` hook: fib's errors gain a CODE.
+;;
+;; A SECOND runner rather than a hook on `fibprovider`, so that the
+;; `error` group keeps exercising the DEFAULT errify.
+(defn fibcodedprovider []
+  (assoc (fibprovider 0)
+         :errify (fn [err]
+                   (let [message (runner/errmessage err)]
+                     (array-map "name" "Error"
+                                "message" message
+                                "code" (fiberrcode message))))))
+
 (defn testcase [name body]
   (when (or (nil? @ONLY) (= @ONLY name))
     (try
@@ -211,7 +231,8 @@
   (let [R ((runner/make-runner (specfile "fib.json") (fibprovider 0)) "fib")
         spec-set (:set R)
         runset (:runset R)
-        runsetflags (:runsetflags R)]
+        runsetflags (:runsetflags R)
+        RC ((runner/make-runner (specfile "fib.json") (fibcodedprovider)) "fib")]
 
     (testcase "basic" #(runset (spec-set "basic") FIB))
     (testcase "seq" #(runset (spec-set "seq") FIBSEQ))
@@ -219,6 +240,7 @@
     (testcase "info" #(runset (spec-set "info") FIBINFO))
     (testcase "nulls" #(runsetflags (spec-set "nulls") {:null false} FIBINFO))
     (testcase "error" #(runset (spec-set "error") FIB))
+    (testcase "errcode" #((:runset RC) ((:set RC) "errcode") FIB))
     (testcase "match" #(runset (spec-set "match") FIB))
     (testcase "matchinfo" #(runset (spec-set "matchinfo") FIBINFO))
     (testcase "client" #(runset (spec-set "client") FIB))
