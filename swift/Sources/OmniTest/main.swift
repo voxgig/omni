@@ -393,7 +393,33 @@ if 1 < args.count {
   ONLY = args[1]
 }
 
+// Derive fib's error code from its message.
+func fiberrcode(_ message: String) -> String {
+  if message.contains("negative index") { return "fib_negative" }
+  if message.contains("non-integer") { return "fib_noninteger" }
+  if message.contains("not a number") { return "fib_notanumber" }
+  return "fib_unknown"
+}
+
+// The same provider, plus the `errify` hook: fib's errors gain a CODE.
+//
+// A SECOND runner rather than a hook on `fibprovider`, so that the
+// `error` group keeps exercising the DEFAULT errify.
+func fibcodedprovider() -> Provider {
+  let provider = fibprovider(0)
+  provider.errify = { err in
+    let message = errmessage(err)
+    return .map([
+      ("name", .str("Error")),
+      ("message", .str(message)),
+      ("code", .str(fiberrcode(message))),
+    ])
+  }
+  return provider
+}
+
 let R = try makeRunner(try specfile("fib.json"), fibprovider(0)).runner("fib")
+let RC = try makeRunner(try specfile("fib.json"), fibcodedprovider()).runner("fib")
 
 testcase("basic") { try R.runset(R.set("basic"), FIB) }
 testcase("seq") { try R.runset(R.set("seq"), FIBSEQ) }
@@ -401,6 +427,7 @@ testcase("range") { try R.runset(R.set("range"), FIBRANGE) }
 testcase("info") { try R.runset(R.set("info"), FIBINFO) }
 testcase("nulls") { try R.runsetflags(R.set("nulls"), Flags.nonull(), FIBINFO) }
 testcase("error") { try R.runset(R.set("error"), FIB) }
+testcase("errcode") { try RC.runset(RC.set("errcode"), FIB) }
 testcase("match") { try R.runset(R.set("match"), FIB) }
 testcase("matchinfo") { try R.runset(R.set("matchinfo"), FIBINFO) }
 testcase("client") { try R.runset(R.set("client"), FIB) }
