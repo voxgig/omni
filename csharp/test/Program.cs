@@ -103,6 +103,37 @@ internal static class Program
         };
     }
 
+    /// <summary>Derive fib's error code from its message.</summary>
+    private static string FibErrCode(string message)
+    {
+        if (message.Contains("negative index")) { return "fib_negative"; }
+        if (message.Contains("non-integer")) { return "fib_noninteger"; }
+        if (message.Contains("not a number")) { return "fib_notanumber"; }
+        return "fib_unknown";
+    }
+
+    /// <summary>
+    /// The same provider, plus the Errify hook: fib's errors gain a CODE.
+    ///
+    /// A SECOND runner rather than a hook on FibProvider, so that the
+    /// <c>error</c> group keeps exercising the DEFAULT Errify.
+    /// </summary>
+    private static Provider FibCodedProvider()
+    {
+        Provider provider = FibProvider(0);
+        provider.Errify = err =>
+        {
+            string message = err is Exception ex ? ex.Message : Convert.ToString(err);
+            return new Dictionary<string, object>
+            {
+                ["name"] = "Error",
+                ["message"] = message,
+                ["code"] = FibErrCode(message),
+            };
+        };
+        return provider;
+    }
+
     private static void TestCase(string name, Action body)
     {
         if (null != only && name != only)
@@ -305,6 +336,7 @@ internal static class Program
         }
 
         RunPack R = Runner.MakeRunner(SpecFile("fib.json"), FibProvider(0)).Run("fib");
+        RunPack RC = Runner.MakeRunner(SpecFile("fib.json"), FibCodedProvider()).Run("fib");
 
         TestCase("basic", () => R.RunSet(R.Set("basic"), FIB));
         TestCase("seq", () => R.RunSet(R.Set("seq"), FIBSEQ));
@@ -312,6 +344,7 @@ internal static class Program
         TestCase("info", () => R.RunSet(R.Set("info"), FIBINFO));
         TestCase("nulls", () => R.RunSetFlags(R.Set("nulls"), Flags.NoNull(), FIBINFO));
         TestCase("error", () => R.RunSet(R.Set("error"), FIB));
+        TestCase("errcode", () => RC.RunSet(RC.Set("errcode"), FIB));
         TestCase("match", () => R.RunSet(R.Set("match"), FIB));
         TestCase("matchinfo", () => R.RunSet(R.Set("matchinfo"), FIBINFO));
         TestCase("client", () => R.RunSet(R.Set("client"), FIB));
