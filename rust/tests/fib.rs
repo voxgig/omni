@@ -94,6 +94,44 @@ fn runpack() -> RunPack {
     runner.runner("fib", None).expect("spec")
 }
 
+/// Derive fib's error code from its message.
+fn fiberrcode(message: &str) -> &'static str {
+    if message.contains("negative index") {
+        "fib_negative"
+    } else if message.contains("non-integer") {
+        "fib_noninteger"
+    } else if message.contains("not a number") {
+        "fib_notanumber"
+    } else {
+        "fib_unknown"
+    }
+}
+
+/// The same provider, plus the `errify` hook: fib's errors gain a CODE.
+///
+/// A SECOND runner rather than a hook on `fibprovider`, so that the
+/// `error` group keeps exercising the DEFAULT errify.
+fn fibcodedprovider() -> Provider {
+    Provider {
+        errify: Some(Rc::new(|message: &str| {
+            Json::map(vec![
+                ("name", Json::str("Error")),
+                ("message", Json::str(message)),
+                ("code", Json::str(fiberrcode(message))),
+            ])
+        })),
+        ..fibprovider(0.0)
+    }
+}
+
+#[test]
+fn fib_errcode() {
+    let runner = make_runner(specfile("fib.json"), fibcodedprovider()).expect("runner");
+    let pack = runner.runner("fib", None).expect("spec");
+    let (fibsub, _, _, _) = subjects();
+    pack.runset(&pack.set("errcode"), Some(&fibsub)).expect("errcode");
+}
+
 #[test]
 fn fib_conformance() {
     let pack = runpack();
