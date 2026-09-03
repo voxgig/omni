@@ -488,6 +488,22 @@ def om-errify fn [[e:Any] [Any] [
   r
 ]]
 
+# The error base a `match.err` sees: the provider's own, when it has one.
+#
+# A library whose errors carry a code reaches `match: {err: {code}}`
+# through the provider's `errify`, which REPLACES `om-errify` rather than
+# adding to it.
+def om-errbase fn [[e:Any provider:Any] [Any] [
+  def hook (om-get provider "errify")
+  def r (
+    if (om-isunset hook) [om-errify e] [
+      def f (om-unbox hook)
+      [e] f/v apply
+    ]
+  )
+  r
+]]
+
 # --- spec --------------------------------------------------------------------
 
 # Load a spec: a path to a JSON file, or a spec already parsed. The engine's
@@ -1004,7 +1020,7 @@ def om-checkresult fn [[label:Any index:Integer entry:Any alist:Any res:Any] [An
   r
 ]]
 
-def om-handleerror fn [[label:Any index:Integer entry:Any e:Any] [Any] [
+def om-handleerror fn [[label:Any index:Integer entry:Any e:Any provider:Any] [Any] [
   def entryerr (om-get entry "err")
   def emsg (om-errmessage e)
   def r (
@@ -1022,7 +1038,7 @@ def om-handleerror fn [[label:Any index:Integer entry:Any e:Any] [Any] [
             in: (om-get entry "in")
             out: (om-get entry "res")
             ctx: (om-get entry "ctx")
-            err: (om-errify e)
+            err: (om-errbase e provider)
           })
           (om-match label index entry check bv (flex [])) drop
           none
@@ -1268,7 +1284,7 @@ def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean us
           (om-fail-raise (om-errmessage e)) drop
           none
         ] [
-          (om-handleerror label i entry e) drop
+          (om-handleerror label i entry e (om-get pack "client")) drop
           none
         ] drop
         none
