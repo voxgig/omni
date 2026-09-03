@@ -141,7 +141,7 @@ func fiberrcode(message string) string {
 // group keeps exercising the DEFAULT Errify.
 func fibcodedprovider() *omni.Provider {
 	provider := fibprovider(0)
-	provider.Errify = func(err any) map[string]any {
+	provider.Errify = func(err any) any {
 		message := fmt.Sprintf("%v", err)
 		if aserr, is := err.(error); is {
 			message = aserr.Error()

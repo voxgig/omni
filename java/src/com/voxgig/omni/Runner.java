@@ -89,7 +89,7 @@ public final class Runner {
      * assert on it with {@code match: {err: {code: "x"}}} instead of
      * pattern-matching prose.
      */
-    public Function<Object, Map<String, Object>> errify;
+    public Function<Object, Object> errify;
   }
 
   /** Run-time options for a set of test entries. */
@@ -676,7 +676,7 @@ public final class Runner {
   }
 
   /** The error base a {@code match.err} sees: the provider's own, when it has one. */
-  static Map<String, Object> errbase(Object err, Provider provider) {
+  static Object errbase(Object err, Provider provider) {
     return null != provider && null != provider.errify
         ? provider.errify.apply(err)
         : errify(err);

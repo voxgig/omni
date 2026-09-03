@@ -176,15 +176,23 @@ struct omni_provider {
   omni_provider *(*client)(omni_provider *self, omni_json *options);
   /* Wrap a map argument as a call context. */
   omni_json *(*contextify)(omni_provider *self, omni_json *val);
+  void *data;
   /* Build the `match.err` base from the failure, REPLACING omni_errify.
    *
    * C reports a subject failure as its message and nothing else
    * (`omni_result.err`), so a library whose errors carry a code has no
    * other way to put one in the base. The hook receives that message and
    * returns the base, letting a spec assert `match: {err: {code: "x"}}`
-   * instead of pattern-matching prose. NULL for the default. */
+   * instead of pattern-matching prose. NULL for the default.
+   *
+   * LAST, AFTER `data`, AND THAT POSITION IS THE POINT. A consumer may
+   * aggregate-initialize this struct positionally — `{subject, client,
+   * contextify, mydata}` — and inserting a member before `data` would
+   * silently bind that consumer's data pointer to a FUNCTION POINTER
+   * while leaving `data` null. The first error to match would then call
+   * through it. Appending is the only position that leaves existing
+   * initializers meaning what they meant. */
   omni_json *(*errify)(omni_provider *self, omni_pool *pool, const char *message);
-  void *data;
 };
 
 typedef struct omni_flags {

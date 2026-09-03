@@ -45,7 +45,7 @@ class Provider {
   /// Build the `match.err` base from the raised error, REPLACING [errify].
   /// A library whose errors carry a code can then assert on it with
   /// `match: {err: {code: 'x'}}` instead of pattern-matching prose.
-  final Map<String, dynamic> Function(dynamic err)? errify;
+  final dynamic Function(dynamic err)? errify;
 
   const Provider({
     this.subject,
@@ -459,7 +459,7 @@ class RunPack {
   }
 
   /// The error base a `match.err` sees: the provider's own, when it has one.
-  Map<String, dynamic> _errbase(dynamic err) {
+  dynamic _errbase(dynamic err) {
     final hook = _provider.errify;
     return null != hook ? hook(err) : errify(err);
   }

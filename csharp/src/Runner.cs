@@ -59,7 +59,7 @@ namespace Voxgig.Omni
         /// can then assert on it with <c>match: {err: {code: "x"}}</c>
         /// instead of pattern-matching prose.
         /// </summary>
-        public Func<object, IDictionary<string, object>> Errify { get; set; }
+        public Func<object, object> Errify { get; set; }
     }
 
     /// <summary>What a runner returns for one named spec section.</summary>
@@ -672,7 +672,7 @@ namespace Voxgig.Omni
         }
 
         /// <summary>The error base a <c>match.err</c> sees: the provider's own, when it has one.</summary>
-        internal static IDictionary<string, object> ErrBase(object err, Provider provider)
+        internal static object ErrBase(object err, Provider provider)
         {
             return null != provider && null != provider.Errify ? provider.Errify(err) : Errify(err);
         }

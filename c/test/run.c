@@ -157,8 +157,8 @@ static omni_provider *fibprovider(double shift) {
   provider->subject = provider_subject;
   provider->client = provider_client;
   provider->contextify = provider_contextify;
-  provider->errify = NULL;
   provider->data = data;
+  provider->errify = NULL;
 
   return provider;
 }

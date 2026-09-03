@@ -332,7 +332,7 @@ final class Runner
     // A library whose errors carry a `code` reaches
     // `match: {err: {code}}` through `Provider.errify`, which replaces
     // `errify` entirely rather than adding to it.
-    public static function errbase($err, ?array $provider): array
+    public static function errbase($err, ?array $provider)
     {
         $hook = null === $provider ? null : ($provider['errify'] ?? null);
         return null === $hook ? self::errify($err) : $hook($err);

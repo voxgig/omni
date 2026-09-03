@@ -45,7 +45,11 @@ type Provider struct {
 	// the default Errify. A library whose errors carry a code can then
 	// assert on it with `match: {err: {code: "x"}}` instead of
 	// pattern-matching prose.
-	Errify func(err any) map[string]any
+	//
+	// `any`, not `map[string]any`, because the canonical is `(err) => Json`
+	// and `match.err` compares a scalar or a list as readily as a map. The
+	// built-in Errify happens to return a map; a hook is not held to that.
+	Errify func(err any) any
 }
 
 // RunSet runs one set of test entries.
@@ -510,7 +514,7 @@ func Errify(err any) map[string]any {
 
 // errbase is the error base a `match.err` sees: the provider's own, when
 // it has one.
-func errbase(err any, provider *Provider) map[string]any {
+func errbase(err any, provider *Provider) any {
 	if nil != provider && nil != provider.Errify {
 		return provider.Errify(err)
 	}
