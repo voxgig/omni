@@ -176,6 +176,14 @@ struct omni_provider {
   omni_provider *(*client)(omni_provider *self, omni_json *options);
   /* Wrap a map argument as a call context. */
   omni_json *(*contextify)(omni_provider *self, omni_json *val);
+  /* Build the `match.err` base from the failure, REPLACING omni_errify.
+   *
+   * C reports a subject failure as its message and nothing else
+   * (`omni_result.err`), so a library whose errors carry a code has no
+   * other way to put one in the base. The hook receives that message and
+   * returns the base, letting a spec assert `match: {err: {code: "x"}}`
+   * instead of pattern-matching prose. NULL for the default. */
+  omni_json *(*errify)(omni_provider *self, omni_pool *pool, const char *message);
   void *data;
 };
 
