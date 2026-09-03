@@ -161,6 +161,54 @@
           }
         ]
       },
+      "errcode": {
+        "set": [
+          {
+            "doc": true,
+            "err": true,
+            "id": "fib/errcode#negative",
+            "in": -1,
+            "match": {
+              "err": {
+                "code": "fib_negative"
+              }
+            }
+          },
+          {
+            "err": true,
+            "in": 2.5,
+            "match": {
+              "err": {
+                "code": "fib_noninteger"
+              }
+            }
+          },
+          {
+            "err": true,
+            "in": "x",
+            "match": {
+              "err": {
+                "code": "fib_notanumber"
+              }
+            }
+          },
+          {
+            "err": "negative index",
+            "in": -3,
+            "match": {
+              "err": {
+                "code": "fib_negative",
+                "message": "/negative index: -3$/",
+                "name": "__EXISTS__"
+              }
+            }
+          },
+          {
+            "in": 9,
+            "out": 34
+          }
+        ]
+      },
       "error": {
         "set": [
           {

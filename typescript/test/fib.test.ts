@@ -42,6 +42,34 @@ function fibprovider(shift: number): Provider {
   }
 }
 
+// The same provider, plus the `errify` hook: fib's errors gain a CODE.
+//
+// A SECOND runner rather than a hook on `fibprovider`, so that the
+// `error` group keeps exercising the DEFAULT errify. One provider
+// carrying the hook would have moved every existing `match.err`
+// assertion onto the override and left the default path untested by the
+// spec.
+//
+// The derivation is deliberately message-based: fib's messages are
+// pinned by the spec, and five ports have nothing but the message at
+// this point anyway. A real library reads its own error object.
+function fiberrcode(message: string): string {
+  return message.includes('negative index') ? 'fib_negative'
+    : message.includes('non-integer') ? 'fib_noninteger'
+      : message.includes('not a number') ? 'fib_notanumber'
+        : 'fib_unknown'
+}
+
+function fibcodedprovider(): Provider {
+  return {
+    ...fibprovider(0),
+    errify: (err: any) => {
+      const message = err instanceof Error ? err.message : String(err)
+      return { name: 'Error', message, code: fiberrcode(message) }
+    },
+  }
+}
+
 // The context-group subject: reports what the runner delivered - the
 // contextify mark and the attached client - as plain data, so the spec can
 // pin both with an ordinary `out` comparison in every port.
@@ -56,10 +84,14 @@ function fibctx(ctx: any): any {
 
 describe('fib', () => {
   let R: RunPack
+  let RC: RunPack
 
   before(async () => {
     const runner = await makeRunner(specfile('fib.json'), fibprovider(0))
     R = await runner('fib')
+
+    const coded = await makeRunner(specfile('fib.json'), fibcodedprovider())
+    RC = await coded('fib')
   })
 
   test('basic', async () => {
@@ -84,6 +116,10 @@ describe('fib', () => {
 
   test('error', async () => {
     await R.runset(R.spec.error, fib)
+  })
+
+  test('errcode', async () => {
+    await RC.runset(RC.spec.errcode, fib)
   })
 
   test('match', async () => {

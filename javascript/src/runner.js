@@ -283,12 +283,25 @@ function fixjsonval(val, donull) {
   return val
 }
 
-// The JSON form of an error: always at least {name,message}.
+// THE SPREAD IS THE CONTRACT, not an accident of JavaScript. An error's
+// OWN enumerable properties survive into the base, so a library whose
+// errors carry a `code` (or a `status`, or a `path`) can assert on it
+// with `match: {err: {code: 'x'}}` rather than pattern-matching prose.
+//
+// Only JavaScript gets that for free. `Provider.errify` is how the other
+// ports reach the same place: it overrides this function entirely, so a
+// library supplies its own structured base and omni needs to know
+// nothing about the shape of it.
 function errify(err) {
   if (err instanceof Error) {
     return { ...err, name: err.name, message: err.message }
   }
   return { name: 'Error', message: String(err) }
+}
+
+// The error base a `match.err` sees: the provider's own, when it has one.
+function errbase(err, provider) {
+  return null != provider && null != provider.errify ? provider.errify(err) : errify(err)
 }
 
 function errmessage(err) {
@@ -368,7 +381,7 @@ function checkresult(flags, index, entry, args, res) {
   }
 }
 
-function handleerror(flags, index, entry, err) {
+function handleerror(flags, index, entry, err, provider) {
   entry.thrown = err
 
   const entryerr = entry.err
@@ -380,7 +393,7 @@ function handleerror(flags, index, entry, err) {
           in: entry.in,
           out: entry.res,
           ctx: entry.ctx,
-          err: errify(err),
+          err: errbase(err, provider),
         })
       }
       return
@@ -562,7 +575,7 @@ async function makeRunner(specref, provider) {
           if (err instanceof OmniError) {
             throw err
           }
-          handleerror(useflags, index, entry, err)
+          handleerror(useflags, index, entry, err, useprovider)
         }
       }
     }

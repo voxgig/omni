@@ -42,6 +42,27 @@ function fibprovider(shift) {
   }
 }
 
+// The same provider, plus the `errify` hook: fib's errors gain a CODE.
+//
+// A SECOND runner rather than a hook on `fibprovider`, so that the
+// `error` group keeps exercising the DEFAULT errify.
+function fiberrcode(message) {
+  return message.includes('negative index') ? 'fib_negative'
+    : message.includes('non-integer') ? 'fib_noninteger'
+      : message.includes('not a number') ? 'fib_notanumber'
+        : 'fib_unknown'
+}
+
+function fibcodedprovider() {
+  return {
+    ...fibprovider(0),
+    errify: (err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      return { name: 'Error', message, code: fiberrcode(message) }
+    },
+  }
+}
+
 // The context-group subject: reports what the runner delivered - the
 // contextify mark and the attached client - as plain data, so the spec can
 // pin both with an ordinary `out` comparison in every port.
@@ -56,9 +77,12 @@ function fibctx(ctx) {
 
 describe('fib', () => {
   let R
+  let RC
 
   before(async () => {
     const runner = await makeRunner(specfile('fib.json'), fibprovider(0))
+    const coded = await makeRunner(specfile('fib.json'), fibcodedprovider())
+    RC = await coded('fib')
     R = await runner('fib')
   })
 
@@ -80,6 +104,10 @@ describe('fib', () => {
 
   test('nulls', async () => {
     await R.runsetflags(R.spec.nulls, { null: false }, fibinfo)
+  })
+
+  test('errcode', async () => {
+    await RC.runset(RC.spec.errcode, fib)
   })
 
   test('error', async () => {

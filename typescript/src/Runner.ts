@@ -47,6 +47,8 @@ export type Provider = {
   contextify?: (val: Json) => Json
   // Resolve references in client options against the runner store.
   inject?: (options: Json, store: Json) => Json
+  // Build the `match.err` base from the raised error. See `errify`.
+  errify?: (err: any) => Json
 }
 
 export type RunSet = (testspec: Json, testsubject?: Subject) => Promise<void>
@@ -356,6 +358,18 @@ function fixjsonval(val: Json, donull: boolean): Json {
 // collapsing that to String(err) yields '[object Object]', which fails both
 // the `err` check and every `match.err.*` leaf. The struct repository's
 // original runner read `.message` regardless of the thrown value's class.
+// THE SPREAD IS THE CONTRACT, not an accident of JavaScript. An error's
+// OWN enumerable properties survive into the base, so a library whose
+// errors carry a `code` (or a `status`, or a `path`) can assert on it
+// with `match: {err: {code: 'x'}}` rather than pattern-matching prose.
+//
+// Only JavaScript gets that for free. A port whose subject reports
+// failure as a message string - rust, cpp, zig, ocaml, haskell - has
+// nothing to spread, and a port that builds `{name, message}` by hand
+// drops the fields even when it has them. `Provider.errify` is how those
+// ports reach the same place: it overrides this function entirely, so a
+// library supplies its own structured base and omni needs to know
+// nothing about the shape of it.
 function errify(err: any): Json {
   if (err instanceof Error) {
     return { ...err, name: err.name, message: err.message }
@@ -366,6 +380,13 @@ function errify(err: any): Json {
   }
 
   return { name: 'Error', message: String(err) }
+}
+
+// The error base a `match.err` sees: the provider's own, when it has one.
+function errbase(err: any, provider?: Provider): Json {
+  return null != provider && null != provider.errify
+    ? provider.errify(err)
+    : errify(err)
 }
 
 function errmessage(err: any): string {
@@ -454,7 +475,13 @@ function checkresult(flags: Flags, index: number, entry: Json, args: Json[], res
   }
 }
 
-function handleerror(flags: Flags, index: number, entry: Json, err: any) {
+function handleerror(
+  flags: Flags,
+  index: number,
+  entry: Json,
+  err: any,
+  provider?: Provider,
+) {
   entry.thrown = err
 
   const entryerr = entry.err
@@ -466,7 +493,7 @@ function handleerror(flags: Flags, index: number, entry: Json, err: any) {
           in: entry.in,
           out: entry.res,
           ctx: entry.ctx,
-          err: errify(err),
+          err: errbase(err, provider),
         })
       }
       return
@@ -658,7 +685,7 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
           if (err instanceof OmniError) {
             throw err
           }
-          handleerror(useflags, index, entry, err)
+          handleerror(useflags, index, entry, err, useprovider)
         }
       }
     }
