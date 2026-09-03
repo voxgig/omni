@@ -72,6 +72,38 @@ val FIBCTX: Subject = { args ->
  * index, so that a client-specific subject is observably different.
  * `contextify` marks the map, so the context group can prove the hook ran.
  */
+/** Derive fib's error code from its message. */
+fun fiberrcode(message: String): String = when {
+    message.contains("negative index") -> "fib_negative"
+    message.contains("non-integer") -> "fib_noninteger"
+    message.contains("not a number") -> "fib_notanumber"
+    else -> "fib_unknown"
+}
+
+/**
+ * The same provider, plus the errify hook: fib's errors gain a CODE.
+ *
+ * A SECOND runner rather than a hook on `fibprovider`, so that the
+ * `error` group keeps exercising the DEFAULT errify.
+ */
+fun fibcodedprovider(): Provider {
+    val base = fibprovider(0.0)
+    return Provider(
+        subject = base.subject,
+        client = base.client,
+        contextify = base.contextify,
+        inject = base.inject,
+        errify = { err ->
+            val message = errmessage(err)
+            Json.map(
+                "name" to Json.str("Error"),
+                "message" to Json.str(message),
+                "code" to Json.str(fiberrcode(message)),
+            )
+        },
+    )
+}
+
 fun fibprovider(shift: Double): Provider =
     Provider(
         subject = { name ->
@@ -312,6 +344,7 @@ fun main(args: Array<String>) {
     }
 
     val R: RunPack = makeRunner(specfile("fib.json"), fibprovider(0.0)).runner("fib")
+    val RC: RunPack = makeRunner(specfile("fib.json"), fibcodedprovider()).runner("fib")
 
     testcase("basic") { R.runset(R.set("basic"), FIB) }
     testcase("seq") { R.runset(R.set("seq"), FIBSEQ) }
@@ -319,6 +352,7 @@ fun main(args: Array<String>) {
     testcase("info") { R.runset(R.set("info"), FIBINFO) }
     testcase("nulls") { R.runsetflags(R.set("nulls"), Flags.nonull(), FIBINFO) }
     testcase("error") { R.runset(R.set("error"), FIB) }
+    testcase("errcode") { RC.runset(RC.set("errcode"), FIB) }
     testcase("match") { R.runset(R.set("match"), FIB) }
     testcase("matchinfo") { R.runset(R.set("matchinfo"), FIBINFO) }
     testcase("client") { R.runset(R.set("client"), FIB) }

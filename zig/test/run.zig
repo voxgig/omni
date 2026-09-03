@@ -165,6 +165,43 @@ fn providerContextify(_: *const omni.Provider, val: Json) Json {
     return .{ .object = out };
 }
 
+/// Derive fib's error code from its message.
+fn fiberrcode(message: []const u8) []const u8 {
+    if (null != std.mem.indexOf(u8, message, "negative index")) return "fib_negative";
+    if (null != std.mem.indexOf(u8, message, "non-integer")) return "fib_noninteger";
+    if (null != std.mem.indexOf(u8, message, "not a number")) return "fib_notanumber";
+    return "fib_unknown";
+}
+
+fn providerErrify(
+    self: *const omni.Provider,
+    alloc: std.mem.Allocator,
+    message: []const u8,
+) anyerror!omni.Json {
+    _ = self;
+    return omni.jmap(alloc, &.{
+        .{ "name", omni.jstr("Error") },
+        .{ "message", omni.jstr(message) },
+        .{ "code", omni.jstr(fiberrcode(message)) },
+    });
+}
+
+/// The same provider, plus the errify hook: fib's errors gain a CODE.
+///
+/// A SECOND runner rather than a hook on `fibprovider`, so that the
+/// `error` group keeps exercising the DEFAULT errify.
+fn fibcodedprovider() *const omni.Provider {
+    const provider = ALLOC.create(omni.Provider) catch unreachable;
+    provider.* = .{
+        .subject = providerSubject,
+        .client = providerClient,
+        .contextify = providerContextify,
+        .errify = providerErrify,
+        .data = null,
+    };
+    return provider;
+}
+
 fn fibprovider(shift: f64) *const omni.Provider {
     const data = ALLOC.create(ShiftData) catch unreachable;
     data.* = .{ .shift = shift };
@@ -791,6 +828,12 @@ pub fn main(init: std.process.Init) !void {
     try rungroup(&pack, "info", &FIBINFO, .{});
     try rungroup(&pack, "nulls", &FIBINFO, omni.Flags.nonull());
     try rungroup(&pack, "error", &FIB, .{});
+
+    {
+        const codedrunner = try omni.makeRunner(ALLOC, init.io, path, fibcodedprovider());
+        const codedpack = try codedrunner.runner("fib", null);
+        try rungroup(&codedpack, "errcode", &FIB, .{});
+    }
     try rungroup(&pack, "match", &FIB, .{});
     try rungroup(&pack, "matchinfo", &FIBINFO, .{});
     try rungroup(&pack, "client", &FIB, .{});

@@ -418,6 +418,14 @@ pub const Provider = struct {
     subject: ?*const fn (self: *const Provider, name: []const u8) ?*const Subject = null,
     client: ?*const fn (self: *const Provider, options: Maybe) *const Provider = null,
     contextify: ?*const fn (self: *const Provider, val: Json) Json = null,
+    /// Build the `match.err` base from the failure, REPLACING `errify`.
+    ///
+    /// Zig reaches this point with a message and nothing else - an error
+    /// value carries no payload - so a library whose errors carry a code
+    /// has no other way to put one in the base. The hook receives that
+    /// message and returns the base, letting a spec assert
+    /// `match: {err: {code: "x"}}` instead of pattern-matching prose.
+    errify: ?*const fn (self: *const Provider, alloc: std.mem.Allocator, message: []const u8) anyerror!Json = null,
     data: ?*const anyopaque = null,
 };
 
@@ -952,6 +960,14 @@ pub const RunPack = struct {
         );
     }
 
+    /// The error base a `match.err` sees: the provider's own, when it has one.
+    fn errbase(self: *const RunPack, message: []const u8) !Json {
+        if (self.client.errify) |hook| {
+            return hook(self.client, self.alloc, message);
+        }
+        return errify(self.alloc, message);
+    }
+
     fn handleerror(
         self: *const RunPack,
         label: []const u8,
@@ -978,7 +994,7 @@ pub const RunPack = struct {
                     .{ "in", jget(entry, "in") orelse Json{ .null = {} } },
                     .{ "out", jget(entry, "res") orelse Json{ .null = {} } },
                     .{ "ctx", jget(entry, "ctx") orelse Json{ .null = {} } },
-                    .{ "err", try errify(alloc, message) },
+                    .{ "err", try self.errbase(message) },
                 });
                 return self.matchcheck(label, index, entry, check.?, base, &.{});
             }
