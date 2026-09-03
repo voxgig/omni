@@ -51,6 +51,10 @@ case class Provider(
     client: Option[Json => Provider] = None,
     contextify: Option[Json => Json] = None,
     inject: Option[(Json, Json) => Json] = None,
+    // Build the `match.err` base from the raised error, REPLACING `errify`.
+    // A library whose errors carry a code can then assert on it with
+    // `match: {err: {code: "x"}}` instead of pattern-matching prose.
+    errify: Option[Throwable => Json] = None,
 )
 
 // The newest spec format version this runner understands. A spec with no
@@ -407,6 +411,12 @@ class RunPack(
 
     throw fail(label, index, entry, "result mismatch", Some(stringify(out)), Some(stringify(res)))
 
+  /** The error base a `match.err` sees: the provider's own, when it has one. */
+  private def errbase(err: Throwable): Json =
+    client.errify match
+      case Some(hook) => hook(err)
+      case None       => Runner.errify(err)
+
   private def handleerror(label: String, index: Int, entry: Json, err: Throwable): Unit =
     val entryerr = entry.get("err")
 
@@ -422,7 +432,7 @@ class RunPack(
             "in" -> entry.get("in"),
             "out" -> entry.get("res"),
             "ctx" -> entry.get("ctx"),
-            "err" -> Runner.errify(err),
+            "err" -> errbase(err),
           )
           matchcheck(label, index, entry, check, base)
         return
