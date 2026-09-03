@@ -82,6 +82,14 @@ public final class Runner {
 
     /** Resolve references in client options against the store. */
     public BiFunction<Object, Object, Object> inject;
+
+    /**
+     * Build the {@code match.err} base from the raised error, REPLACING
+     * {@link Runner#errify}. A library whose errors carry a code can then
+     * assert on it with {@code match: {err: {code: "x"}}} instead of
+     * pattern-matching prose.
+     */
+    public Function<Object, Map<String, Object>> errify;
   }
 
   /** Run-time options for a set of test entries. */
@@ -196,7 +204,7 @@ public final class Runner {
         } catch (OmniError omnierr) {
           throw omnierr;
         } catch (Throwable err) {
-          handleerror(flags, index, entry, err);
+          handleerror(flags, index, entry, err, provider);
           continue;
         }
 
@@ -667,8 +675,19 @@ public final class Runner {
     throw fail(flags, index, entry, "result mismatch", Util.stringify(out), Util.stringify(res));
   }
 
+  /** The error base a {@code match.err} sees: the provider's own, when it has one. */
+  static Map<String, Object> errbase(Object err, Provider provider) {
+    return null != provider && null != provider.errify
+        ? provider.errify.apply(err)
+        : errify(err);
+  }
+
   static void handleerror(
-      Map<String, Object> flags, int index, Map<String, Object> entry, Throwable err) {
+      Map<String, Object> flags,
+      int index,
+      Map<String, Object> entry,
+      Throwable err,
+      Provider provider) {
 
     Object entryerr = entry.get("err");
 
@@ -682,7 +701,7 @@ public final class Runner {
           base.put("in", entry.get("in"));
           base.put("out", entry.get("res"));
           base.put("ctx", entry.get("ctx"));
-          base.put("err", errify(err));
+          base.put("err", errbase(err, provider));
           match(flags, index, entry, check, base);
         }
         return;

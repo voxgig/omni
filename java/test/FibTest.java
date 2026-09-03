@@ -71,6 +71,43 @@ public final class FibTest {
    * different. `contextify` marks the map, so the context group can prove
    * the hook ran.
    */
+  /** Derive fib's error code from its message. */
+  static String fiberrcode(String message) {
+    if (message.contains("negative index")) {
+      return "fib_negative";
+    }
+    if (message.contains("non-integer")) {
+      return "fib_noninteger";
+    }
+    if (message.contains("not a number")) {
+      return "fib_notanumber";
+    }
+    return "fib_unknown";
+  }
+
+  /**
+   * The same provider, plus the errify hook: fib's errors gain a CODE.
+   *
+   * <p>A SECOND runner rather than a hook on fibprovider, so that the
+   * {@code error} group keeps exercising the DEFAULT errify.
+   */
+  static Provider fibcodedprovider() {
+    Provider provider = fibprovider(0);
+    provider.errify =
+        err -> {
+          String message =
+              err instanceof Throwable
+                  ? String.valueOf(((Throwable) err).getMessage())
+                  : String.valueOf(err);
+          Map<String, Object> out = new LinkedHashMap<>();
+          out.put("name", "Error");
+          out.put("message", message);
+          out.put("code", fiberrcode(message));
+          return out;
+        };
+    return provider;
+  }
+
   static Provider fibprovider(final double shift) {
     Map<String, Subject> subjects = new LinkedHashMap<>();
     subjects.put(
@@ -139,6 +176,7 @@ public final class FibTest {
     }
 
     RunPack R = Runner.makeRunner(specfile("fib.json"), fibprovider(0)).runner("fib");
+    RunPack RC = Runner.makeRunner(specfile("fib.json"), fibcodedprovider()).runner("fib");
 
     testcase("basic", () -> R.runset(R.set("basic"), FIB));
     testcase("seq", () -> R.runset(R.set("seq"), FIBSEQ));
@@ -147,6 +185,7 @@ public final class FibTest {
     testcase(
         "nulls", () -> R.runsetflags(R.set("nulls"), Runner.flags("null", false), FIBINFO));
     testcase("error", () -> R.runset(R.set("error"), FIB));
+    testcase("errcode", () -> RC.runset(RC.set("errcode"), FIB));
     testcase("match", () -> R.runset(R.set("match"), FIB));
     testcase("matchinfo", () -> R.runset(R.set("matchinfo"), FIBINFO));
     testcase("client", () -> R.runset(R.set("client"), FIB));
