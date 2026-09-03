@@ -41,6 +41,11 @@ type Provider struct {
 	Contextify func(val any) any
 	// Inject resolves references in client options against the store.
 	Inject func(options any, store any) any
+	// Errify builds the `match.err` base from the raised error, REPLACING
+	// the default Errify. A library whose errors carry a code can then
+	// assert on it with `match: {err: {code: "x"}}` instead of
+	// pattern-matching prose.
+	Errify func(err any) map[string]any
 }
 
 // RunSet runs one set of test entries.
@@ -503,6 +508,15 @@ func Errify(err any) map[string]any {
 	return map[string]any{"name": "Error", "message": fmt.Sprintf("%v", err)}
 }
 
+// errbase is the error base a `match.err` sees: the provider's own, when
+// it has one.
+func errbase(err any, provider *Provider) map[string]any {
+	if nil != provider && nil != provider.Errify {
+		return provider.Errify(err)
+	}
+	return Errify(err)
+}
+
 func errmessage(err error) string {
 	if nil == err {
 		return ""
@@ -585,7 +599,7 @@ func checkresult(flags Flags, index int, entry map[string]any, args []any, res a
 	return fail(flags, index, entry, "result mismatch", strptr(Stringify(out)), strptr(Stringify(res)))
 }
 
-func handleerror(flags Flags, index int, entry map[string]any, err error) error {
+func handleerror(flags Flags, index int, entry map[string]any, err error, provider *Provider) error {
 	entryerr, has := entry["err"]
 
 	if has && nil != entryerr {
@@ -600,7 +614,7 @@ func handleerror(flags Flags, index int, entry map[string]any, err error) error 
 					"in":  entry["in"],
 					"out": entry["res"],
 					"ctx": entry["ctx"],
-					"err": Errify(err),
+					"err": errbase(err, provider),
 				}
 				return Match(flags, index, entry, check, base)
 			}
@@ -844,7 +858,7 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 				res, subjecterr := safecall(pack.subject, args)
 
 				if nil != subjecterr {
-					if err := handleerror(useflags, index, entry, subjecterr); nil != err {
+					if err := handleerror(useflags, index, entry, subjecterr, useprovider); nil != err {
 						return err
 					}
 					continue

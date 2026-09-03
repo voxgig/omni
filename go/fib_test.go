@@ -7,6 +7,7 @@
 package omni_test
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -117,6 +118,54 @@ func fibprovider(shift float64) *omni.Provider {
 			out["mark"] = "CTX"
 			return out
 		},
+	}
+}
+
+// fiberrcode derives fib's error code from its message.
+func fiberrcode(message string) string {
+	switch {
+	case strings.Contains(message, "negative index"):
+		return "fib_negative"
+	case strings.Contains(message, "non-integer"):
+		return "fib_noninteger"
+	case strings.Contains(message, "not a number"):
+		return "fib_notanumber"
+	}
+	return "fib_unknown"
+}
+
+// fibcodedprovider is the same provider, plus the Errify hook: fib's
+// errors gain a CODE.
+//
+// A SECOND runner rather than a hook on fibprovider, so that the `error`
+// group keeps exercising the DEFAULT Errify.
+func fibcodedprovider() *omni.Provider {
+	provider := fibprovider(0)
+	provider.Errify = func(err any) map[string]any {
+		message := fmt.Sprintf("%v", err)
+		if aserr, is := err.(error); is {
+			message = aserr.Error()
+		}
+		return map[string]any{
+			"name": "Error", "message": message, "code": fiberrcode(message),
+		}
+	}
+	return provider
+}
+
+func TestFibErrCode(t *testing.T) {
+	runner, err := omni.MakeRunner(specfile(t, "fib.json"), fibcodedprovider())
+	if nil != err {
+		t.Fatalf("omni: cannot make runner: %v", err)
+	}
+
+	R, err := runner("fib", nil)
+	if nil != err {
+		t.Fatalf("omni: cannot resolve spec: %v", err)
+	}
+
+	if err := R.RunSet(R.Set("errcode"), FIB); nil != err {
+		t.Fatal(err)
 	}
 }
 
