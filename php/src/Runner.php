@@ -328,6 +328,16 @@ final class Runner
         return ['name' => 'Error', 'message' => (string) $err];
     }
 
+    // The error base a `match.err` sees: the provider's own, when it has one.
+    // A library whose errors carry a `code` reaches
+    // `match: {err: {code}}` through `Provider.errify`, which replaces
+    // `errify` entirely rather than adding to it.
+    public static function errbase($err, ?array $provider): array
+    {
+        $hook = null === $provider ? null : ($provider['errify'] ?? null);
+        return null === $hook ? self::errify($err) : $hook($err);
+    }
+
     public static function errmessage($err): string
     {
         return $err instanceof \Throwable ? $err->getMessage() : (string) $err;
@@ -409,7 +419,7 @@ final class Runner
         throw self::fail($flags, $index, $entry, 'result mismatch', Util::stringify($out), Util::stringify($res));
     }
 
-    public static function handleerror(array $flags, int $index, array $entry, \Throwable $err): void
+    public static function handleerror(array $flags, int $index, array $entry, \Throwable $err, ?array $provider = null): void
     {
         $entryerr = $entry['err'] ?? null;
 
@@ -420,7 +430,7 @@ final class Runner
                         'in' => $entry['in'] ?? null,
                         'out' => $entry['res'] ?? null,
                         'ctx' => $entry['ctx'] ?? null,
-                        'err' => self::errify($err),
+                        'err' => self::errbase($err, $provider),
                     ]);
                 }
                 return;
@@ -610,7 +620,7 @@ final class Runner
                     } catch (OmniError $omnierr) {
                         throw $omnierr;
                     } catch (\Throwable $err) {
-                        self::handleerror($useflags, $index, $entry, $err);
+                        self::handleerror($useflags, $index, $entry, $err, $useprovider);
                     }
                 }
             };

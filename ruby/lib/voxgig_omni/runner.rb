@@ -229,10 +229,19 @@ module VoxgigOmni
     end
 
     # The JSON form of an error: always at least {name,message}.
+    # An exception collapses to {name, message} here. A library whose errors
+    # carry a `code` reaches `match: {err: {code}}` through
+    # `Provider.errify`, which replaces this entirely.
     def errify(err)
       return { 'name' => 'Error', 'message' => err.to_s } unless err.is_a?(Exception)
 
       { 'name' => err.class.name, 'message' => err.message }
+    end
+
+    # The error base a `match.err` sees: the provider's own, when it has one.
+    def errbase(err, provider)
+      hook = provider.is_a?(Hash) ? provider[:errify] : nil
+      hook.nil? ? errify(err) : hook.call(err)
     end
 
     def errmessage(err)
@@ -287,7 +296,7 @@ module VoxgigOmni
       raise fail(flags, index, entry, 'result mismatch', U.stringify(out), U.stringify(res))
     end
 
-    def handleerror(flags, index, entry, err)
+    def handleerror(flags, index, entry, err, provider = nil)
       entry['thrown'] = err
 
       entryerr = entry['err']
@@ -297,7 +306,7 @@ module VoxgigOmni
           unless entry['match'].nil?
             match(flags, index, entry, entry['match'],
                   { 'in' => entry['in'], 'out' => entry['res'], 'ctx' => entry['ctx'],
-                    'err' => errify(err) })
+                    'err' => errbase(err, provider) })
           end
           return
         end
@@ -461,7 +470,7 @@ module VoxgigOmni
             rescue OmniError
               raise
             rescue StandardError => e
-              handleerror(useflags, index, entry, e)
+              handleerror(useflags, index, entry, e, useprovider)
             end
           end
         end

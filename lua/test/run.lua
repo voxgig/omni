@@ -69,6 +69,33 @@ local function fibprovider(shift)
   }
 end
 
+-- Derive fib's error code from its message.
+local function fiberrcode(message)
+  if nil ~= string.find(message, 'negative index', 1, true) then
+    return 'fib_negative'
+  end
+  if nil ~= string.find(message, 'non-integer', 1, true) then
+    return 'fib_noninteger'
+  end
+  if nil ~= string.find(message, 'not a number', 1, true) then
+    return 'fib_notanumber'
+  end
+  return 'fib_unknown'
+end
+
+-- The same provider, plus the `errify` hook: fib's errors gain a CODE.
+--
+-- A SECOND runner rather than a hook on `fibprovider`, so that the `error`
+-- group keeps exercising the DEFAULT errify.
+local function fibcodedprovider()
+  local provider = fibprovider(0)
+  provider.errify = function(err)
+    local message = runner.errmessage(err)
+    return u.map({ name = 'Error', message = message, code = fiberrcode(message) })
+  end
+  return provider
+end
+
 -- The context-group subject: reports what the runner delivered - the
 -- contextify mark and the attached client - as plain data, so the spec can
 -- pin both with an ordinary `out` comparison in every port.
@@ -248,6 +275,7 @@ local function checknan()
 end
 
 local R = runner.makeRunner(specfile('fib.json'), fibprovider(0))('fib')
+local RC = runner.makeRunner(specfile('fib.json'), fibcodedprovider())('fib')
 
 testcase('basic', function() R.runset(R.set('basic'), FIB) end)
 testcase('seq', function() R.runset(R.set('seq'), FIBSEQ) end)
@@ -255,6 +283,7 @@ testcase('range', function() R.runset(R.set('range'), FIBRANGE) end)
 testcase('info', function() R.runset(R.set('info'), FIBINFO) end)
 testcase('nulls', function() R.runsetflags(R.set('nulls'), { null = false }, FIBINFO) end)
 testcase('error', function() R.runset(R.set('error'), FIB) end)
+testcase('errcode', function() RC.runset(RC.set('errcode'), FIB) end)
 testcase('match', function() R.runset(R.set('match'), FIB) end)
 testcase('matchinfo', function() R.runset(R.set('matchinfo'), FIBINFO) end)
 testcase('client', function() R.runset(R.set('client'), FIB) end)

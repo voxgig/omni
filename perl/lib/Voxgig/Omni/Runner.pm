@@ -321,6 +321,15 @@ sub errify {
     return { name => $name, message => errmessage($err) };
 }
 
+# The error base a `match.err` sees: the provider's own, when it has one.
+# A library whose errors carry a `code` reaches `match: {err: {code}}`
+# through `Provider.errify`, which REPLACES this rather than adding to it.
+sub errbase {
+    my ( $err, $provider ) = @_;
+    my $hook = ref($provider) eq 'HASH' ? $provider->{errify} : undef;
+    return defined $hook ? $hook->($err) : errify($err);
+}
+
 # Perl's `die` decorates the message: `die "msg"` becomes "msg at FILE line
 # N.\n", and `die "msg\n"` keeps the newline. Both are removed so that a
 # message reads the same here as in every other port.
@@ -410,7 +419,7 @@ sub checkresult {
 }
 
 sub handleerror {
-    my ( $flags, $index, $entry, $err ) = @_;
+    my ( $flags, $index, $entry, $err, $provider ) = @_;
 
     my $entryerr = $entry->{err};
 
@@ -425,7 +434,7 @@ sub handleerror {
                         'in' => $entry->{in},
                         out  => $entry->{res},
                         ctx  => $entry->{ctx},
-                        err  => errify($err),
+                        err  => errbase( $err, $provider ),
                     }
                 );
             }
@@ -612,7 +621,7 @@ sub makeRunner {
                 if ( !$ok ) {
                     my $err = $@;
                     die $err if is_omni_error($err);
-                    handleerror( $useflags, $index, $entry, $err );
+                    handleerror( $useflags, $index, $entry, $err, $useprovider );
                 }
             }
 
