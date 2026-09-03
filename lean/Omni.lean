@@ -581,21 +581,33 @@ inductive Provider : Type where
   | mk (subject : Option (String → Option Subject))
        (client : Option (Json → Provider))
        (contextify : Option (Json → Json))
+       -- Build the `match.err` base from the failure, REPLACING `errify`.
+       --
+       -- Lean reaches this point with a message and nothing else, so a
+       -- library whose errors carry a code has no other way to put one in
+       -- the base. The hook receives that message and returns the base,
+       -- letting a spec assert `match: {err: {code: "x"}}` instead of
+       -- pattern-matching prose.
+       (errify : Option (String → Json))
 
 def Provider.subject : Provider → Option (String → Option Subject)
-  | .mk found _ _ => found
+  | .mk found _ _ _ => found
 
 def Provider.client : Provider → Option (Json → Provider)
-  | .mk _ found _ => found
+  | .mk _ found _ _ => found
 
 def Provider.contextify : Provider → Option (Json → Json)
-  | .mk _ _ found => found
+  | .mk _ _ found _ => found
+
+def Provider.errify : Provider → Option (String → Json)
+  | .mk _ _ _ found => found
 
 /-- Build a provider from the hooks a host supplies. -/
 def provider (subject : Option (String → Option Subject) := none)
     (client : Option (Json → Provider) := none)
-    (contextify : Option (Json → Json) := none) : Provider :=
-  .mk subject client contextify
+    (contextify : Option (Json → Json) := none)
+    (errify : Option (String → Json) := none) : Provider :=
+  .mk subject client contextify errify
 
 /-- A provider with no hooks. -/
 def emptyProvider : Provider := provider
@@ -774,8 +786,14 @@ private def checkresult (label : String) (index : Nat) (entry : Json) (args : Li
     throw (failure label index entry "result mismatch"
       (some (stringify out)) (some (stringify res)))
 
+/-- The error base a `match.err` sees: the provider's own, when it has one. -/
+def errbase (message : String) (prov : Provider) : Json :=
+  match prov.errify with
+  | some hook => hook message
+  | none => errify message
+
 private def handleerror (label : String) (index : Nat) (entry : Json) (message : String)
-    : Except String Unit := do
+    (prov : Provider) : Except String Unit := do
   let entryerr := jget (some entry) "err"
 
   if isnone entryerr then
@@ -791,7 +809,7 @@ private def handleerror (label : String) (index : Nat) (entry : Json) (message :
         ("in", (jget (some entry) "in").getD Json.null),
         ("out", (jget (some entry) "res").getD Json.null),
         ("ctx", (jget (some entry) "ctx").getD Json.null),
-        ("err", errify message)]
+        ("err", errbase message prov)]
       matchcheck label index entry checkval base []
     pure ()
   else
@@ -910,7 +928,7 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
         | some value => jset entry "res" value
         | none => entry
       checkresult label index done callargs res
-    | .error message => handleerror label index entry message
+    | .error message => handleerror label index entry message pack.client
 
 /-- Run one set of test entries with flags. Returns the failure message. -/
 def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flags)

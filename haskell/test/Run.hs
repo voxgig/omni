@@ -91,6 +91,34 @@ fibprovider shift =
 
     client options = fibprovider (maybe 0 id (asnum (jget options "shift")))
 
+-- | Derive fib's error code from its message.
+fiberrcode :: String -> String
+fiberrcode message
+  | has "negative index" = "fib_negative"
+  | has "non-integer" = "fib_noninteger"
+  | has "not a number" = "fib_notanumber"
+  | otherwise = "fib_unknown"
+  where
+    has needle = needle `isInfixOf` message
+
+-- | The same provider, plus the errify hook: fib's errors gain a CODE.
+--
+-- A SECOND runner rather than a hook on 'fibprovider', so that the
+-- @error@ group keeps exercising the DEFAULT errify.
+fibcodedprovider :: Provider
+fibcodedprovider =
+  (fibprovider 0)
+    { providerErrify =
+        Just
+          ( \message ->
+              JMap
+                [ ("name", Str "Error"),
+                  ("message", Str message),
+                  ("code", Str (fiberrcode message))
+                ]
+          )
+    }
+
 testcase :: IORef Int -> IORef Int -> Maybe String -> String -> IO () -> IO ()
 testcase passcount failcount only name body =
   case only of
@@ -477,6 +505,7 @@ main = do
 
   path <- specfile "fib.json"
   pack <- makeRunner path (fibprovider 0) "fib"
+  codedpack <- makeRunner path fibcodedprovider "fib"
 
   run "basic" (runset pack (packSet pack "basic") (Just fibsub))
   run "seq" (runset pack (packSet pack "seq") (Just fibseqsub))
@@ -484,6 +513,7 @@ main = do
   run "info" (runset pack (packSet pack "info") (Just fibinfosub))
   run "nulls" (runsetFlags pack (packSet pack "nulls") nonullFlags (Just fibinfosub))
   run "error" (runset pack (packSet pack "error") (Just fibsub))
+  run "errcode" (runset codedpack (packSet codedpack "errcode") (Just fibsub))
   run "match" (runset pack (packSet pack "match") (Just fibsub))
   run "matchinfo" (runset pack (packSet pack "matchinfo") (Just fibinfosub))
   run "client" (runset pack (packSet pack "client") (Just fibsub))

@@ -75,17 +75,23 @@ public final class Provider {
   public var client: ((Json) -> Provider)?
   public var contextify: ((Json) -> Json)?
   public var inject: ((Json, Json) -> Json)?
+  /// Build the `match.err` base from the raised error, REPLACING `errify`.
+  /// A library whose errors carry a code can then assert on it with
+  /// `match: {err: {code: "x"}}` instead of pattern-matching prose.
+  public var errify: ((Error) -> Json)?
 
   public init(
     subject: ((String) -> Subject?)? = nil,
     client: ((Json) -> Provider)? = nil,
     contextify: ((Json) -> Json)? = nil,
-    inject: ((Json, Json) -> Json)? = nil
+    inject: ((Json, Json) -> Json)? = nil,
+    errify: ((Error) -> Json)? = nil
   ) {
     self.subject = subject
     self.client = client
     self.contextify = contextify
     self.inject = inject
+    self.errify = errify
   }
 }
 
@@ -507,6 +513,14 @@ public final class RunPack {
     throw fail(flags, index, entry, "result mismatch", stringify(out), stringify(res))
   }
 
+  /// The error base a `match.err` sees: the provider's own, when it has one.
+  private func errbase(_ err: Error) -> Json {
+    if let hook = provider.errify {
+      return hook(err)
+    }
+    return Omni.errify(err)
+  }
+
   private func handleerror(_ flags: Flags, _ index: Int, _ entry: Json, _ err: Error) throws {
     let message = errmessage(err)
     let entryerr = entry.get("err")
@@ -524,7 +538,7 @@ public final class RunPack {
             ("in", entry.get("in")),
             ("out", entry.get("res")),
             ("ctx", entry.get("ctx")),
-            ("err", errify(err)),
+            ("err", errbase(err)),
           ])
           try matchcheck(flags, index, entry, check, base)
         }

@@ -47,6 +47,31 @@ def fibprovider(shift):
     }
 
 
+def fiberrcode(message):
+    """Derive fib's error code from its message."""
+    if 'negative index' in message:
+        return 'fib_negative'
+    if 'non-integer' in message:
+        return 'fib_noninteger'
+    if 'not a number' in message:
+        return 'fib_notanumber'
+    return 'fib_unknown'
+
+
+def fibcodedprovider():
+    """The same provider, plus the `errify` hook: fib's errors gain a CODE.
+
+    A SECOND runner rather than a hook on `fibprovider`, so that the
+    `error` group keeps exercising the DEFAULT errify.
+    """
+    return {
+        **fibprovider(0),
+        'errify': lambda err: {
+            'name': 'Error', 'message': str(err), 'code': fiberrcode(str(err)),
+        },
+    }
+
+
 def fibctx(ctx):
     """The context-group subject: reports what the runner delivered - the
     contextify mark and the attached client - as plain data, so the spec
@@ -72,6 +97,9 @@ def fibundefliteral(_n):
 runner = makeRunner(specfile('fib.json'), fibprovider(0))
 R = runner('fib')
 
+codedrunner = makeRunner(specfile('fib.json'), fibcodedprovider())
+RC = codedrunner('fib')
+
 spec = R['spec']
 runset = R['runset']
 runsetflags = R['runsetflags']
@@ -96,6 +124,9 @@ class TestFib(unittest.TestCase):
 
     def test_error(self):
         runset(spec['error'], fib)
+
+    def test_errcode(self):
+        RC['runset'](RC['spec']['errcode'], fib)
 
     def test_match(self):
         runset(spec['match'], fib)

@@ -70,6 +70,27 @@ defmodule OmniTest do
     }
   end
 
+  # Derive fib's error code from its message.
+  def fiberrcode(message) do
+    cond do
+      String.contains?(message, "negative index") -> "fib_negative"
+      String.contains?(message, "non-integer") -> "fib_noninteger"
+      String.contains?(message, "not a number") -> "fib_notanumber"
+      true -> "fib_unknown"
+    end
+  end
+
+  # The same provider, plus the `errify` hook: fib's errors gain a CODE.
+  #
+  # A SECOND runner rather than a hook on `fibprovider`, so that the
+  # `error` group keeps exercising the DEFAULT errify.
+  def fibcodedprovider do
+    Map.put(fibprovider(0), :errify, fn err ->
+      message = Runner.errmessage(err)
+      %{"name" => "Error", "message" => message, "code" => fiberrcode(message)}
+    end)
+  end
+
   def testcase(name, body, state) do
     {only, pass, fail} = state
 
@@ -409,6 +430,9 @@ end
 
 pack = Runner.make_runner(OmniTest.specfile("fib.json"), OmniTest.fibprovider(0)).("fib", nil)
 
+codedpack =
+  Runner.make_runner(OmniTest.specfile("fib.json"), OmniTest.fibcodedprovider()).("fib", nil)
+
 state = {only, 0, 0}
 
 state = OmniTest.testcase("basic", fn -> pack.runset.(pack.set.("basic"), fib) end, state)
@@ -424,6 +448,13 @@ state =
   )
 
 state = OmniTest.testcase("error", fn -> pack.runset.(pack.set.("error"), fib) end, state)
+
+state =
+  OmniTest.testcase(
+    "errcode",
+    fn -> codedpack.runset.(codedpack.set.("errcode"), fib) end,
+    state
+  )
 state = OmniTest.testcase("match", fn -> pack.runset.(pack.set.("match"), fib) end, state)
 
 state =

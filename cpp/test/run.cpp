@@ -118,6 +118,36 @@ std::shared_ptr<omni::Provider> fibprovider(double shift) {
   return provider;
 }
 
+// Derive fib's error code from its message.
+std::string fiberrcode(const std::string& message) {
+  if (std::string::npos != message.find("negative index")) {
+    return "fib_negative";
+  }
+  if (std::string::npos != message.find("non-integer")) {
+    return "fib_noninteger";
+  }
+  if (std::string::npos != message.find("not a number")) {
+    return "fib_notanumber";
+  }
+  return "fib_unknown";
+}
+
+// The same provider, plus the errify hook: fib's errors gain a CODE.
+//
+// A SECOND runner rather than a hook on fibprovider, so that the `error`
+// group keeps exercising the DEFAULT errify.
+std::shared_ptr<omni::Provider> fibcodedprovider() {
+  auto provider = fibprovider(0);
+  provider->errify = [](const std::string& message) {
+    omni::Json out = omni::Json::map();
+    out.set("name", omni::Json::str("Error"));
+    out.set("message", omni::Json::str(message));
+    out.set("code", omni::Json::str(fiberrcode(message)));
+    return out;
+  };
+  return provider;
+}
+
 void testcase(const std::string& name, const std::function<void()>& body) {
   if (!ONLY.empty() && name != ONLY) {
     return;
@@ -472,6 +502,8 @@ int main(int argc, char** argv) {
   }
 
   omni::RunPack R = omni::makeRunner(specfile("fib.json"), fibprovider(0)).runner("fib");
+  omni::RunPack RC =
+      omni::makeRunner(specfile("fib.json"), fibcodedprovider()).runner("fib");
 
   testcase("basic", [&R] { R.runset(R.set("basic"), FIB); });
   testcase("seq", [&R] { R.runset(R.set("seq"), FIBSEQ); });
@@ -480,6 +512,7 @@ int main(int argc, char** argv) {
   testcase("nulls",
            [&R] { R.runsetflags(R.set("nulls"), omni::Flags::nonull(), FIBINFO); });
   testcase("error", [&R] { R.runset(R.set("error"), FIB); });
+  testcase("errcode", [&RC] { RC.runset(RC.set("errcode"), FIB); });
   testcase("match", [&R] { R.runset(R.set("match"), FIB); });
   testcase("matchinfo", [&R] { R.runset(R.set("matchinfo"), FIBINFO); });
   testcase("client", [&R] { R.runset(R.set("client"), FIB); });

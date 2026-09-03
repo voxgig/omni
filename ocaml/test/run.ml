@@ -64,6 +64,36 @@ let rec fibprovider shift =
     contextify = Some (fun ctxval -> jset ctxval "mark" (Str "CTX"));
   }
 
+(* Derive fib's error code from its message. *)
+let fiberrcode message =
+  let has needle =
+    let nlen = String.length needle and mlen = String.length message in
+    let rec scan at = at + nlen <= mlen && (String.sub message at nlen = needle || scan (at + 1)) in
+    scan 0
+  in
+  if has "negative index" then "fib_negative"
+  else if has "non-integer" then "fib_noninteger"
+  else if has "not a number" then "fib_notanumber"
+  else "fib_unknown"
+
+(* The same provider, plus the `errify` hook: fib's errors gain a CODE.
+
+   A SECOND runner rather than a hook on [fibprovider], so that the
+   `error` group keeps exercising the DEFAULT errify. *)
+let fibcodedprovider () =
+  {
+    (fibprovider 0.0) with
+    errify =
+      Some
+        (fun message ->
+          JMap
+            [
+              ("name", Str "Error");
+              ("message", Str message);
+              ("code", Str (fiberrcode message));
+            ]);
+  }
+
 let testcase name body =
   match !only with
   | Some wanted when wanted <> name -> ()
@@ -420,6 +450,7 @@ let () =
   if Array.length Sys.argv > 1 then only := Some Sys.argv.(1);
 
   let pack = (make_runner (specfile "fib.json") (fibprovider 0.0)) "fib" None in
+  let codedpack = (make_runner (specfile "fib.json") (fibcodedprovider ())) "fib" None in
 
   testcase "basic" (fun () -> pack.runset (pack.set "basic") (Some fibsub));
   testcase "seq" (fun () -> pack.runset (pack.set "seq") (Some fibseqsub));
@@ -427,6 +458,7 @@ let () =
   testcase "info" (fun () -> pack.runset (pack.set "info") (Some fibinfosub));
   testcase "nulls" (fun () -> pack.runsetflags (pack.set "nulls") nonull_flags (Some fibinfosub));
   testcase "error" (fun () -> pack.runset (pack.set "error") (Some fibsub));
+  testcase "errcode" (fun () -> codedpack.runset (codedpack.set "errcode") (Some fibsub));
   testcase "match" (fun () -> pack.runset (pack.set "match") (Some fibsub));
   testcase "matchinfo" (fun () -> pack.runset (pack.set "matchinfo") (Some fibinfosub));
   testcase "client" (fun () -> pack.runset (pack.set "client") (Some fibsub));

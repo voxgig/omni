@@ -252,13 +252,26 @@ def fixjsonval(val: Any, donull: bool) -> Any:
 
 
 def errify(err: Any) -> dict:
-    """The JSON form of an error: always at least {name,message}."""
+    """The JSON form of an error: always at least {name,message}.
+
+    An exception's own attributes survive into the base, so a library whose
+    errors carry a ``code`` can assert on it with ``match: {err: {code}}``
+    rather than pattern-matching prose. Ports whose subjects report failure
+    as a bare message string have nothing to carry; ``Provider.errify``
+    overrides this function entirely and is how they reach the same place.
+    """
     if isinstance(err, BaseException):
         out = {key: val for key, val in vars(err).items() if not key.startswith('_')}
         out['name'] = type(err).__name__
         out['message'] = str(err)
         return out
     return {'name': 'Error', 'message': str(err)}
+
+
+def errbase(err: Any, provider: Any) -> dict:
+    """The error base a ``match.err`` sees: the provider's own, when it has one."""
+    hook = provider.get('errify') if isinstance(provider, dict) else None
+    return hook(err) if hook is not None else errify(err)
 
 
 def errmessage(err: Any) -> str:
@@ -331,7 +344,9 @@ def checkresult(flags: dict, index: int, entry: dict, args: list, res: Any) -> N
     raise fail(flags, index, entry, 'result mismatch', stringify(out), stringify(res))
 
 
-def handleerror(flags: dict, index: int, entry: dict, err: BaseException) -> None:
+def handleerror(
+    flags: dict, index: int, entry: dict, err: BaseException, provider: Any = None
+) -> None:
     entry['thrown'] = err
 
     entryerr = entry.get('err')
@@ -348,7 +363,7 @@ def handleerror(flags: dict, index: int, entry: dict, err: BaseException) -> Non
                         'in': entry.get('in'),
                         'out': entry.get('res'),
                         'ctx': entry.get('ctx'),
-                        'err': errify(err),
+                        'err': errbase(err, provider),
                     },
                 )
             return
@@ -514,7 +529,7 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
                 except OmniError:
                     raise
                 except Exception as err:  # noqa: BLE001 - subject errors are data
-                    handleerror(useflags, index, entry, err)
+                    handleerror(useflags, index, entry, err, useprovider)
 
         def runset(testspec: Any, testsubject: Callable = None) -> None:
             return runsetflags(testspec, {}, testsubject)

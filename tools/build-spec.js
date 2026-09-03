@@ -20,8 +20,8 @@
 // aontu source, so a spec edit cannot be merged with a stale artifact.
 //
 // Each entry `<name>.aon` produces `<name>.json` beside it, via
-// @voxgig/model. A `.model-config/` directory must sit alongside the
-// sources; see ../spec/.model-config/model-config.aon.
+// @voxgig/model, run with `--no-config` so that it does NOT scaffold a
+// `<entry-dir>/.model-config/` directory. See buildOne.
 
 'use strict'
 
@@ -74,16 +74,25 @@ function findEntries(specDir) {
     .map((n) => Path.join(specDir, n))
 }
 
-// Run @voxgig/model over one entry file. voxgig-model resolves its config
-// from `<entry-dir>/.model-config/` and writes `<entry>.json` beside the
-// source, so it is run with cwd set to the spec directory.
+// Run @voxgig/model over one entry file. It writes `<entry>.json` beside
+// the source, so it is run with cwd set to the spec directory.
+//
+// `--no-config` IS LOAD-BEARING. Without it voxgig-model looks for a
+// `<entry-dir>/.model-config/` and SCAFFOLDS one from its own packaged
+// defaults when it is absent — two files whose entire content is an
+// import of those same defaults plus an empty `sys: model: action: {}`.
+// This spec needs no config of its own, so that directory was a generated
+// file sitting in the tree looking like a source: committed once, then
+// silently rewritten on every build, and rewritten again the moment it was
+// deleted. With the flag the output is byte-for-byte identical and nothing
+// is written but the JSON.
 function buildOne(entry) {
   const dir = Path.dirname(entry)
   const bin = Path.join(TOOLS, 'node_modules', '.bin', 'voxgig-model')
   if (!Fs.existsSync(bin)) {
     throw new Error('voxgig-model not found — run `npm install` in ' + TOOLS)
   }
-  execFileSync(bin, [Path.basename(entry)], { cwd: dir, stdio: 'inherit' })
+  execFileSync(bin, ['--no-config', Path.basename(entry)], { cwd: dir, stdio: 'inherit' })
   const json = entry.replace(/\.aon$/, '.json')
   if (!Fs.existsSync(json)) {
     throw new Error('build produced no JSON for ' + entry)

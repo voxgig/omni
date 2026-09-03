@@ -190,6 +190,18 @@ function M.errify(err)
   return u.map({ name = 'Error', message = M.errmessage(err) })
 end
 
+--- The error base a `match.err` sees: the provider's own, when it has one.
+-- A library whose errors carry a `code` reaches `match: {err: {code}}`
+-- through `Provider.errify`, which REPLACES `errify` rather than adding
+-- to it.
+function M.errbase(err, provider)
+  local hook = nil ~= provider and provider.errify or nil
+  if nil ~= hook then
+    return hook(err)
+  end
+  return M.errify(err)
+end
+
 --- Match one leaf: /regex/ or case-insensitive substring for strings.
 function M.matchval(check, base)
   if u.deepequal(check, base) then
@@ -444,7 +456,7 @@ local function checkresult(label, index, entry, args, res)
   error(fail(label, index, entry, 'result mismatch', u.stringify(out), u.stringify(res)))
 end
 
-local function handleerror(label, index, entry, err)
+local function handleerror(label, index, entry, err, provider)
   local entryerr = u.get(entry, 'err')
 
   if not u.isnone(entryerr) then
@@ -455,7 +467,7 @@ local function handleerror(label, index, entry, err)
           ['in'] = u.get(entry, 'in'),
           out = u.get(entry, 'res'),
           ctx = u.get(entry, 'ctx'),
-          err = M.errify(err),
+          err = M.errbase(err, provider),
         })
         matchcheck(label, index, entry, check, base)
       end
@@ -610,7 +622,7 @@ function M.makeRunner(specref, provider)
         elseif M.isomnierror(result) then
           error(result)
         else
-          handleerror(label, index, entry, result)
+          handleerror(label, index, entry, result, useprovider)
         end
       end
     end

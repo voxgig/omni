@@ -55,6 +55,7 @@ module Omni
     pathify,
     fixjson,
     errify,
+    providerErrify,
     errmessage,
     matchval,
     nullmodifier,
@@ -624,7 +625,15 @@ data Provider = Provider
   { providerSubject :: Maybe (String -> Maybe Subject),
     providerClient :: Maybe (Json -> Provider),
     providerContextify :: Maybe (Json -> Json),
-    providerInject :: Maybe (Json -> Json -> Json)
+    providerInject :: Maybe (Json -> Json -> Json),
+    -- | Build the @match.err@ base from the failure, REPLACING 'errify'.
+    --
+    -- Haskell reaches this point with a message and nothing else, so a
+    -- library whose errors carry a code has no other way to put one in
+    -- the base. The hook receives that message and returns the base,
+    -- letting a spec assert @match: {err: {code: "x"}}@ instead of
+    -- pattern-matching prose.
+    providerErrify :: Maybe (String -> Json)
   }
 
 emptyProvider :: Provider
@@ -633,7 +642,8 @@ emptyProvider =
     { providerSubject = Nothing,
       providerClient = Nothing,
       providerContextify = Nothing,
-      providerInject = Nothing
+      providerInject = Nothing,
+      providerErrify = Nothing
     }
 
 -- | What a runner returns for one named spec section.
@@ -951,8 +961,14 @@ checkresult label index entry args res = do
           throwIO
             (failure label index entry "result mismatch" (Just (stringify out)) (Just (stringify res)))
 
-handleerror :: String -> Int -> Json -> String -> IO ()
-handleerror label index entry message = do
+-- | The error base a @match.err@ sees: the provider's own, when it has one.
+errbase :: String -> Provider -> Json
+errbase message provider = case providerErrify provider of
+  Just hook -> hook message
+  Nothing -> errify message
+
+handleerror :: String -> Int -> Json -> String -> Provider -> IO ()
+handleerror label index entry message provider = do
   let entryerr = jget entry "err"
 
   if isnone entryerr
@@ -976,7 +992,7 @@ handleerror label index entry message = do
                     [ ("in", jget entry "in"),
                       ("out", jget entry "res"),
                       ("ctx", jget entry "ctx"),
-                      ("err", errify message)
+                      ("err", errbase message provider)
                     ]
                 )
                 []
@@ -1103,7 +1119,7 @@ makeRunnerSpec alltests provider name = do
             checkresult label index (jset entry "res" res) callargs res
           Left err -> case fromOmni err of
             Just omnierr -> throwIO omnierr
-            Nothing -> handleerror label index entry (errmessage err)
+            Nothing -> handleerror label index entry (errmessage err) provider
 
   pure
     RunPack

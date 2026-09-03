@@ -85,6 +85,32 @@ Provider fibprovider(num shift) {
   );
 }
 
+/// Derive fib's error code from its message.
+String fiberrcode(String message) {
+  if (message.contains('negative index')) return 'fib_negative';
+  if (message.contains('non-integer')) return 'fib_noninteger';
+  if (message.contains('not a number')) return 'fib_notanumber';
+  return 'fib_unknown';
+}
+
+/// The same provider, plus the `errify` hook: fib's errors gain a CODE.
+///
+/// A SECOND runner rather than a hook on `fibprovider`, so that the
+/// `error` group keeps exercising the DEFAULT errify.
+Provider fibcodedprovider() {
+  final base = fibprovider(0);
+  return Provider(
+    subject: base.subject,
+    client: base.client,
+    contextify: base.contextify,
+    inject: base.inject,
+    errify: (err) {
+      final message = errmessage(err);
+      return {'name': 'Error', 'message': message, 'code': fiberrcode(message)};
+    },
+  );
+}
+
 void testcase(String name, void Function() body) {
   if (null != ONLY && name != ONLY) {
     return;
@@ -451,6 +477,7 @@ void main(List<String> args) {
   }
 
   final R = makeRunner(specfile('fib.json'), fibprovider(0)).runner('fib');
+  final RC = makeRunner(specfile('fib.json'), fibcodedprovider()).runner('fib');
 
   testcase('basic', () => R.runset(R.set('basic'), FIB));
   testcase('seq', () => R.runset(R.set('seq'), FIBSEQ));
@@ -458,6 +485,7 @@ void main(List<String> args) {
   testcase('info', () => R.runset(R.set('info'), FIBINFO));
   testcase('nulls', () => R.runsetflags(R.set('nulls'), Flags.nonull, FIBINFO));
   testcase('error', () => R.runset(R.set('error'), FIB));
+  testcase('errcode', () => RC.runset(RC.set('errcode'), FIB));
   testcase('match', () => R.runset(R.set('match'), FIB));
   testcase('matchinfo', () => R.runset(R.set('matchinfo'), FIBINFO));
   testcase('client', () => R.runset(R.set('client'), FIB));

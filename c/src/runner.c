@@ -645,8 +645,17 @@ static int omni_checkresult(omni_pool *pool, omni_flags flags, size_t index, omn
   return 1;
 }
 
+/* The error base a `match.err` sees: the provider's own, when it has one. */
+static omni_json *omni_errbase(omni_pool *pool, const char *message,
+                               omni_provider *provider) {
+  if (NULL != provider && NULL != provider->errify) {
+    return provider->errify(provider, pool, message);
+  }
+  return omni_errify(pool, message);
+}
+
 static int omni_handleerror(omni_pool *pool, omni_flags flags, size_t index, omni_json *entry,
-                            const char *message, char **errout) {
+                            const char *message, omni_provider *provider, char **errout) {
   omni_json *entryerr = omni_map_get(entry, "err");
   omni_json *check;
 
@@ -661,7 +670,7 @@ static int omni_handleerror(omni_pool *pool, omni_flags flags, size_t index, omn
         omni_map_set(base, "in", omni_map_get(entry, "in"));
         omni_map_set(base, "out", omni_map_get(entry, "res"));
         omni_map_set(base, "ctx", omni_map_get(entry, "ctx"));
-        omni_map_set(base, "err", omni_errify(pool, message));
+        omni_map_set(base, "err", omni_errbase(pool, message, provider));
         return omni_match(pool, flags, index, entry, check, base, errout);
       }
       return 0;
@@ -908,7 +917,7 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
     result = entrysubject->call(entrysubject, args->list, args->listlen);
 
     if (NULL != result.err) {
-      if (0 != omni_handleerror(pool, flags, index, entry, result.err, errout)) {
+      if (0 != omni_handleerror(pool, flags, index, entry, result.err, pack->provider, errout)) {
         return 1;
       }
       continue;

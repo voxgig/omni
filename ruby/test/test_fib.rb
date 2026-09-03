@@ -39,7 +39,30 @@ def fibprovider(shift)
   }
 end
 
+# Derive fib's error code from its message.
+def fiberrcode(message)
+  return 'fib_negative' if message.include?('negative index')
+  return 'fib_noninteger' if message.include?('non-integer')
+  return 'fib_notanumber' if message.include?('not a number')
+
+  'fib_unknown'
+end
+
+# The same provider, plus the `errify` hook: fib's errors gain a CODE.
+#
+# A SECOND runner rather than a hook on `fibprovider`, so that the `error`
+# group keeps exercising the DEFAULT errify.
+def fibcodedprovider
+  fibprovider(0).merge(
+    errify: lambda { |err|
+      message = err.is_a?(Exception) ? err.message : err.to_s
+      { 'name' => 'Error', 'message' => message, 'code' => fiberrcode(message) }
+    }
+  )
+end
+
 R = VoxgigOmni.make_runner(specfile('fib.json'), fibprovider(0)).call('fib')
+RC = VoxgigOmni.make_runner(specfile('fib.json'), fibcodedprovider).call('fib')
 SPEC = R[:spec]
 RUNSET = R[:runset]
 RUNSETFLAGS = R[:runsetflags]
@@ -84,6 +107,10 @@ class TestFib < Minitest::Test
 
   def test_error
     RUNSET.call(SPEC['error'], FIB)
+  end
+
+  def test_errcode
+    RC[:runset].call(RC[:spec]['errcode'], FIB)
   end
 
   def test_match

@@ -74,6 +74,19 @@ pub struct Provider {
     pub contextify: Option<Rc<dyn Fn(Json) -> Json>>,
     /// Resolve references in client options against the store.
     pub inject: Option<Rc<dyn Fn(&Json, &Json) -> Json>>,
+    /// Build the `match.err` base from the failure, REPLACING `errify`.
+    ///
+    /// Rust reports a subject failure as its message and nothing else -
+    /// `Subject` is `Fn(&[Json]) -> Result<Json, String>` - so a library
+    /// whose errors carry a code has no other way to put it in the base.
+    /// The hook receives that message and returns the base, letting a
+    /// spec assert `match: {err: {code: "x"}}` instead of pattern-matching
+    /// prose.
+    ///
+    /// Adding a field to this struct is source-breaking only for a
+    /// consumer whose `Provider { .. }` literal is exhaustive; the
+    /// in-repo idiom, and the one to recommend, is `..Provider::default()`.
+    pub errify: Option<Rc<dyn Fn(&str) -> Json>>,
 }
 
 /// The newest spec format version this runner understands. A spec with no
@@ -423,7 +436,7 @@ impl RunPack {
 
             match called {
                 Err(message) => {
-                    handleerror(&useflags, index, &entry, &message)?;
+                    handleerror(&useflags, index, &entry, &message, &self.provider)?;
                 }
                 Ok(rawres) => {
                     let res = fixjson(&rawres, &useflags);
@@ -668,7 +681,21 @@ fn checkresult(
     ))
 }
 
-fn handleerror(flags: &Flags, index: usize, entry: &Json, message: &str) -> Result<(), OmniError> {
+/// The error base a `match.err` sees: the provider's own, when it has one.
+fn errbase(message: &str, provider: &Provider) -> Json {
+    match &provider.errify {
+        Some(hook) => hook(message),
+        None => errify(message),
+    }
+}
+
+fn handleerror(
+    flags: &Flags,
+    index: usize,
+    entry: &Json,
+    message: &str,
+    provider: &Provider,
+) -> Result<(), OmniError> {
     let entryerr = entry.get("err");
 
     if !entryerr.isnone() {
@@ -681,7 +708,7 @@ fn handleerror(flags: &Flags, index: usize, entry: &Json, message: &str) -> Resu
                     ("in", entry.get("in")),
                     ("out", entry.get("res")),
                     ("ctx", entry.get("ctx")),
-                    ("err", errify(message)),
+                    ("err", errbase(message, provider)),
                 ]);
                 matchcheck(flags, index, entry, &check, &base)?;
             }

@@ -127,6 +127,32 @@ primary: fib: {
   ]
 
 
+  # `Provider.errify` REPLACES the error base a `match.err` sees, so a
+  # library whose errors carry structure - a code, a status, a path - can
+  # assert on the structure instead of pattern-matching prose.
+  #
+  # Only JavaScript gets that for free, by spreading an Error's own
+  # properties. Five ports (rust, cpp, zig, ocaml, haskell) report a
+  # failure as a message string and have nothing to spread; the rest build
+  # {name, message} by hand and drop the fields even when they have them.
+  # The hook is how every port reaches the same place.
+  #
+  # `name` and `message` are asserted here too, because the hook replaces
+  # the base rather than adding to it: a port whose hook is consulted for
+  # `code` but not for the rest would pass on the code alone.
+  errcode: set: [
+    { id: 'fib/errcode#negative', doc: true
+      in: -1, err: true
+      match: { err: { code: 'fib_negative' } } }
+    { in: 2.5, err: true, match: { err: { code: 'fib_noninteger' } } }
+    { in: 'x', err: true, match: { err: { code: 'fib_notanumber' } } }
+    { in: -3, err: 'negative index'
+      match: { err: { code: 'fib_negative', name: '__EXISTS__'
+                      message: '/negative index: -3$/' } } }
+    { in: 9, out: 34 }
+  ]
+
+
   # Partial matching against the result instead of full equality.
   match: set: [
     { id: 'fib/match#out', doc: true, in: 10, match: { out: 55 } }

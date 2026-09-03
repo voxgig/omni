@@ -76,6 +76,30 @@ partial def fibprovider (shift : Float) : Provider :=
       fibprovider ((asnum (jget (some options) "shift")).getD 0.0)))
     (contextify := some (fun val => jset val "mark" (jstr "CTX")))
 
+/-- Derive fib's error code from its message. -/
+def fiberrcode (message : String) : String :=
+  if "negative index".isPrefixOf message || (message.splitOn "negative index").length > 1 then
+    "fib_negative"
+  else if (message.splitOn "non-integer").length > 1 then
+    "fib_noninteger"
+  else if (message.splitOn "not a number").length > 1 then
+    "fib_notanumber"
+  else
+    "fib_unknown"
+
+/-- The same provider, plus the `errify` hook: fib's errors gain a CODE.
+
+A SECOND runner rather than a hook on `fibprovider`, so that the `error`
+group keeps exercising the DEFAULT errify. -/
+def fibcodedprovider : Provider :=
+  Omni.provider
+    (subject := (fibprovider 0.0).subject)
+    (client := (fibprovider 0.0).client)
+    (contextify := (fibprovider 0.0).contextify)
+    (errify := some (fun message =>
+      jmap [("name", jstr "Error"), ("message", jstr message),
+            ("code", jstr (fiberrcode message))]))
+
 structure Counts where
   pass : Nat := 0
   fail : Nat := 0
@@ -332,6 +356,7 @@ def main (argv : List String) : IO UInt32 := do
 
   let path ← specfile "fib.json"
   let pack ← makeRunner path (fibprovider 0.0) "fib"
+  let codedpack ← makeRunner path fibcodedprovider "fib"
 
   run "basic" (pack.runset (pack.set "basic") (some FIB))
   run "seq" (pack.runset (pack.set "seq") (some FIBSEQ))
@@ -339,6 +364,7 @@ def main (argv : List String) : IO UInt32 := do
   run "info" (pack.runset (pack.set "info") (some FIBINFO))
   run "nulls" (pack.runsetflags (pack.set "nulls") Flags.nonull (some FIBINFO))
   run "error" (pack.runset (pack.set "error") (some FIB))
+  run "errcode" (codedpack.runset (codedpack.set "errcode") (some FIB))
   run "match" (pack.runset (pack.set "match") (some FIB))
   run "matchinfo" (pack.runset (pack.set "matchinfo") (some FIBINFO))
   run "client" (pack.runset (pack.set "client") (some FIB))

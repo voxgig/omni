@@ -103,6 +103,16 @@
 (defn errify [err]
   (array-map "name" (.getSimpleName (class err)) "message" (errmessage err)))
 
+;; The error base a `match.err` sees: the provider's own, when it has one.
+;;
+;; A library whose errors carry a code reaches `match: {err: {code}}`
+;; through the provider's `:errify`, which REPLACES `errify` rather than
+;; adding to it.
+(defn errbase [err provider]
+  (if-let [hook (and (map? provider) (:errify provider))]
+    (hook err)
+    (errify err)))
+
 ;; Match one leaf: /regex/ or case-insensitive substring for strings.
 (defn matchval [check base]
   (if (u/deepequal check base)
@@ -282,7 +292,7 @@
         :else (throw (fail label index entry "result mismatch"
                            (u/stringify out) (u/stringify res)))))))
 
-(defn- handleerror [label index entry err]
+(defn- handleerror [label index entry err provider]
   (let [entryerr (get entry "err")]
     (if (some? entryerr)
       (if (or (true? entryerr) (matchval entryerr (errmessage err)))
@@ -291,7 +301,7 @@
                  (array-map "in" (get entry "in")
                             "out" (get entry "res")
                             "ctx" (get entry "ctx")
-                            "err" (errify err))))
+                            "err" (errbase err provider))))
         (throw (fail label index entry "error mismatch"
                      (u/stringify entryerr) (errmessage err))))
       (throw (fail label index entry "unexpected error" nil (errmessage err))))))
@@ -376,7 +386,7 @@
             (catch Throwable err
               (if (omni-error? err)
                 (throw err)
-                (handleerror label index withctx err)))))))))
+                (handleerror label index withctx err provider)))))))))
 
 ;; What a runner returns for one named spec section.
 (defn- make-runpack [spec subject provider clients name specversion]

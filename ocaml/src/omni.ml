@@ -650,9 +650,18 @@ type provider = {
   client : (json -> provider) option;
   contextify : (json -> json) option;
   inject : (json -> json -> json) option;
+  (* Build the `match.err` base from the failure, REPLACING [errify].
+
+     OCaml reports a subject failure as its message and nothing else, so a
+     library whose errors carry a code has no other way to put one in the
+     base. The hook receives that message and returns the base, letting a
+     spec assert [match: {err: {code: "x"}}] instead of pattern-matching
+     prose. *)
+  errify : (string -> json) option;
 }
 
-let empty_provider = { subject = None; client = None; contextify = None; inject = None }
+let empty_provider =
+  { subject = None; client = None; contextify = None; inject = None; errify = None }
 
 (* The newest spec format version this runner understands. A spec with no
    OMNI block is version 0: the original, lenient format, frozen forever.
@@ -957,7 +966,11 @@ let checkresult label index entry args res =
   else if matched && (isnone out || asstr out = Some nullmark) then ()
   else raise (fail label index entry "result mismatch" (Some (stringify out)) (Some (stringify res)))
 
-let handleerror label index entry message =
+(* The error base a `match.err` sees: the provider's own, when it has one. *)
+let errbase message (provider : provider) =
+  match provider.errify with Some hook -> hook message | None -> errify message
+
+let handleerror label index entry message provider =
   let entryerr = jget entry "err" in
 
   if isnone entryerr then
@@ -973,7 +986,7 @@ let handleerror label index entry message =
               ("in", jget entry "in");
               ("out", jget entry "res");
               ("ctx", jget entry "ctx");
-              ("err", errify message);
+              ("err", errbase message provider);
             ]
         in
         matchcheck label index entry check base []
@@ -1118,7 +1131,7 @@ let make_runner_spec alltests (provider : provider) =
            let fixed = fixjson res flags.null in
            checkresult label index (jset entry "res" fixed) args fixed
          | exception Omni_error message -> raise (Omni_error message)
-         | exception err -> handleerror label index entry (errmessage err))
+         | exception err -> handleerror label index entry (errmessage err) provider)
        testset
    in
 

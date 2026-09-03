@@ -32,6 +32,10 @@ class Provider(
     val client: ((Json) -> Provider)? = null,
     val contextify: ((Json) -> Json)? = null,
     val inject: ((Json, Json) -> Json)? = null,
+    // Build the `match.err` base from the raised error, REPLACING `errify`.
+    // A library whose errors carry a code can then assert on it with
+    // `match: {err: {code: "x"}}` instead of pattern-matching prose.
+    val errify: ((Throwable) -> Json)? = null,
 )
 
 // The newest spec format version this runner understands. A spec with no
@@ -391,6 +395,12 @@ class RunPack(
         throw fail(label, index, entry, "result mismatch", stringify(out), stringify(res))
     }
 
+    /** The error base a `match.err` sees: the provider's own, when it has one. */
+    private fun errbase(err: Throwable): Json {
+        val hook = client.errify
+        return if (null != hook) hook(err) else errify(err)
+    }
+
     private fun handleerror(label: String, index: Int, entry: Json, err: Throwable) {
         val entryerr = entry.get("err")
 
@@ -404,7 +414,7 @@ class RunPack(
                         "in" to entry.get("in"),
                         "out" to entry.get("res"),
                         "ctx" to entry.get("ctx"),
-                        "err" to errify(err),
+                        "err" to errbase(err),
                     )
                     matchcheck(label, index, entry, check, base)
                 }

@@ -176,6 +176,20 @@ defmodule Voxgig.Omni.Runner do
     %{"name" => err.__struct__ |> Module.split() |> List.last(), "message" => errmessage(err)}
   end
 
+  @doc """
+  The error base a `match.err` sees: the provider's own, when it has one.
+
+  A library whose errors carry a code reaches `match: {err: {code}}`
+  through the provider's `:errify`, which REPLACES `errify/1` rather than
+  adding to it.
+  """
+  def errbase(err, provider) do
+    case is_map(provider) and Map.get(provider, :errify) do
+      hook when is_function(hook, 1) -> hook.(err)
+      _ -> errify(err)
+    end
+  end
+
   @doc "The message an `err` expectation matches."
   def errmessage(%{message: message}) when is_binary(message), do: message
   def errmessage(err) when is_exception(err), do: Exception.message(err)
@@ -372,7 +386,7 @@ defmodule Voxgig.Omni.Runner do
         checkresult(label, index, Map.put(entry, "res", res), callargs, res)
 
       {:error, err} ->
-        handleerror(label, index, entry, err)
+        handleerror(label, index, entry, err, runpack.provider)
     end
   end
 
@@ -474,7 +488,7 @@ defmodule Voxgig.Omni.Runner do
     end
   end
 
-  defp handleerror(label, index, entry, err) do
+  defp handleerror(label, index, entry, err, provider) do
     entryerr = U.get(entry, "err")
     message = errmessage(err)
 
@@ -490,7 +504,7 @@ defmodule Voxgig.Omni.Runner do
           "in" => U.get(entry, "in"),
           "out" => U.get(entry, "res"),
           "ctx" => U.get(entry, "ctx"),
-          "err" => errify(err)
+          "err" => errbase(err, provider)
         }
 
         match(label, index, entry, check, base)

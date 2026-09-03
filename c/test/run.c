@@ -158,7 +158,42 @@ static omni_provider *fibprovider(double shift) {
   provider->client = provider_client;
   provider->contextify = provider_contextify;
   provider->data = data;
+  provider->errify = NULL;
 
+  return provider;
+}
+
+/* Derive fib's error code from its message. */
+static const char *fiberrcode(const char *message) {
+  if (NULL != strstr(message, "negative index")) {
+    return "fib_negative";
+  }
+  if (NULL != strstr(message, "non-integer")) {
+    return "fib_noninteger";
+  }
+  if (NULL != strstr(message, "not a number")) {
+    return "fib_notanumber";
+  }
+  return "fib_unknown";
+}
+
+static omni_json *provider_errify(omni_provider *self, omni_pool *pool,
+                                  const char *message) {
+  omni_json *out = omni_map(pool);
+  (void)self;
+  omni_map_set(out, "name", omni_str(pool, "Error"));
+  omni_map_set(out, "message", omni_str(pool, message));
+  omni_map_set(out, "code", omni_str(pool, fiberrcode(message)));
+  return out;
+}
+
+/* The same provider, plus the errify hook: fib's errors gain a CODE.
+ *
+ * A SECOND runner rather than a hook on fibprovider, so that the `error`
+ * group keeps exercising the DEFAULT errify. */
+static omni_provider *fibcodedprovider(void) {
+  omni_provider *provider = fibprovider(0);
+  provider->errify = provider_errify;
   return provider;
 }
 
@@ -865,6 +900,21 @@ int main(int argc, char **argv) {
   rungroup(pack, "info", makesubject(subject_fibinfo, NULL), omni_flags_default());
   rungroup(pack, "nulls", makesubject(subject_fibinfo, NULL), omni_flags_nonull());
   rungroup(pack, "error", makesubject(subject_fib, NULL), omni_flags_default());
+
+  {
+    omni_runner *codedrunner =
+        omni_make_runner(POOL, path, NULL, fibcodedprovider(), &err);
+    omni_runpack *codedpack = NULL;
+    if (NULL != codedrunner) {
+      codedpack = omni_runner_run(codedrunner, "fib", NULL, &err);
+    }
+    if (NULL == codedpack) {
+      report("errcode", 1, err);
+    } else {
+      rungroup(codedpack, "errcode", makesubject(subject_fib, NULL),
+               omni_flags_default());
+    }
+  }
   rungroup(pack, "match", makesubject(subject_fib, NULL), omni_flags_default());
   rungroup(pack, "matchinfo", makesubject(subject_fibinfo, NULL), omni_flags_default());
   rungroup(pack, "client", makesubject(subject_fib, NULL), omni_flags_default());

@@ -182,7 +182,8 @@ The base is:
   "args": /* the argument list, after the call */,
   "out":  /* the result */,
   "ctx":  /* the context argument, after the call */,
-  "err":  /* {name, message}, when the subject failed */
+  "err":  /* {name, message}, when the subject failed - or whatever
+             `Provider.errify` returns, when the host supplies one */
 }
 ```
 
@@ -367,9 +368,37 @@ Every hook is optional.
 | `client` | `(options) => Provider` | Build a provider for a `DEF.client` entry. |
 | `contextify` | `(val) => val` | Wrap a map argument before it is passed as `ctx`/`args[0]`. |
 | `inject` | `(options, store) => void` | Resolve references in client options against the runner store, **mutating `options` in place** - the return value is ignored. |
+| `errify` | `(err) => Json` | Build the `match.err` base, **replacing** the runner's own `errify`. |
 
 The runner sets `client` on a contextified map argument, so a subject can
 reach the provider that owns it.
+
+**`errify` is how a library asserts on structured errors.** The default
+base is `{name, message}` and nothing more, so a spec can only reach an
+error's *prose*. A library whose errors carry a `code` (or a `status`, or
+a `path`) supplies this hook and asserts on the field instead:
+
+```json
+{ "in": -1, "err": true, "match": { "err": { "code": "fib_negative" } } }
+```
+
+It **replaces** the default rather than adding to it, so a hook must
+supply `name` and `message` too if the spec asserts on them.
+
+What the hook receives is the most the port has at that point, and the
+ports divide in two. TypeScript, JavaScript, Python, Ruby, PHP, Perl, Go,
+Java, C#, Kotlin, Scala, Clojure, Swift, Dart, Elixir and boru hand over
+the **raised error**. Rust, C, C++, Zig, OCaml, Haskell and Lean report a
+subject failure as a message string and have nothing else to hand over,
+so those receive the **message**. Lua sits with the first group. The
+distinction is a property of each language's failure channel, not a
+choice: widening it would change `Subject` in seven ports and break
+consumers outside this repository.
+
+Only JavaScript would otherwise get any of this for free, by spreading an
+`Error`'s own enumerable properties into the base - which is why
+`errify`'s spread is documented in the canonical as a contract rather
+than left as an accident.
 
 Providers are per-language values: a map of closures in the dynamic
 languages, a struct of function fields in Go, C, C++, Java and Rust.

@@ -52,6 +52,14 @@ namespace Voxgig.Omni
 
         /// <summary>Resolve references in client options against the store.</summary>
         public Func<object, object, object> Inject { get; set; }
+
+        /// <summary>
+        /// Build the <c>match.err</c> base from the raised error, REPLACING
+        /// <see cref="Runner.Errify"/>. A library whose errors carry a code
+        /// can then assert on it with <c>match: {err: {code: "x"}}</c>
+        /// instead of pattern-matching prose.
+        /// </summary>
+        public Func<object, object> Errify { get; set; }
     }
 
     /// <summary>What a runner returns for one named spec section.</summary>
@@ -163,7 +171,7 @@ namespace Voxgig.Omni
                 }
                 catch (Exception err)
                 {
-                    Runner.HandleError(useflags, index, entry, err);
+                    Runner.HandleError(useflags, index, entry, err, this.provider);
                     continue;
                 }
 
@@ -663,7 +671,13 @@ namespace Voxgig.Omni
             throw Fail(flags, index, entry, "result mismatch", Util.Stringify(outval), Util.Stringify(res));
         }
 
-        internal static void HandleError(Flags flags, int index, IDictionary<string, object> entry, Exception err)
+        /// <summary>The error base a <c>match.err</c> sees: the provider's own, when it has one.</summary>
+        internal static object ErrBase(object err, Provider provider)
+        {
+            return null != provider && null != provider.Errify ? provider.Errify(err) : Errify(err);
+        }
+
+        internal static void HandleError(Flags flags, int index, IDictionary<string, object> entry, Exception err, Provider provider = null)
         {
             object entryerr = entry.ContainsKey("err") ? entry["err"] : null;
 
@@ -680,7 +694,7 @@ namespace Voxgig.Omni
                             ["in"] = entry.ContainsKey("in") ? entry["in"] : null,
                             ["out"] = entry.ContainsKey("res") ? entry["res"] : null,
                             ["ctx"] = entry.ContainsKey("ctx") ? entry["ctx"] : null,
-                            ["err"] = Errify(err),
+                            ["err"] = ErrBase(err, provider),
                         };
                         Match(flags, index, entry, entry["match"], base_);
                     }

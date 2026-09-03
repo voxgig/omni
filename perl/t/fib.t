@@ -10,7 +10,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use Test::More tests => 30;
+use Test::More tests => 31;
 
 use Voxgig::Omni::Runner qw(makeRunner);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -69,7 +69,30 @@ my $FIBCTX = sub {
     };
 };
 
+# Derive fib's error code from its message.
+sub fiberrcode {
+    my ($message) = @_;
+    return 'fib_negative'   if index( $message, 'negative index' ) >= 0;
+    return 'fib_noninteger' if index( $message, 'non-integer' ) >= 0;
+    return 'fib_notanumber' if index( $message, 'not a number' ) >= 0;
+    return 'fib_unknown';
+}
+
+# The same provider, plus the `errify` hook: fib's errors gain a CODE.
+#
+# A SECOND runner rather than a hook on `fibprovider`, so that the `error`
+# group keeps exercising the DEFAULT errify.
+sub fibcodedprovider {
+    my $provider = fibprovider(0);
+    $provider->{errify} = sub {
+        my $message = Voxgig::Omni::Runner::errmessage( $_[0] );
+        return { name => 'Error', message => $message, code => fiberrcode($message) };
+    };
+    return $provider;
+}
+
 my $R = makeRunner( specfile('fib.json'), fibprovider(0) )->('fib');
+my $RC = makeRunner( specfile('fib.json'), fibcodedprovider() )->('fib');
 
 my $spec        = $R->{spec};
 my $runset      = $R->{runset};
@@ -94,6 +117,7 @@ group( 'range',     sub { $runset->( $spec->{range}, $FIBRANGE ) } );
 group( 'info',      sub { $runset->( $spec->{info},  $FIBINFO ) } );
 group( 'nulls',     sub { $runsetflags->( $spec->{nulls}, { null => 0 }, $FIBINFO ) } );
 group( 'error',     sub { $runset->( $spec->{error},     $FIB ) } );
+group( 'errcode',   sub { $RC->{runset}->( $RC->{spec}->{errcode}, $FIB ) } );
 group( 'match',     sub { $runset->( $spec->{match},     $FIB ) } );
 group( 'matchinfo', sub { $runset->( $spec->{matchinfo}, $FIBINFO ) } );
 group( 'client',    sub { $runset->( $spec->{client},    $FIB ) } );

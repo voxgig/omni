@@ -106,7 +106,33 @@ $fibctxsubject = fn($ctx) => fibctx($ctx);
 // is not satisfied by a subject that literally returns "__UNDEF__".
 $undefsubject = fn($n) => ['a' => '__UNDEF__'];
 
+/** Derive fib's error code from its message. */
+function fiberrcode(string $message): string
+{
+    if (str_contains($message, 'negative index')) { return 'fib_negative'; }
+    if (str_contains($message, 'non-integer')) { return 'fib_noninteger'; }
+    if (str_contains($message, 'not a number')) { return 'fib_notanumber'; }
+    return 'fib_unknown';
+}
+
+/**
+ * The same provider, plus the `errify` hook: fib's errors gain a CODE.
+ *
+ * A SECOND runner rather than a hook on `fibprovider`, so that the `error`
+ * group keeps exercising the DEFAULT errify.
+ */
+function fibcodedprovider(): array
+{
+    return array_merge(fibprovider(0), [
+        'errify' => function ($err): array {
+            $message = $err instanceof \Throwable ? $err->getMessage() : (string) $err;
+            return ['name' => 'Error', 'message' => $message, 'code' => fiberrcode($message)];
+        },
+    ]);
+}
+
 $R = (Runner::makeRunner(specfile('fib.json'), fibprovider(0)))('fib');
+$RC = (Runner::makeRunner(specfile('fib.json'), fibcodedprovider()))('fib');
 $spec = $R['spec'];
 $runset = $R['runset'];
 $runsetflags = $R['runsetflags'];
@@ -117,6 +143,7 @@ testcase('range', fn() => $runset($spec['range'], $fibrange));
 testcase('info', fn() => $runset($spec['info'], $fibinfo));
 testcase('nulls', fn() => $runsetflags($spec['nulls'], ['null' => false], $fibinfo));
 testcase('error', fn() => $runset($spec['error'], $fib));
+testcase('errcode', fn() => ($RC['runset'])($RC['spec']['errcode'], $fib));
 testcase('match', fn() => $runset($spec['match'], $fib));
 testcase('matchinfo', fn() => $runset($spec['matchinfo'], $fibinfo));
 testcase('client', fn() => $runset($spec['client'], $fib));

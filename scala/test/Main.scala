@@ -62,6 +62,28 @@ object Main:
     * different. `contextify` marks the map, so the context group can
     * prove the hook ran.
     */
+  /** Derive fib's error code from its message. */
+  def fiberrcode(message: String): String =
+    if message.contains("negative index") then "fib_negative"
+    else if message.contains("non-integer") then "fib_noninteger"
+    else if message.contains("not a number") then "fib_notanumber"
+    else "fib_unknown"
+
+  /** The same provider, plus the errify hook: fib's errors gain a CODE.
+    *
+    * A SECOND runner rather than a hook on `fibprovider`, so that the
+    * `error` group keeps exercising the DEFAULT errify.
+    */
+  def fibcodedprovider(): Provider =
+    fibprovider(0.0).copy(errify = Some { err =>
+      val message = Runner.errmessage(err)
+      Json.map(
+        "name" -> Json.str("Error"),
+        "message" -> Json.str(message),
+        "code" -> Json.str(fiberrcode(message)),
+      )
+    })
+
   def fibprovider(shift: Double): Provider =
     Provider(
       subject = Some {
@@ -267,6 +289,7 @@ object Main:
     if args.nonEmpty then only = Some(args(0))
 
     val R = Runner.makeRunner(specfile("fib.json"), fibprovider(0.0)).runner("fib")
+    val RC = Runner.makeRunner(specfile("fib.json"), fibcodedprovider()).runner("fib")
 
     testcase("basic") { R.runset(R.set("basic"), Some(FIB)) }
     testcase("seq") { R.runset(R.set("seq"), Some(FIBSEQ)) }
@@ -274,6 +297,7 @@ object Main:
     testcase("info") { R.runset(R.set("info"), Some(FIBINFO)) }
     testcase("nulls") { R.runsetflags(R.set("nulls"), Flags.nonull(), Some(FIBINFO)) }
     testcase("error") { R.runset(R.set("error"), Some(FIB)) }
+    testcase("errcode") { RC.runset(RC.set("errcode"), Some(FIB)) }
     testcase("match") { R.runset(R.set("match"), Some(FIB)) }
     testcase("matchinfo") { R.runset(R.set("matchinfo"), Some(FIBINFO)) }
     testcase("client") { R.runset(R.set("client"), Some(FIB)) }

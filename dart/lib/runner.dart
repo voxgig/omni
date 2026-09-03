@@ -42,7 +42,18 @@ class Provider {
   final dynamic Function(dynamic val)? contextify;
   final dynamic Function(dynamic options, dynamic store)? inject;
 
-  const Provider({this.subject, this.client, this.contextify, this.inject});
+  /// Build the `match.err` base from the raised error, REPLACING [errify].
+  /// A library whose errors carry a code can then assert on it with
+  /// `match: {err: {code: 'x'}}` instead of pattern-matching prose.
+  final dynamic Function(dynamic err)? errify;
+
+  const Provider({
+    this.subject,
+    this.client,
+    this.contextify,
+    this.inject,
+    this.errify,
+  });
 }
 
 /// The newest spec format version this runner understands. A spec with no
@@ -447,6 +458,12 @@ class RunPack {
     throw _fail(label, index, entry, 'result mismatch', stringify(out), stringify(res));
   }
 
+  /// The error base a `match.err` sees: the provider's own, when it has one.
+  dynamic _errbase(dynamic err) {
+    final hook = _provider.errify;
+    return null != hook ? hook(err) : errify(err);
+  }
+
   void _handleerror(String label, int index, Map entry, dynamic err) {
     final entryerr = entry['err'];
 
@@ -459,7 +476,7 @@ class RunPack {
             'in': entry['in'],
             'out': entry['res'],
             'ctx': entry['ctx'],
-            'err': errify(err),
+            'err': _errbase(err),
           });
         }
         return;
