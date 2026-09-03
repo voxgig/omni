@@ -72,6 +72,14 @@ struct Provider {
   std::function<Json(const Json&)> contextify;
   // Resolve references in client options against the store.
   std::function<Json(const Json&, const Json&)> inject;
+  // Build the `match.err` base from the failure, REPLACING `errify`.
+  //
+  // C++ reports a subject failure as its message and nothing else, so a
+  // library whose errors carry a code has no other way to put one in the
+  // base. The hook receives that message and returns the base, letting a
+  // spec assert `match: {err: {code: "x"}}` instead of pattern-matching
+  // prose. Empty for the default.
+  std::function<Json(const std::string&)> errify;
 };
 
 // The newest spec format version this runner understands. A spec with no
@@ -596,6 +604,14 @@ class RunPack {
     throw fail(flags, index, entry, "result mismatch", &expected, &actual);
   }
 
+  // The error base a `match.err` sees: the provider's own, when it has one.
+  Json errbase(const std::string& message) const {
+    if (provider_ && provider_->errify) {
+      return provider_->errify(message);
+    }
+    return errify(message);
+  }
+
   void handleerror(const Flags& flags, size_t index, const Json& entry,
                    const std::string& message) const {
     Json entryerr = entry.get("err");
@@ -610,7 +626,7 @@ class RunPack {
           base.set("in", entry.get("in"));
           base.set("out", entry.get("res"));
           base.set("ctx", entry.get("ctx"));
-          base.set("err", errify(message));
+          base.set("err", errbase(message));
           matchcheck(flags, index, entry, check, base);
         }
         return;
