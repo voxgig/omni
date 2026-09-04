@@ -133,9 +133,10 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 **`make test` skips any port listed in `HOLD` in the root `Makefile`** —
 `boru` today, because its engine has no release channel and a mismatched
 build fails as a bare `undefined word`. The sweep names what it skipped and
-counts what it ran, so a held port cannot pass for a full run; `make
-test-boru` still exercises it, and CI still gates it against a pinned
-engine.
+counts what it ran, so a held port cannot pass for a full run, and `make
+test-boru` still exercises it. **CI is held too**, since 2026-09-04: the
+`boru` job in `.github/workflows/ci.yml` carries `if: false`, so nothing
+gates the port against a pinned engine while the hold stands.
 
 **The packages ship source.** omni is open source, and `files` carries
 `src/` and `compat/` alongside the compiled `dist/`. A consumer who wants

@@ -34,8 +34,14 @@ ALL_LANGS = typescript javascript python ruby php perl lua go rust java csharp k
 #         corpus entry at a time, with no JIT. Held until boru-lang/boru
 #         ships a release.
 #
-#         CI IS NOT HELD. .github/workflows/ci.yml still runs the port
-#         against a pinned engine, so it cannot rot while it waits.
+#         CI IS HELD TOO, since 2026-09-04: the `boru` job in
+#         .github/workflows/ci.yml carries `if: false`. That reverses a
+#         deliberate choice rather than fixing an oversight -- the job ran
+#         precisely so the port could not rot while it waited, and while it
+#         is skipped nothing exercises boru against a moving engine.
+#         Accepted for the moment. Emptying this list and deleting that
+#         `if: false` are the two halves of restoring the port.
+#         voxgig/struct holds the same port the same way.
 HOLD = boru
 
 LANGS = $(filter-out $(HOLD),$(ALL_LANGS))

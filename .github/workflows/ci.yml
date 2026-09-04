@@ -309,7 +309,15 @@ jobs:
       # see this: they run against the working tree.
       - run: make pack-check
 
+  # HELD INACTIVE 2026-09-04, alongside the root Makefile's HOLD. The body
+  # below is intact and unchanged: delete the `if: false` to bring it back.
+  # What the hold costs is worth stating plainly -- this job was what kept
+  # the port from rotting against a moving engine, and nothing replaces it
+  # while it is skipped. Accepted for the moment: boru is inactive
+  # everywhere until boru-lang/boru ships a release. voxgig/struct holds
+  # its own `test-boru` job the same way.
   boru:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
