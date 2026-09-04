@@ -16,8 +16,29 @@
 # Every port directory. Target names are the directory names, used verbatim
 # as `make -C <dir>`. Each port ships at least `test`; `build`, `inspect`
 # and `clean` are invoked tolerantly.
-LANGS = typescript javascript python ruby php perl lua go rust java csharp kotlin \
+ALL_LANGS = typescript javascript python ruby php perl lua go rust java csharp kotlin \
         scala clojure c cpp zig swift dart elixir ocaml haskell lean boru
+
+# PORTS ON HOLD. Dropped from the aggregate targets that run a toolchain --
+# test, build, inspect -- and from nothing else. `make test-boru`, `make -C
+# boru test`, `clean` and tools/check_parity.py all still reach a held port.
+# Emptying this list restores it. voxgig/struct holds the same port for the
+# same reason; the two lists are meant to agree.
+#
+#   boru  The engine has no release channel of ANY kind -- no tags, no
+#         published binaries, and `go install` refuses it outright -- so the
+#         only reproducible version is a commit built from source, and a
+#         binary that does not match fails as a bare `undefined word` that
+#         reads as broken source rather than a stale toolchain. The port is
+#         also the slowest here by a wide margin: it is interpreted, one
+#         corpus entry at a time, with no JIT. Held until boru-lang/boru
+#         ships a release.
+#
+#         CI IS NOT HELD. .github/workflows/ci.yml still runs the port
+#         against a pinned engine, so it cannot rot while it waits.
+HOLD = boru
+
+LANGS = $(filter-out $(HOLD),$(ALL_LANGS))
 
 .PHONY: all test build inspect clean parity struct-compat pack-check pack-diff check spec spec-check
 
@@ -59,7 +80,7 @@ inspect:
 	@for lang in $(LANGS); do $(MAKE) -s inspect-$$lang; done
 
 clean:
-	@for lang in $(LANGS); do $(MAKE) -s clean-$$lang; done
+	@for lang in $(ALL_LANGS); do $(MAKE) -s clean-$$lang; done
 
 parity:
 	@python3 tools/check_parity.py
