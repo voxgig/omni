@@ -35,7 +35,9 @@ ALL_LANGS = typescript javascript python ruby php perl lua go rust java csharp k
 #         ships a release.
 #
 #         CI IS HELD TOO, since 2026-09-04: the `boru` job in
-#         .github/workflows/ci.yml carries `if: false`. That reverses a
+#         .github/workflows/ci.yml now runs only on a manual dispatch,
+#         never on a push or a pull request -- the same shape as this
+#         list, held from the sweep but still reachable on purpose. That reverses a
 #         deliberate choice rather than fixing an oversight -- the job ran
 #         precisely so the port could not rot while it waited, and while it
 #         is skipped nothing exercises boru against a moving engine.

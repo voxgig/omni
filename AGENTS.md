@@ -135,8 +135,9 @@ Repository-wide: `make test`, `make parity`, `make struct-compat`,
 build fails as a bare `undefined word`. The sweep names what it skipped and
 counts what it ran, so a held port cannot pass for a full run, and `make
 test-boru` still exercises it. **CI is held too**, since 2026-09-04: the
-`boru` job in `.github/workflows/ci.yml` carries `if: false`, so nothing
-gates the port against a pinned engine while the hold stands.
+`boru` job in `.github/workflows/ci.yml` runs only on a manual dispatch, so
+nothing gates the port against a pinned engine on a push or a pull request.
+Dispatching the workflow by hand still runs it.
 
 **The packages ship source.** omni is open source, and `files` carries
 `src/` and `compat/` alongside the compiled `dist/`. A consumer who wants
