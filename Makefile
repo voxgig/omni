@@ -1,7 +1,7 @@
 # Top-level Makefile for all omni language ports.
 #
 # Usage:
-#   make test          - run tests for every port
+#   make test          - run tests for every port EXCEPT any listed in HOLD
 #   make test-go       - run tests for one port
 #   make build         - build every port
 #   make inspect       - show toolchain versions
@@ -63,6 +63,10 @@ clean-%:
 
 # ---- aggregate targets ----
 
+# A HELD PORT IS NAMED IN THE VERDICT, NOT SILENTLY DROPPED. "all ports
+# passed" after a sweep that skipped one is how a partial local run gets
+# read as full conformance. With HOLD empty this prints exactly what it
+# always did.
 test:
 	@fail=""; \
 	for lang in $(LANGS); do \
@@ -70,8 +74,15 @@ test:
 	  if $(MAKE) -s -C $$lang test; then :; else fail="$$fail $$lang"; fi; \
 	  echo ""; \
 	done; \
+	if [ -n "$(HOLD)" ]; then \
+	  echo "HELD, NOT RUN: $(HOLD)   (see HOLD in the Makefile)"; \
+	fi; \
 	if [ -n "$$fail" ]; then echo "FAILED:$$fail"; exit 1; fi; \
-	echo "all ports passed"
+	if [ -n "$(HOLD)" ]; then \
+	  echo "$(words $(LANGS)) of $(words $(ALL_LANGS)) ports passed"; \
+	else \
+	  echo "all ports passed"; \
+	fi
 
 build:
 	@for lang in $(LANGS); do $(MAKE) -s build-$$lang; done
