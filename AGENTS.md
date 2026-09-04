@@ -130,6 +130,13 @@ directory and use its `Makefile`.
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
 `make pack-check`, `make pack-diff`, `make inspect`, `make clean`.
 
+**`make test` skips any port listed in `HOLD` in the root `Makefile`** —
+`boru` today, because its engine has no release channel and a mismatched
+build fails as a bare `undefined word`. The sweep names what it skipped and
+counts what it ran, so a held port cannot pass for a full run; `make
+test-boru` still exercises it, and CI still gates it against a pinned
+engine.
+
 **The packages ship source.** omni is open source, and `files` carries
 `src/` and `compat/` alongside the compiled `dist/`. A consumer who wants
 to read the runner, or a porter translating it into a fourteenth
