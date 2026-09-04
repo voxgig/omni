@@ -309,7 +309,25 @@ jobs:
       # see this: they run against the working tree.
       - run: make pack-check
 
+  # HELD INACTIVE 2026-09-04, alongside the root Makefile's HOLD. The
+  # condition drops this job from every automatic run -- push and
+  # pull_request -- leaving it reachable only by the workflow_dispatch this
+  # file already declares. That is deliberately the same shape the Makefile
+  # already has: held from the sweep, still reachable on purpose, exactly as
+  # `make test-boru` reaches a held port. Delete the `if:` line to bring it
+  # back.
+  #
+  # `if: false` was the obvious spelling and actionlint rejects it outright
+  # -- "constant expression in condition. remove the if: section". This repo
+  # does not run actionlint, but voxgig/struct does and flagged the twin, so
+  # the two files stay on the spelling that passes.
+  #
+  # What the hold costs is worth stating plainly: this job was what kept the
+  # port from rotting against a moving engine, and nothing replaces it on
+  # the automatic runs. Accepted for the moment: boru is inactive everywhere
+  # until boru-lang/boru ships a release.
   boru:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
