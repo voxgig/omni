@@ -171,8 +171,15 @@ def _quote(val: str) -> str:
     return ''.join(out)
 
 
-def jsonstr(val: Any) -> str:
-    """Compact JSON text with map keys sorted, identical in every port."""
+def jsonstr(val: Any, seen: set | None = None) -> str:
+    """Compact JSON text with map keys sorted, identical in every port.
+
+    GUARDED against cycles: this renders FAILURE MESSAGES, and an entry
+    carrying a live cyclic value recursed until the stack gave out. A
+    cycle renders as "[Circular]". ``seen`` tracks the ANCESTORS of the
+    current value, removed again on the way out, so a DAG still renders
+    in full.
+    """
     if val is ABSENT:
         return 'undefined'
 
@@ -188,15 +195,23 @@ def jsonstr(val: Any) -> str:
     if isnum(val):
         return numstr(val)
 
-    if islist(val):
-        return '[' + ','.join(jsonstr(entry) for entry in val) + ']'
-
-    if ismap(val):
-        return (
-            '{'
-            + ','.join(_quote(str(key)) + ':' + jsonstr(val[key]) for key in sorted(val.keys()))
-            + '}'
-        )
+    if islist(val) or ismap(val):
+        seen = seen if seen is not None else set()
+        if id(val) in seen:
+            return '"[Circular]"'
+        seen.add(id(val))
+        if islist(val):
+            out = '[' + ','.join(jsonstr(entry, seen) for entry in val) + ']'
+        else:
+            out = (
+                '{'
+                + ','.join(
+                    _quote(str(key)) + ':' + jsonstr(val[key], seen)
+                    for key in sorted(val.keys()))
+                + '}'
+            )
+        seen.discard(id(val))
+        return out
 
     if callable(val):
         return '[Function ' + getattr(val, '__name__', '') + ']'
