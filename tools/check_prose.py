@@ -14,6 +14,8 @@ pages are which, where a tutorial ends, and where a paragraph ends.
     internal-documents      documentation never cites a working document
     relative-links-resolve  a link's target exists, inside the repository
     page-set-is-complete    the required pages are all present
+    vale-sections-spare-the-pages
+                            no blanked .vale.ini section covers a page
 
 Run it directly, or `make scan-prose`. `--files` prints the page set both
 gates read, so the Vale invocation and this one cannot drift apart.
@@ -539,6 +541,83 @@ def check_links(paths: list[Path]) -> list[str]:
     return hits
 
 
+# ---------------------------------------------------------------------
+# Vale sections must not cover a page.
+#
+# `.vale.ini` blanks the styles for the directories that hold working
+# documents and source, so a bare `vale .` stays quiet about them. Vale
+# matches those section globs against EVERY file it is given, named on
+# the command line or not -- so a blanked section over a directory that
+# also holds a reader-facing page switches every rule off for that page
+# and reports nothing. That is the silent hole the explicit file list was
+# meant to rule out, and voxgig/model's first draft had it: `[go/**]`
+# blanked go/README.md, and Vale passed the page without reading it.
+#
+# Only sections with an EMPTY BasedOnStyles are checked; a section that
+# narrows the styles is a choice, not a hole. Vale's globs let `*` and
+# `**` cross directory separators, so both become `.*` here.
+# ---------------------------------------------------------------------
+
+VALE_INI = ROOT / ".vale.ini"
+
+SECTION_HEAD_INI = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+BASED_ON = re.compile(r"^\s*BasedOnStyles\s*=\s*(.*?)\s*$")
+
+
+def blanked_sections() -> list[str]:
+    """The globs of every section whose BasedOnStyles is empty."""
+    if not VALE_INI.is_file():
+        return []
+    out: list[str] = []
+    current = None
+    for line in VALE_INI.read_text(encoding="utf-8").split("\n"):
+        head = SECTION_HEAD_INI.match(line)
+        if head:
+            current = head.group(1)
+            continue
+        based = BASED_ON.match(line)
+        if based and current is not None and based.group(1) == "":
+            out.append(current)
+    return out
+
+
+def vale_glob(pattern: str) -> re.Pattern:
+    out = ""
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "*":
+            out += ".*"
+            while i + 1 < len(pattern) and pattern[i + 1] == "*":
+                i += 1
+        elif c == "?":
+            out += "."
+        elif c == "{":
+            j = pattern.find("}", i)
+            if j < 0:
+                out += re.escape(c)
+            else:
+                alts = pattern[i + 1:j].split(",")
+                out += "(?:%s)" % "|".join(re.escape(a) for a in alts)
+                i = j
+        else:
+            out += re.escape(c)
+        i += 1
+    return re.compile(r"\A%s\Z" % out)
+
+
+def check_vale_sections(paths: list[Path]) -> list[str]:
+    hits = []
+    for section in blanked_sections():
+        matcher = vale_glob(section)
+        for path in paths:
+            rel = label(path)
+            if matcher.match(rel) or matcher.match("/" + rel):
+                hits.append(f".vale.ini  [{section}] blanks every style for "
+                            f"{rel}, a page Vale would then pass unread")
+    return hits
+
+
 def check_guide_names_this_gate() -> list[str]:
     """The guide and this gate must agree; the guide names this file, so a
     reader of either finds the other."""
@@ -574,7 +653,8 @@ def main(argv: list[str]) -> int:
 
     hits = check(paths) + check_links(paths)
     if not named:
-        hits += check_page_set() + check_guide_names_this_gate()
+        hits += (check_page_set() + check_vale_sections(paths)
+                 + check_guide_names_this_gate())
 
     print(f"prose gate: {len(paths)} pages")
     if hits:
