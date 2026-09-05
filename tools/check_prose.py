@@ -101,6 +101,38 @@ WORKING_DOCS = (
     (r"\bBUILD_LOG\.md\b", "BUILD_LOG.md"),
 )
 
+# The pages the repository is known to carry, beyond the root pages: a
+# manifest, so that deleting one fails the gate instead of silently
+# shrinking the set the globs find. Pages the globs discover that are
+# not listed here are still read; add them when this block is next
+# edited. Multi-port layouts list the ports the same way.
+REQUIRED_PAGES = ()
+REQUIRED_PORTS = (
+    "boru",
+    "c",
+    "clojure",
+    "cpp",
+    "csharp",
+    "dart",
+    "elixir",
+    "go",
+    "haskell",
+    "java",
+    "javascript",
+    "kotlin",
+    "lean",
+    "lua",
+    "ocaml",
+    "perl",
+    "php",
+    "python",
+    "ruby",
+    "rust",
+    "scala",
+    "swift",
+    "typescript",
+    "zig",
+)
 
 REJECT_FILE = (ROOT / ".vale" / "styles" / "config" / "vocabularies"
                / VOCAB / "reject.txt")
@@ -116,10 +148,19 @@ REJECT_FILE = (ROOT / ".vale" / "styles" / "config" / "vocabularies"
 # and STYLE-GUIDE.md is exempt for the reason upstream gives: it quotes
 # the banned phrases in order to ban them, and names the working
 # documents in order to ban citations of them.
+#
+# Paths are compared in POSIX form throughout. `Path.relative_to` renders
+# with the platform separator, so on Windows a `docs/design/` exclusion
+# would never match `docs\\design\\x.md` and the working documents would
+# be read as pages.
 # ---------------------------------------------------------------------
 
-def _excluded(rel: str) -> bool:
-    return any(rel == p or rel.startswith(p.rstrip("/") + "/")
+def rel(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+def _excluded(relpath: str) -> bool:
+    return any(relpath == p or relpath.startswith(p.rstrip("/") + "/")
                for p in NOT_DOCS)
 
 
@@ -142,8 +183,7 @@ def pages() -> list[Path]:
     found = [ROOT / name for name in ROOT_PAGES]
     for pattern in DOC_GLOBS:
         for path in sorted(ROOT.glob(pattern)):
-            rel = str(path.relative_to(ROOT))
-            if path.is_file() and not _excluded(rel):
+            if path.is_file() and not _excluded(rel(path)):
                 found.append(path)
     for child in port_dirs():
         found += [child / name for name in PORT_PAGES]
@@ -161,19 +201,28 @@ def check_page_set() -> list[str]:
     """EXISTENCE IS NOT MEMBERSHIP. `pages()` can only return files that
     are there, so deleting one would shrink the set silently -- both
     gates would report on one page fewer and pass, and nothing would say
-    the missing one had stopped being read. The required pages are asked
-    for by name and a gap fails, rather than being absorbed."""
+    the missing one had stopped being read. The pages the repository is
+    known to carry are therefore also LISTED, in REQUIRED_PAGES (and the
+    ports in REQUIRED_PORTS), and a gap fails rather than being absorbed.
+    Removing a page on purpose means removing it from the list in the
+    same change, where a reviewer sees it. A page the globs find that is
+    not on the list is fine: new pages join the set on arrival and the
+    list catches up when it is next edited."""
     hits = []
-    for name in ROOT_PAGES + EXTRA_PAGES:
+    for name in ROOT_PAGES + EXTRA_PAGES + REQUIRED_PAGES:
         if not (ROOT / name).is_file():
             hits.append(f"missing required page: {name}")
+    for port in REQUIRED_PORTS:
+        for name in PORT_PAGES:
+            if not (ROOT / port / name).is_file():
+                hits.append(f"missing required page: {port}/{name}")
     for child in port_dirs():
         for name in PORT_PAGES:
             if not (child / name).is_file():
                 hits.append(
                     f"missing required page: {child.name}/{name} "
                     f"(the directory carries the other one)")
-    return hits
+    return sorted(set(hits))
 
 
 def label(path: Path) -> str:
@@ -181,16 +230,30 @@ def label(path: Path) -> str:
     sit outside the tree (a scratch file being probed), and reporting it
     should not be a crash."""
     try:
-        return str(path.relative_to(ROOT))
+        return rel(path)
     except ValueError:
         return str(path)
 
 
 # ---------------------------------------------------------------------
 # Text handling.
+#
+# Every transformation here keeps the line count and, where it can, the
+# column, so a finding can name the physical line the author opens.
 # ---------------------------------------------------------------------
 
+# A fence opener. Markdown allows up to three spaces of indentation at
+# the top level and more inside a list item, so the indentation is not
+# restricted here; what stops an indented code line from swallowing the
+# rest of the page is that an opener with no closer is NOT a fence (see
+# fenceless).
 FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+# A block quote's `>` markers, however deep, blanked to spaces so the
+# text keeps its columns. Without this a fence inside a quote is not
+# seen as a fence, and a phrase wrapped inside a quote joins as
+# "worth > noting" and slips past the banned list.
+QUOTE_MARK = re.compile(r"^(\s{0,3})((?:>\s?)+)")
 
 
 def lf(text: str) -> str:
@@ -198,12 +261,24 @@ def lf(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def unquote_lines(lines: list[str]) -> list[str]:
+    return [QUOTE_MARK.sub(lambda m: m.group(1) + " " * len(m.group(2)), l)
+            for l in lines]
+
+
 def fenceless(md: str) -> str:
     """Fenced blocks BLANKED rather than dropped, so a reported line
     number still matches the file. Inline code spans are kept: `AGENTS.md`
     in a sentence is the citation being banned, not an incidental token.
+
+    An opener with no matching closer is left alone. Markdown treats a
+    four-space-indented backtick line as code, not as a fence, and a
+    stray fence at the end of a page (one tutorial had exactly that) is
+    a defect to report, not a reason to stop reading. Either way,
+    blanking to the end of the page would hide everything after it from
+    every check, which is the silent hole this gate exists to close.
     """
-    lines = lf(md).split("\n")
+    lines = unquote_lines(lf(md).split("\n"))
     out = list(lines)
     i = 0
     while i < len(lines):
@@ -212,13 +287,14 @@ def fenceless(md: str) -> str:
             i += 1
             continue
         marker = match.group(1)
-        out[i] = ""
         j = i + 1
         while j < len(lines) and not lines[j].lstrip().startswith(marker):
-            out[j] = ""
             j += 1
-        if j < len(lines):
-            out[j] = ""
+        if j >= len(lines):
+            i += 1
+            continue
+        for k in range(i, j + 1):
+            out[k] = ""
         i = j + 1
     return "\n".join(out)
 
@@ -245,7 +321,7 @@ CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.{0,400}?)(?<!`)\1(?!`)", re.S)
 #
 # The destination is blanked to spaces rather than removed, and the link
 # TEXT is kept, so both the visible words and every character position
-# survive. `check_links` reads fenceless() instead, which keeps the
+# survive. `check_links` reads linkable() instead, which keeps the
 # destinations it exists to resolve.
 INLINE_LINK = re.compile(r"(\[[^\]]*\])(\([^)\n]*\)|\[[^\]]*\])")
 
@@ -255,24 +331,47 @@ LINK_DEF = re.compile(r"(?m)^(\s{0,3}\[[^\]]+\]:)(.*)$")
 # prose the reader sees. Blanked the same way, keeping newlines.
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
+# YAML front matter, blanked to its own newlines. Removing it outright
+# shifted every later line number by the header's height, and moved the
+# tutorial's line range (computed on the raw page) off the text it was
+# meant to cover.
+FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
+
 
 def _blank(match: re.Match, keep: int, blank: int) -> str:
     return match.group(keep) + " " * len(match.group(blank))
 
 
+def _newlines(match: re.Match) -> str:
+    return "\n" * match.group(0).count("\n")
+
+
 def prose(md: str) -> str:
-    """Strip frontmatter, fenced blocks, inline code spans, HTML comments
+    """Strip front matter, fenced blocks, inline code spans, HTML comments
     and link destinations; what remains is prose.
 
-    Spans are replaced by their own newlines rather than removed, so a
+    Everything is replaced by its own newlines rather than removed, so a
     reported line number still matches the file.
     """
     text = fenceless(md)
-    text = re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.S)
-    text = CODE_SPAN.sub(lambda m: "\n" * m.group(0).count("\n"), text)
-    text = HTML_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    text = FRONT_MATTER.sub(_newlines, text)
+    text = CODE_SPAN.sub(_newlines, text)
+    text = HTML_COMMENT.sub(_newlines, text)
     text = INLINE_LINK.sub(lambda m: _blank(m, 1, 2), text)
     return LINK_DEF.sub(lambda m: _blank(m, 1, 2), text)
+
+
+def linkable(md: str) -> str:
+    """Fenced blocks, front matter, HTML comments and inline code spans
+    blanked, newlines kept; the link destinations stay. A `[text](target)`
+    shown as code is a description of a link, not a link -- Markdown
+    renders it literally -- so resolving its target would fail a page for
+    quoting the syntax. The guide does exactly that, one section down
+    from where it explains this check."""
+    text = fenceless(md)
+    text = FRONT_MATTER.sub(_newlines, text)
+    text = HTML_COMMENT.sub(_newlines, text)
+    return CODE_SPAN.sub(_newlines, text)
 
 
 class Para:
@@ -299,6 +398,14 @@ class Para:
         return self.lines[k], self.pieces[k]
 
 
+# A line that starts a new block even with no blank line before it: a
+# heading, a list item, a table row, a horizontal rule. Two bullets are
+# two paragraphs, and joining them assembled a banned phrase out of the
+# end of one and the start of the next. A table row is a block on its
+# own for the same reason.
+BLOCK_START = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\||-{3,}\s*$|\*{3,}\s*$)")
+
+
 def paragraphs(text: str) -> list[Para]:
     """Markdown treats a newline inside a paragraph as whitespace, and
     these pages are hard-wrapped -- so "worth\\nnoting" is the ORDINARY
@@ -314,6 +421,9 @@ def paragraphs(text: str) -> list[Para]:
                 out.append(Para(buf))
                 buf = []
             continue
+        if buf and (BLOCK_START.match(line) or buf[-1][1].startswith("|")):
+            out.append(Para(buf))
+            buf = []
         buf.append((i, re.sub(r"\s+", " ", line.strip())))
     if buf:
         out.append(Para(buf))
@@ -371,16 +481,24 @@ def working_docs() -> list[tuple[re.Pattern, str]]:
 # The checks.
 # ---------------------------------------------------------------------
 
+# Pictographs, the symbol blocks, and the regional indicators that flags
+# are built from (U+1F1E6-U+1F1FF sits below the pictograph block and
+# was missed until a reviewer pointed at a flag).
 EMOJI = re.compile(
-    "[\U0001F300-\U0001FAFF☀-➿️⬀-⯿]")
+    "[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF☀-➿️⬀-⯿]")
 
 # "I" is stricter than Google's rule and applies to every page. I/O is a
-# word, not a pronoun; the negative lookahead keeps it.
+# word, not a pronoun; the negative lookahead keeps it. The rest of the
+# singular is matched in any case: "My model" at the start of a sentence
+# is the same violation as "my model".
 FIRST_SINGULAR = re.compile(
-    r"\bI(?!/O)\b|\bI'(?:m|ve|ll|d)\b|\b(?:my|mine|myself)\b")
+    r"\bI(?!/O)\b|\bI'(?:m|ve|ll|d)\b|\b(?:[Mm][Ee]|[Mm][Yy]|[Mm][Ii][Nn][Ee]|[Mm][Yy][Ss][Ee][Ll][Ff])\b")
 
+# The plural, in any case -- except that the objective "us" is matched
+# only in lower case, because "US" is a country and "US English" is a
+# phrase this guide itself needs.
 FIRST_PLURAL = re.compile(
-    r"\b(we|we'(?:ll|ve|re|d)|us|our|ours|let's)\b", re.I)
+    r"\b([Ww][Ee]|[Ww][Ee]'(?:[Ll][Ll]|[Vv][Ee]|[Rr][Ee]|[Dd])|us|[Oo][Uu][Rr]|[Oo][Uu][Rr][Ss]|[Oo][Uu][Rr][Ss][Ee][Ll][Vv][Ee][Ss]|[Ll][Ee][Tt]'[Ss])\b")
 
 # A tutorial walks through code with the reader, and voice rule 7 allows
 # "we" there and nowhere else. A tutorial is a page under TUTORIAL_PAGES,
@@ -388,10 +506,15 @@ FIRST_PLURAL = re.compile(
 TUTORIAL_HEAD = re.compile(r"^##\s*1\.\s", re.M)
 SECTION_HEAD = re.compile(r"^##\s", re.M)
 
+# The end of a sentence between two dashes on one line: the shape of two
+# separate asides ("A — b. C — d."), which the ration forbids, as opposed
+# to one parenthetical pair ("A — b — c."), which it allows.
+SENTENCE_END_BETWEEN = re.compile(r"—[^—]*[.!?:]\s[^—]*—")
+
 
 def is_tutorial_page(path: Path) -> bool:
-    rel = label(path)
-    return any(rel == p or rel.startswith(p.rstrip("/") + "/")
+    relpath = label(path)
+    return any(relpath == p or relpath.startswith(p.rstrip("/") + "/")
                for p in TUTORIAL_PAGES)
 
 
@@ -456,10 +579,19 @@ def check(paths: list[Path]) -> list[str]:
 
             # em-dashes-are-rationed: one ASIDE per line, so a single
             # trailing dash or one matched pair. Three is the stacking the
-            # ration exists to stop.
-            if line.count("—") > 2:
-                add(f"{name}:{i}  {line.count(chr(0x2014))} em dashes on "
-                    f"one line: {line.strip()}")
+            # ration exists to stop; two with a sentence ending between
+            # them are two asides, not a pair. A table row is rationed
+            # cell by cell: a lone dash in a cell is the table's "none",
+            # not an aside, and two cells are two lines of prose.
+            cells = line.split("|") if line.lstrip().startswith("|") else [line]
+            for cell in cells:
+                dashes = cell.count("—")
+                if dashes > 2:
+                    add(f"{name}:{i}  {dashes} em dashes on one line: "
+                        f"{line.strip()}")
+                elif dashes == 2 and SENTENCE_END_BETWEEN.search(cell):
+                    add(f"{name}:{i}  two em-dash asides on one line: "
+                        f"{line.strip()}")
 
             match = FIRST_SINGULAR.search(line)
             if match:
@@ -489,14 +621,32 @@ def check(paths: list[Path]) -> list[str]:
 # but `[text][label]` with a `[label]: target` definition is equally
 # standard. A gate that reads only the first form would report success
 # on a broken reference link while promising to check every link, which
-# is worse than not having the check.
+# is worse than not having the check. A reference with no definition is
+# reported too: it renders as literal brackets, which is a broken link
+# by another name.
+#
+# An inline destination may carry a title (`[t](a.md "Title")`) or sit
+# in angle brackets to allow a space (`[t](<my file.md>)`); both are
+# parsed, and a query string is dropped with the fragment, because
+# `README.md?plain=1` is a file on GitHub and not on disk.
 # ---------------------------------------------------------------------
 
-LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+LINK = re.compile(r"(?<!\])\[([^\]]*)\]\(([^)\n]*)\)")
 
-LINK_TARGET = re.compile(r"(?m)^\s{0,3}\[[^\]]+\]:\s*<?([^>\s]+)>?")
+REF_LINK = re.compile(r"(?<!\])\[([^\]]+)\]\[([^\]]*)\]")
+
+LINK_TARGET = re.compile(r"(?m)^\s{0,3}\[([^\]]+)\]:\s*<?([^>\s]+)>?")
 
 EXTERNAL = ("http://", "https://", "mailto:", "#", "//")
+
+
+def destination(inner: str) -> str:
+    """The target of an inline link, without its title."""
+    inner = inner.strip()
+    if inner.startswith("<"):
+        end = inner.find(">")
+        return inner[1:end] if end > 0 else inner[1:]
+    return inner.split(None, 1)[0] if inner else ""
 
 
 def broken(page: Path, target: str) -> bool:
@@ -506,23 +656,14 @@ def broken(page: Path, target: str) -> bool:
     a Linux runner and would pass, while resolving nowhere on GitHub or
     inside a published package. Both halves have to hold.
     """
-    relative = target.split("#", 1)[0]
+    from urllib.parse import unquote as url_unquote
+    relative = target.split("#", 1)[0].split("?", 1)[0]
     if not relative:
         return False
-    resolved = (page.parent / relative).resolve()
+    resolved = (page.parent / url_unquote(relative)).resolve()
     if not resolved.exists():
         return True
     return not resolved.is_relative_to(ROOT)
-
-
-def linkable(md: str) -> str:
-    """Fenced blocks and inline code spans blanked, newlines kept. A
-    `[text](target)` shown as code is a description of a link, not a
-    link -- Markdown renders it literally -- so resolving its target
-    would fail a page for quoting the syntax. The guide does exactly
-    that, one section down from where it explains this check."""
-    text = fenceless(md)
-    return CODE_SPAN.sub(lambda m: "\n" * m.group(0).count("\n"), text)
 
 
 def check_links(paths: list[Path]) -> list[str]:
@@ -530,11 +671,18 @@ def check_links(paths: list[Path]) -> list[str]:
     for path in paths:
         name = label(path)
         text = linkable(path.read_text(encoding="utf-8"))
+        defined = {m.group(1).strip().lower(): m.group(2)
+                   for m in LINK_TARGET.finditer(text)}
         for i, line in enumerate(text.split("\n"), 1):
-            targets = [m.group(1) for m in LINK.finditer(line)]
-            targets += [m.group(1) for m in LINK_TARGET.finditer(line)]
+            targets = [destination(m.group(2)) for m in LINK.finditer(line)]
+            targets += [m.group(2) for m in LINK_TARGET.finditer(line)]
+            for m in REF_LINK.finditer(line):
+                key = (m.group(2) or m.group(1)).strip().lower()
+                if key not in defined:
+                    hits.append(f"{name}:{i}  undefined link reference: "
+                                f"[{key}]")
             for target in targets:
-                if target.startswith(EXTERNAL):
+                if not target or target.startswith(EXTERNAL):
                     continue
                 if broken(path, target):
                     hits.append(f"{name}:{i}  broken link: {target}")
@@ -545,13 +693,15 @@ def check_links(paths: list[Path]) -> list[str]:
 # Vale sections must not cover a page.
 #
 # `.vale.ini` blanks the styles for the directories that hold working
-# documents and source, so a bare `vale .` stays quiet about them. Vale
-# matches those section globs against EVERY file it is given, named on
-# the command line or not -- so a blanked section over a directory that
-# also holds a reader-facing page switches every rule off for that page
-# and reports nothing. That is the silent hole the explicit file list was
-# meant to rule out, and voxgig/model's first draft had it: `[go/**]`
-# blanked go/README.md, and Vale passed the page without reading it.
+# documents and source, so a bare `vale .` does not report the banned
+# list against them. Vale matches those section globs against EVERY file
+# it is given, named on the command line or not, and an empty
+# BasedOnStyles switches off the banned list and every rule that `[*.md]`
+# does not name by level (the named ones stay on) -- so a blanked section
+# over a directory that also holds a reader-facing page lets banned
+# phrases through on that page and reports nothing about them. That is
+# the silent hole the explicit file list was meant to rule out, and
+# voxgig/model's first draft had it: `[go/**]` covered go/README.md.
 #
 # Only sections with an EMPTY BasedOnStyles are checked; a section that
 # narrows the styles is a choice, not a hole. Vale's globs let `*` and
@@ -611,10 +761,11 @@ def check_vale_sections(paths: list[Path]) -> list[str]:
     for section in blanked_sections():
         matcher = vale_glob(section)
         for path in paths:
-            rel = label(path)
-            if matcher.match(rel) or matcher.match("/" + rel):
-                hits.append(f".vale.ini  [{section}] blanks every style for "
-                            f"{rel}, a page Vale would then pass unread")
+            relpath = label(path)
+            if matcher.match(relpath) or matcher.match("/" + relpath):
+                hits.append(f".vale.ini  [{section}] switches the banned list "
+                            f"off for {relpath}, a page Vale would then pass "
+                            f"with its phrases unread")
     return hits
 
 

@@ -4,39 +4,21 @@
 #
 # Separate from the build workflow because it is neither a platform check
 # nor a per-language check: one runner, one job, no matrix. It runs on
-# documentation and configuration changes only, so a code-only pull
-# request does not wait on it.
+# every push to main and every pull request, with no path filter: a
+# relative link's target can be any file in the repository, so a change
+# that moves or deletes one has to run the link check even when it
+# touches no page, and the Makefile and package.json carry the local
+# gate's wiring. The job takes seconds; a filter that saved them would
+# cost the one case the check exists for.
 #
 # Adapted from voxgig/struct's docs.yml, and through it from
 # jostraca/jostraca's, which carries the reasoning for the pinning below.
 name: docs
 
-# The path list is written out twice rather than shared through a YAML
-# anchor: GitHub's workflow parser does not support anchors, and a local
-# linter that resolves them will pass a file the runner then reads as an
-# empty filter.
 on:
   push:
     branches: [main]
-    paths:
-      - 'README.md'
-      - 'DOCS.md'
-      - '*/README.md'
-      - 'STYLE-GUIDE.md'
-      - '.vale.ini'
-      - '.vale/**'
-      - 'tools/check_prose.py'
-      - '.github/workflows/docs.yml'
   pull_request:
-    paths:
-      - 'README.md'
-      - 'DOCS.md'
-      - '*/README.md'
-      - 'STYLE-GUIDE.md'
-      - '.vale.ini'
-      - '.vale/**'
-      - 'tools/check_prose.py'
-      - '.github/workflows/docs.yml'
 
 permissions:
   contents: read
