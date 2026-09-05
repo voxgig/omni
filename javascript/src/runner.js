@@ -296,6 +296,14 @@ function errify(err) {
   if (err instanceof Error) {
     return { ...err, name: err.name, message: err.message }
   }
+
+  // An error-SHAPED plain map ({name, message, ...}) spreads the same way
+  // an Error does - collapsing it to String(err) yields '[object Object]',
+  // which fails both the `err` check and every `match.err.*` leaf.
+  if (null != err && 'object' === typeof err) {
+    return { name: 'Error', ...err }
+  }
+
   return { name: 'Error', message: String(err) }
 }
 
@@ -305,7 +313,9 @@ function errbase(err, provider) {
 }
 
 function errmessage(err) {
-  return err instanceof Error ? err.message : String(err)
+  return err instanceof Error ? err.message
+    : null != err && 'string' === typeof err.message ? err.message
+      : String(err)
 }
 
 // The label of one entry, for failure messages.
@@ -407,7 +417,12 @@ function handleerror(flags, index, entry, err, provider) {
 
 // Check that every leaf of `check` is present, and matches, in `base`.
 function match(flags, index, entry, check, base) {
-  const cbase = clone(base)
+  // Read the base DIRECTLY. The clone bought nothing - the walk below only
+  // reads, via getpath - and it blows the stack on a cyclic base. A port
+  // that drives entries with live objects rather than pure JSON produces
+  // those routinely: voxgig/sdkgen's corpus matches against a live client
+  // context whose root context reaches the client again.
+  const cbase = base
 
   const at = (path) => (0 === path.length ? '<root>' : pathify(path))
 
