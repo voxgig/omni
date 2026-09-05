@@ -73,9 +73,11 @@ TypeScript, case for case, in idiomatic local style."
 ```
 .
 ├── README.md          # user-facing overview
-├── DOCS.md            # comprehensive guide: spec format, semantics, API
+├── DOCS.md            # the guide: spec format, semantics, API
+├── STYLE-GUIDE.md     # how the reader-facing pages are written; gated
 ├── AGENTS.md          # this file
 ├── Makefile           # aggregate targets
+├── .vale.ini          # the prose gate's Vale half, with every level's reason
 ├── spec/
 │   ├── fib.aon      # the shared test corpus - the contract, edit this
 │   ├── fib.json       # generated from fib.aon; what the ports read
@@ -86,6 +88,7 @@ TypeScript, case for case, in idiomatic local style."
 │   ├── check-spec-shape.js # unifies each spec with the format shape
 │   ├── package.json       # tools/ is a node project (@voxgig/model)
 │   ├── check_parity.py    # every port defines the canonical API
+│   ├── check_prose.py     # the prose gate's second half; prints the page set
 │   └── struct_compat.sh   # run voxgig/struct's own suite on omni
 ├── typescript/        # the canonical implementation
 └── <lang>/            # one port per directory: library, test, Makefile, README
@@ -357,6 +360,32 @@ credential. The publish job therefore never checks out the repository.
 
 `voxgig/apidef`'s `docs/how-to/release-and-tag.md` carries the fullest
 write-up of the shared design.
+
+
+## Prose follows STYLE-GUIDE.md
+
+[`STYLE-GUIDE.md`](STYLE-GUIDE.md) is normative for the reader-facing
+pages: the root `README.md` and `DOCS.md`, and every port's `README.md` —
+26 pages. Two gates enforce it and both run in CI
+(`.github/workflows/docs.yml`) and under `make test`:
+
+| Gate | Checks |
+|---|---|
+| `vale --minAlertLevel=error $(python3 tools/check_prose.py --files)` | Google's rules plus the banned list, at the levels in `.vale.ini` |
+| `python3 tools/check_prose.py` | the banned list across line wraps, em-dash spacing and ration, first person, no emoji, no citations of a working document, resolving relative links, a complete page set |
+
+`make scan-prose` runs both (Vale where installed). The banned list is
+`.vale/styles/config/vocabularies/Omni/reject.txt`, read by both gates. The
+page set is the configuration block at the top of `tools/check_prose.py`:
+every top-level directory holding a `README.md`, other than `doc/`, `spec/`
+and `tools/`, is a port, so a new port's README is read as soon as it
+exists, and `DOCS.md` or a port README going missing fails the gate.
+
+Three things trip agents most often: a page must not name or link
+`AGENTS.md` or a file under `doc/plan/` or `doc/design/` (state the fact
+instead); the em dash is spaced (` — `) and rationed to one aside per line;
+and a word Vale's dictionary does not know goes into `accept.txt` one entry
+at a time, never as a suffix pattern.
 
 
 ## The adoption plan register

@@ -12,6 +12,7 @@
 #   make pack-diff     - what a release would add/remove vs the registry
 #   make spec          - recompile spec/*.json from spec/*.aon
 #   make spec-check    - fail if a committed spec/*.json is stale
+#   make scan-prose    - the prose gate over the reader-facing pages
 
 # Every port directory. Target names are the directory names, used verbatim
 # as `make -C <dir>`. Each port ships at least `test`; `build`, `inspect`
@@ -48,7 +49,7 @@ HOLD = boru
 
 LANGS = $(filter-out $(HOLD),$(ALL_LANGS))
 
-.PHONY: all test build inspect clean parity struct-compat pack-check pack-diff check spec spec-check
+.PHONY: all test build inspect clean parity struct-compat pack-check pack-diff check spec spec-check scan-prose
 
 all: test
 
@@ -92,6 +93,10 @@ test:
 	  echo "all ports passed"; \
 	fi
 
+# The prose gate is part of the sweep. A separate prerequisite line, because
+# the recipe above is the sweep itself and a target may carry one recipe.
+test: scan-prose
+
 build:
 	@for lang in $(LANGS); do $(MAKE) -s build-$$lang; done
 
@@ -134,4 +139,20 @@ pack-check:
 pack-diff:
 	@tools/pack_diff.sh $(PORTS)
 
-check: parity test
+check: parity test scan-prose
+
+# The prose gate over the reader-facing pages (STYLE-GUIDE.md). Vale runs
+# where it is installed, over the page set tools/check_prose.py prints,
+# so both halves read the same files; check_prose always runs, because it
+# carries the house rules .vale.ini switches Google rules OFF in favour
+# of -- skipping it silently would widen what is allowed.
+scan-prose:
+	@echo "======== scan: prose (vale + check_prose) ========"
+	@if command -v vale >/dev/null 2>&1; then \
+	  vale sync >/dev/null && \
+	  vale --minAlertLevel=error $$(python3 tools/check_prose.py --files); \
+	else \
+	  echo "(vale not installed - skipping the Google/banned-list half;"; \
+	  echo " see .github/workflows/docs.yml for the pinned version)"; \
+	fi
+	@python3 tools/check_prose.py

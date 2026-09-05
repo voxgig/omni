@@ -34,7 +34,7 @@ await R.runset(R.spec.basic, fib)
 await R.runsetflags(R.spec.nulls, { null: false }, fibinfo)
 ```
 
-A failing check throws `OmniError`, which `node:test`, Jest, Vitest and
+A failing check throws `OmniError`, which `node:test`, Jest, Vitest, and
 Mocha all report as a test failure. Subjects may be async - the runner
 awaits every call.
 

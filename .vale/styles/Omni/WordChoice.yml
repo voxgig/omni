@@ -1,0 +1,28 @@
+# The parts of Google.WordListCase that are right for this project,
+# carried as our own rule so they can sit at error level.
+#
+# Google.WordListCase itself is a WARNING here (see .vale.ini): it maps
+# `touch` to `tap`, which is a mobile-UI rule, and it objects to casings
+# this project states on purpose. The substitutions kept below have no
+# such collision.
+#
+# CARRIED FROM voxgig/struct, which carries it from jostraca/jostraca
+# minus that project's `regex` -> `regular expression` swap. The word is
+# not filler in the Voxgig repositories -- it names a thing a reader
+# searches for -- so the swap stays out here too.
+#
+# `below` is not swapped, because it is not on Google's word list and this
+# rule carries Google's list rather than extending it.
+extends: substitution
+message: "Use '%s' instead of '%s'."
+link: 'https://developers.google.com/style/word-list'
+level: error
+ignorecase: true
+action:
+  name: replace
+swap:
+  # "above" and "below" assume the reader sees a visual layout; a screen
+  # reader does not. Google's accessibility guidance, and it is right.
+  (?:the )?above: preceding
+  file name: filename
+  file names: filenames
