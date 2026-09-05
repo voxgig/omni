@@ -287,7 +287,16 @@ func Quote(val string) string {
 
 // JsonStr is compact JSON text with map keys sorted, so that messages are
 // identical in every port regardless of local map ordering.
+//
+// GUARDED against cycles: this renders FAILURE MESSAGES, and an entry
+// carrying a live cyclic value recursed until the stack gave out. A cycle
+// renders as "[Circular]". The ancestor set tracks the CURRENT PATH only,
+// removed again on the way out, so a DAG still renders in full.
 func JsonStr(val any) string {
+	return jsonstrSeen(val, map[uintptr]bool{})
+}
+
+func jsonstrSeen(val any, seen map[uintptr]bool) string {
 	if IsAbsent(val) {
 		return "undefined"
 	}
@@ -312,14 +321,25 @@ func JsonStr(val any) string {
 	}
 
 	if list, is := val.([]any); is {
+		ptr := reflect.ValueOf(list).Pointer()
+		if seen[ptr] {
+			return Quote("[Circular]")
+		}
+		seen[ptr] = true
 		parts := make([]string, len(list))
 		for index, entry := range list {
-			parts[index] = JsonStr(entry)
+			parts[index] = jsonstrSeen(entry, seen)
 		}
+		delete(seen, ptr)
 		return "[" + strings.Join(parts, ",") + "]"
 	}
 
 	if amap, is := val.(map[string]any); is {
+		ptr := reflect.ValueOf(amap).Pointer()
+		if seen[ptr] {
+			return Quote("[Circular]")
+		}
+		seen[ptr] = true
 		keys := make([]string, 0, len(amap))
 		for key := range amap {
 			keys = append(keys, key)
@@ -327,8 +347,9 @@ func JsonStr(val any) string {
 		sort.Strings(keys)
 		parts := make([]string, len(keys))
 		for index, key := range keys {
-			parts[index] = Quote(key) + ":" + JsonStr(amap[key])
+			parts[index] = Quote(key) + ":" + jsonstrSeen(amap[key], seen)
 		}
+		delete(seen, ptr)
 		return "{" + strings.Join(parts, ",") + "}"
 	}
 

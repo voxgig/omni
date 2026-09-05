@@ -144,7 +144,14 @@ function deepequal(a, b) {
 
 // Compact JSON text with map keys sorted, so that messages are identical
 // in every port regardless of local map ordering.
-function jsonstr(val) {
+// GUARDED against cycles: this renders FAILURE MESSAGES, and an entry
+// carrying a live cyclic value (voxgig/sdkgen's corpus bookkeeping does)
+// recursed until the stack gave out. A cycle renders as "[Circular]".
+// `seen` tracks the ANCESTORS of the current value, not every value
+// visited: it is removed again on the way out, so the same object
+// appearing twice as siblings - a DAG, not a cycle - still renders in
+// full.
+function jsonstr(val, seen) {
   if (undefined === val) {
     return 'undefined'
   }
@@ -165,13 +172,23 @@ function jsonstr(val) {
     return val ? 'true' : 'false'
   }
 
-  if (islist(val)) {
-    return '[' + val.map((entry) => jsonstr(entry)).join(',') + ']'
-  }
+  if (islist(val) || ismap(val)) {
+    seen = seen || new Set()
 
-  if (ismap(val)) {
-    const keys = Object.keys(val).sort()
-    return '{' + keys.map((key) => JSON.stringify(key) + ':' + jsonstr(val[key])).join(',') + '}'
+    if (seen.has(val)) {
+      return '"[Circular]"'
+    }
+
+    seen.add(val)
+
+    const out = islist(val)
+      ? '[' + val.map((entry) => jsonstr(entry, seen)).join(',') + ']'
+      : '{' + Object.keys(val).sort()
+        .map((key) => JSON.stringify(key) + ':' + jsonstr(val[key], seen)).join(',') + '}'
+
+    seen.delete(val)
+
+    return out
   }
 
   if ('function' === typeof val) {

@@ -265,6 +265,13 @@ def errify(err: Any) -> dict:
         out['name'] = type(err).__name__
         out['message'] = str(err)
         return out
+    # An error-SHAPED plain map ({name, message, ...}) carries its fields
+    # into the base the same way an exception's attributes do - collapsing
+    # it to str(err) fails both the `err` check and every match.err leaf.
+    if isinstance(err, dict):
+        out = {'name': 'Error'}
+        out.update(err)
+        return out
     return {'name': 'Error', 'message': str(err)}
 
 
@@ -275,6 +282,8 @@ def errbase(err: Any, provider: Any) -> dict:
 
 
 def errmessage(err: Any) -> str:
+    if isinstance(err, dict) and isinstance(err.get('message'), str):
+        return err['message']
     return str(err)
 
 
@@ -375,7 +384,12 @@ def handleerror(
 
 def match(flags: dict, index: int, entry: dict, check: Any, base: Any) -> None:
     """Check that every leaf of `check` is present, and matches, in `base`."""
-    cbase = clone(base)
+    # Read the base DIRECTLY. The clone bought nothing - the walk below
+    # only reads, via getpath - and it blows the stack on a cyclic base. A
+    # port driving entries with live objects rather than pure JSON produces
+    # those routinely (voxgig/sdkgen's corpus matches a live client context
+    # whose root context reaches the client again).
+    cbase = base
 
     def at(path):
         return '<root>' if len(path) == 0 else pathify(path)
