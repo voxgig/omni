@@ -1,0 +1,93 @@
+# Terms Vale's dictionary does not know. Entries are REGEXES, so
+# [Vv]oxgig accepts both casings without Vale.Terms then enforcing one of
+# them over the other -- listing both plain forms is what turns this file
+# into a capitalisation rule by accident.
+#
+# EVERY ENTRY BELOW WAS MEASURED, not guessed. `Vale.Spelling` at error
+# level over the 26 reader-facing pages produced 232 alerts across 74
+# distinct words on a clean run. Four of those were rewritten rather than
+# accepted (`typo'd`, a bare `util`, `repo`, and the lowercase port names
+# in one list, which are directory names and now read as code); this file
+# is the rest, sorted into the groups below, and nothing else. A word that
+# stops appearing in the docs should come out of here, and a new one is
+# added when the gate asks for it.
+
+[Vv]oxgig
+
+# British spellings. Google style is US English; the house voice is not,
+# and the precedence in .vale.ini puts the house voice first.
+#
+# LISTED, not matched by suffix. `\w+ise` and friends accept any word
+# ending in those letters -- `madeupise` included -- and so punch a hole
+# straight through the error-level spelling gate this file exists to make
+# usable. Add the stem when a new one is needed; the cost of doing that is
+# the point.
+recognise
+unrecognised
+
+# The project, its neighbours, and the corpus language.
+omni(?:'s)?
+struct's
+boru
+aontu
+
+# The spec format and the runner's own vocabulary.
+backreference
+[Bb]ooleans?
+bool
+callables?
+callee
+contextified
+deepequal
+getpath
+lookaround
+stringif(?:y|ies|ied)
+substrings?
+subpath
+unforgeable
+
+# General programming vocabulary.
+accessors
+arity
+async
+classpath
+compat
+concatenative
+devDependency
+docstring
+enum
+gitignored
+Makefile
+metatable
+namespaces?
+toolchain
+untyped
+
+# Tools, languages, and test frameworks the port pages name.
+aeson
+alcotest
+cheshire
+Gradle
+Gson
+hspec
+JUnit
+Lua
+luaunit
+minitest
+MSTest
+munit
+npm
+NUnit
+OCaml
+opam
+ounit
+PHPUnit
+pytest
+RSpec
+sbt
+serde
+unittest
+Vitest
+XCTest
+xUnit
+Zig's

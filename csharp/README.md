@@ -17,7 +17,7 @@ R.RunSet(R.Set("basic"), FIB);
 R.RunSetFlags(R.Set("nulls"), Flags.NoNull(), FIBINFO);
 ```
 
-A failing check throws `OmniError`, which xUnit, NUnit and MSTest all
+A failing check throws `OmniError`, which xUnit, NUnit, and MSTest all
 report as a failure. `test/Program.cs` is a dependency-free harness so that
 `make test` needs no test package.
 

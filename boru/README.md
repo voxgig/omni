@@ -19,7 +19,7 @@ There is no release channel for it. Build from source:
 `cmd/go` is a module of its own, with `replace` directives pointing at
 sibling modules in the repository, so `go install` refuses it
 (*"the go.mod file for the module providing named packages contains one or
-more replace directives"*). Clone and build in place, as above.
+more replace directives"*). Clone and build in place, as shown.
 
 **Zero third-party dependencies.** The port uses only the engine's bundled
 modules: `boru:io` reads the spec — `IO.read` parses JSON by extension, so
@@ -28,8 +28,8 @@ behind `mini re`, and `boru:string-util` the string helpers.
 
 ## What is different about this port
 
-Six engine properties shape the code. Each was measured, and each is
-load-bearing.
+Six engine properties shape the code. Each was measured, and none of them
+is cosmetic.
 
 **Absent is an atom, not `none`.** boru has one `none`, which plays JSON
 null. The runner has to tell "no such key" from "key holding null" — that
@@ -74,7 +74,7 @@ from `do … error [var [[e] …]]` does not re-raise it — it dies with
 verdict `e` was carrying is gone. The runner rebuilds instead:
 `om-fail-raise (om-errmessage e)`. This one hid inside the negative tests
 for a while, because a set that fails for the wrong reason still fails;
-`test/run.boru` now pins the message, not just the failure.
+`test/run.boru` now pins the message as well as the failure.
 
 **A function-valued word is a call, wherever it appears.** One rule with two
 faces. Every function body ends `def r (...)` then `r`, because a bare tail
@@ -88,7 +88,7 @@ engine says so plainly —
     own dispatch — a function word is a barrier and never feeds forward
 
 **House rules that look redundant and are not.** Every function body ends
-`def r (...)` then `r`, for the reason above. All
+`def r (...)` then `r`, for the reason just given. All
 recursion lives in module-level `oml-*` loops with explicit parameters; a
 named `def f fn …` inside a body corrupts recursion. `and`/`or` do not
 short-circuit, so a type test never guards a typed call in the same
@@ -112,9 +112,9 @@ with the canonical runner. Each of the ten was checked by reverting its fix
 and watching its own test go red.
 
 One fix ships without a test, and says so rather than shipping a green one
-that proves nothing: client options are cloned before a provider hook sees
-them, as canonical clones them, but no arrangement of spec and hook on this
-engine could be made to observe the difference.
+that proves nothing: client options are cloned before a provider hook
+receives them, as canonical clones them, but no arrangement of spec and
+hook on this engine could be made to observe the difference.
 
     $ make test
     ok   - basic

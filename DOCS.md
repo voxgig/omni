@@ -1,10 +1,14 @@
-# omni - the comprehensive guide
+# omni - the guide
 
 omni runs one JSON test spec against a library in any of twenty-four
 languages.
 This document defines the spec format, the runner semantics, and the API
-each port exposes. For a quick overview see [`README.md`](README.md); for
-notes on working in this repository see [`AGENTS.md`](AGENTS.md).
+each port exposes. For a quick overview see [`README.md`](README.md).
+
+TypeScript is canonical. A change in behaviour starts in
+[`typescript/src/Runner.ts`](typescript/src/Runner.ts), is pinned in
+[`spec/fib.aon`](spec/fib.aon), and is then carried to every port; a port
+that disagrees with the spec is the thing that is wrong.
 
 - [1. Concepts](#1-concepts)
 - [2. The spec format](#2-the-spec-format)
@@ -30,8 +34,8 @@ arguments and compares what comes back.
 **Runner.** The engine. Resolves a section, then runs groups against
 subjects. One implementation per language, all behaving identically.
 
-**Provider.** Optional. Tells the runner how to find subjects by name, how
-to build the clients a spec declares, and how to wrap context arguments.
+**Provider.** Optional. Supplies the runner with subjects by name, with
+the clients a spec declares, and with the wrapping of context arguments.
 A spec that names its subjects explicitly needs no provider.
 
 The runner never imports the library under test, and never uses it to
@@ -50,7 +54,7 @@ written in [aontu](https://github.com/voxgig/aontu) — see
 [`spec/fib.aon`](spec/fib.aon) — and compiled to
 [`spec/fib.json`](spec/fib.json) by `make spec`, which is what lets it carry
 comments and share definitions. Your specs can be authored however you like;
-the runner only sees the JSON.
+the runner reads only the JSON.
 
 ### 2.1 Shape
 
@@ -81,7 +85,7 @@ declaring its format version — see [2.7](#27-format-versions). `OMNI`,
 like `DEF`, is a reserved metadata key, never a section.
 
 A group is any map with a `set` list. Groups may be nested under other
-keys - the runner only ever sees the group you hand to `runset`.
+keys - the runner only ever reads the group you hand to `runset`.
 
 Specs are plain JSON. Any authoring format that compiles to JSON works;
 `voxgig/struct` writes `.aon` files (JSON with comments and imports) and
@@ -108,7 +112,7 @@ uses the highest-precedence field. An entry with none of them calls the
 subject with a single absent value.
 
 Fields outside this table are rejected by a version-1 spec — an
-unrecognised key is almost always a typo'd assertion — and silently
+unrecognised key is almost always a mistyped assertion — and silently
 ignored by a legacy spec.
 
 An entry with no `out` expects a null (or absent) result - see
@@ -142,7 +146,7 @@ contain them must be run with `{"null": false}`, where result nulls stay
 null and the collision disappears. Note also that `nullmodifier` - the
 helper that converts sentinels back into real nulls inside inputs -
 rewrites occurrences *inside* string values too (`"a__NULL__b"` becomes
-`"anullb"`), so the reservation applies to substrings, not just whole
+`"anullb"`), so the reservation applies to substrings as well as whole
 values.
 
 ### 2.4 Errors
@@ -205,8 +209,8 @@ Leaf matching rules, in order:
    base value;
 7. otherwise, deep equality of the two values.
 
-The three sentinels are tested **before** deep equality, and that ordering
-is load-bearing. Were equality first, a subject returning the literal
+The three sentinels are tested **before** deep equality, and that order
+is deliberate. Were equality first, a subject returning the literal
 string `"__UNDEF__"` as ordinary data would satisfy an assertion that the
 key is *absent* - two mutually exclusive states passing one check. A
 sentinel that accepts its own literal cannot distinguish what it exists to
@@ -215,12 +219,11 @@ distinguish.
 The consequence is that a match leaf cannot currently assert a literal
 sentinel string in the data: `match: { out: { a: "__UNDEF__" } }` always
 means *absent*, never *the four-character-plus string*, in either null
-mode. There is no escape for that yet - `__RAW__` is the planned one (see
-the model review's A1 and the register's item 4.2). `"__NULL__"` keeps a
-second, narrower ambiguity for the same reason: under the default `null`
-flag a real null has already been rewritten to that string before the
-comparison, so a literal `"__NULL__"` and a genuine null are
-indistinguishable at the leaf.
+mode. There is no escape for that yet; `__RAW__` is the planned one.
+`"__NULL__"` keeps a second, narrower ambiguity for the same reason: under
+the default `null` flag a real null has already been rewritten to that
+string before the comparison, so a literal `"__NULL__"` and a genuine null
+are indistinguishable at the leaf.
 
 The base differs by outcome: on success it carries `in`, `args`, `out`
 and `ctx`; when the subject fails it carries `in`, `out`, `ctx` and `err`
@@ -299,11 +302,11 @@ version-1 entry shape **in aontu**, the language the corpus is written in,
 so checking a spec is unifying it with the shape rather than consulting a
 separate description that can drift. `make spec-check` runs it (and
 proves it can still go red); a violation is an ordinary aontu conflict,
-reported with an error code, the exact spec path and the source file.
+reported with an error code, the exact spec path, and the source file.
 
 It covers what a unifier can decide from the shape alone: the nine
-permitted entry fields (the typo class — `matches:` quietly replacing
-`match:`) and the field types, including rejecting `id: null`. The
+permitted entry fields (the mistyped-key class — `matches:` silently
+replacing `match:`) and the field types, including rejecting `id: null`. The
 cross-field rules — at most one of `in`/`args`/`ctx`, `err` never beside
 `out`, and a non-empty `set` — need `must()` and `length()`, which aontu
 0.48.2 does not yet implement; the runner enforces those at run time and
@@ -387,8 +390,8 @@ supply `name` and `message` too if the spec asserts on them.
 
 What the hook receives is the most the port has at that point, and the
 ports divide in two. TypeScript, JavaScript, Python, Ruby, PHP, Perl, Go,
-Java, C#, Kotlin, Scala, Clojure, Swift, Dart, Elixir and boru hand over
-the **raised error**. Rust, C, C++, Zig, OCaml, Haskell and Lean report a
+Java, C#, Kotlin, Scala, Clojure, Swift, Dart, Elixir, and boru hand over
+the **raised error**. Rust, C, C++, Zig, OCaml, Haskell, and Lean report a
 subject failure as a message string and have nothing else to hand over,
 so those receive the **message**. Lua sits with the first group. The
 distinction is a property of each language's failure channel, not a
@@ -401,7 +404,7 @@ Only JavaScript would otherwise get any of this for free, by spreading an
 than left as an accident.
 
 Providers are per-language values: a map of closures in the dynamic
-languages, a struct of function fields in Go, C, C++, Java and Rust.
+languages, a struct of function fields in Go, C, C++, Java, and Rust.
 
 
 ## 5. Flags
@@ -782,7 +785,7 @@ For each struct port:
    may instead take `@voxgig/omni-js` or `@voxgig/omni` from npm; there
    the isolation device is the **`devDependencies` block itself**, since
    npm never installs a devDependency transitively, and `npm ls --omit=dev`
-   is what proves it (register 4.13).
+   is what proves it.
 
    **Five ports can also be pinned by git ref.** `go`, `clojure`, `rust`,
    `dart` and `lean` carry release tags of the form `<port>/vX.Y.Z`, so a
@@ -791,11 +794,11 @@ For each struct port:
 
    | port | declaration |
    |---|---|
-   | go | `require github.com/voxgig/omni/go vX.Y.Z` |
-   | rust | `voxgig_omni = { git = "https://github.com/voxgig/omni", tag = "rust/vX.Y.Z" }` |
-   | dart | `voxgig_omni: { git: { url: ..., ref: dart/vX.Y.Z, path: dart } }` |
-   | clojure | `{:git/url ... :git/tag "clojure/vX.Y.Z" :git/sha "<40 chars>" :deps/root "clojure"}` |
-   | lean | `[[require]] name = "omni", git = ..., rev = "lean/vX.Y.Z", subDir = "lean"` |
+   | `go` | `require github.com/voxgig/omni/go vX.Y.Z` |
+   | `rust` | `voxgig_omni = { git = "https://github.com/voxgig/omni", tag = "rust/vX.Y.Z" }` |
+   | `dart` | `voxgig_omni: { git: { url: ..., ref: dart/vX.Y.Z, path: dart } }` |
+   | `clojure` | `{:git/url ... :git/tag "clojure/vX.Y.Z" :git/sha "<40 chars>" :deps/root "clojure"}` |
+   | `lean` | `[[require]] name = "omni", git = ..., rev = "lean/vX.Y.Z", subDir = "lean"` |
 
    The prefix is not cosmetic: Go **requires** a subdirectory module's tags
    to be named `<subdir>/vX.Y.Z` and ignores every tag without it. The other
@@ -819,11 +822,12 @@ For each struct port:
    in a NEW version. Get the number right the first time.
 
    CI checks out `voxgig/omni` beside the
-   consuming repo and exports `OMNI_HOME`. Only the *tests* depend on
+   consuming repository and exports `OMNI_HOME`. Only the *tests* depend on
    omni; the shipped library never does, so struct's zero-runtime-
    dependency rule is untouched.
 2. Write the provider adapter - about 30 lines, mapping the four hooks in
-   the table above onto that port's SDK.
+   the table in [8.1](#81-what-structs-runner-does-that-omni-must-do) onto
+   that port's SDK.
 3. Replace the runner import in the port's test file.
 4. Delete `<lang>/test/runner.*`.
 5. Run the port's suite. Any difference is a real behavioural difference
@@ -858,13 +862,13 @@ failure text - is *intended* to be identical across all twenty-four ports,
 and the Fibonacci suite proves it **only for the cases the corpus actually
 exercises**.
 
-That qualifier is load-bearing, and it is the honest limit of what is
+That qualifier is the whole claim, and it is the limit of what is
 checked. It is narrower than it may first appear, in two stacked ways.
 First, the corpus is JSON, so a value JSON has no literal for cannot appear
 in an entry at all, and port behaviour on such a value is unproven by
 construction. Second - and this is the larger gap - `fib.aon` is a finite
 set of entries, not an enumeration of JSON: a port can diverge on a
-perfectly JSON-expressible value, magnitude or nesting shape that simply is
+perfectly JSON-expressible value, magnitude, or nesting shape that simply is
 not in the corpus, and every suite stays green. `tools/check_parity.py` does not close the gap either: it is
 a NAME check by design and says so in its own docstring - it confirms each
 canonical identifier appears as a token in a port's source, and a port
@@ -872,10 +876,10 @@ whose `deepequal` was `return true` would pass it.
 
 **NaN is the worked example.** `deepequal(NaN, NaN)` must be `true` -
 deepequal is structural, not IEEE - and six ports silently disagreed:
-php, ruby, lua, perl, clojure and zig. Every suite stayed green throughout,
-because `spec/fib.json` contains no NaN and cannot: JSON has no NaN
-literal, and the sentinel set (`__NULL__`, `__UNDEF__`, `__EXISTS__`) has
-no member for it. Ruby was the sharpest case - it returned `true` for
+`php`, `ruby`, `lua`, `perl`, `clojure`, and `zig`. Every suite stayed
+green throughout, because `spec/fib.json` contains no NaN and cannot: JSON
+has no NaN literal, and the sentinel set (`__NULL__`, `__UNDEF__`,
+`__EXISTS__`) has no member for it. Ruby was the sharpest case - it returned `true` for
 `deepequal(Float::NAN, Float::NAN)` and `false` for two *distinct* NaNs,
 because `Float::NAN` is a single constant object caught by an identity
 fast-path. A test written the obvious way would have passed and proved
@@ -884,5 +888,5 @@ nothing.
 The divergence is fixed. The structural point is not: where neither the
 corpus nor the name check reaches, ports can drift silently, and no port
 currently unit-tests `deepequal`, `clone`, `getpath`, `walk`, `jsonstr`,
-`stringify` or `pathify` directly - the whole util surface is exercised
+`stringify` or `pathify` directly - the whole utility surface is exercised
 only incidentally, through JSON-expressible values.

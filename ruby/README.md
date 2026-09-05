@@ -19,7 +19,7 @@ R[:runset].call(R[:spec]['basic'], FIB)
 R[:runsetflags].call(R[:spec]['nulls'], { null: false }, FIBINFO)
 ```
 
-A failing check raises `VoxgigOmni::OmniError`, which minitest, RSpec and
+A failing check raises `VoxgigOmni::OmniError`, which minitest, RSpec, and
 Test::Unit all report as a failure.
 
 ## struct compatibility

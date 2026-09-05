@@ -35,7 +35,7 @@ A subject is `(fn [args] ...)` over a vector of JSON values.
 
 ## Notes
 
-- No clojure.data.json, no cheshire: `json.clj` parses into native maps
+- No `clojure.data.json`, no cheshire: `json.clj` parses into native maps
   (string keys), vectors, doubles, booleans and nil.
 - `(= 5 5.0)` is false in Clojure, so `deepequal` compares numbers with
   `==`.

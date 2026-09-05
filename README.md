@@ -34,8 +34,8 @@ Same file. Same entries. Same pass/fail. In every port.
 ## Why
 
 A library that ships in many languages has one hard problem: keeping the
-ports honest. Per-language test suites drift, because each one is written
-by hand against its own idea of the behaviour.
+ports in agreement. Per-language test suites drift, because each one is
+written by hand against its own idea of the behaviour.
 
 omni removes the hand-written part. The behaviour lives in a JSON spec;
 each language ships a *runner* that executes that spec against the local
@@ -222,8 +222,7 @@ guide and the provider adapter.
 │   ├── check_parity.py    # every port defines the canonical API
 │   └── struct_compat.sh   # run struct's own suite on omni
 ├── Makefile           # test / build / parity / spec / struct-compat
-├── DOCS.md            # the comprehensive guide
-└── AGENTS.md          # notes for agents working in this repo
+└── DOCS.md            # the guide: spec format, semantics, API
 ```
 
 
