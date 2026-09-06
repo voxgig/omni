@@ -29,6 +29,10 @@ permissions:
   contents: read
 
 env:
+  # The scala toolchain, pinned and shared with voxgig/sekreto - see the
+  # Setup Scala step below for why "whatever is newest" is not an option for
+  # a port whose build output other repositories compile against.
+  SCALA_VERSION: '3.4.2'
   # struct-compat runs voxgig/struct's own JavaScript suite against omni's
   # runner, so it checks that repo out. Pinned to a SHA rather than floating
   # on struct's default branch: unpinned, a red run has three possible causes
@@ -89,10 +93,23 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: coursier/setup-action@9b7939bf01fd1185ce2babe16135168361bf2c62 # v3
+      # PINNED, and pinned to the SAME version voxgig/sekreto uses. This was
+      # `coursier/setup-action` with `apps: scala scalac scala-cli`, which
+      # installs whatever is newest - and this port's build output is read by
+      # other repositories, so "newest" is not a local choice. A 3.9.0 build
+      # here made sekreto's scala port fail with "Forward incompatible TASTy
+      # file has version 28.9 ... expected stable TASTy from 28.0 to 28.4",
+      # reported in sekreto against a file it does not own. The tarball is the
+      # whole distribution and needs only the JDK above; scala/Makefile finds
+      # the runtime jars from scalac's own location, so no path is repeated.
+      - name: Setup Scala
         if: matrix.lang == 'scala'
-        with:
-          apps: scala scalac scala-cli
+        run: |
+          curl -sSLf --retry 3 -o /tmp/scala3.tar.gz \
+            "https://github.com/scala/scala3/releases/download/${SCALA_VERSION}/scala3-${SCALA_VERSION}.tar.gz"
+          mkdir -p /opt/scala3
+          tar xzf /tmp/scala3.tar.gz -C /opt/scala3 --strip-components=1
+          echo /opt/scala3/bin >> "$GITHUB_PATH"
       # Not via coursier: it has no `kotlinc` app in either channel, which
       # is what the second CI run failed on. The official release zip is
       # version-pinned and needs nothing else.
