@@ -50,7 +50,7 @@ A runner reads plain JSON — that is all a port ever needs, and it is why a
 port in any language can run the corpus with no toolchain beyond its own.
 
 How that JSON is *written* is a separate question. omni's own corpus is
-written in [aontu](https://github.com/voxgig/aontu) — see
+written in [aontu](https://github.com/aontu-lang/aontu) — see
 [`spec/fib.aon`](spec/fib.aon) — and compiled to
 [`spec/fib.json`](spec/fib.json) by `make spec`, which is what lets it carry
 comments and share definitions. Your specs can be authored however you like;

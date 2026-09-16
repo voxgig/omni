@@ -92,7 +92,7 @@ Every port ships the same tiny Fibonacci library and tests it with the same
 [`spec/fib.json`](spec/fib.json). It is the cross-language proof that the
 runners agree: nine groups covering every runner feature.
 
-The corpus is written in [aontu](https://github.com/voxgig/aontu) —
+The corpus is written in [aontu](https://github.com/aontu-lang/aontu) —
 [`spec/fib.aon`](spec/fib.aon) is the source of truth, and `fib.json` is
 compiled from it by `make spec` and committed, so that no port needs a Node
 toolchain to run its tests. Edit the aontu, never the JSON.
