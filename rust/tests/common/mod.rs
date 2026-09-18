@@ -6,8 +6,6 @@
 
 use voxgig_omni::{stringify, Json};
 
-/// Validate a Fibonacci index. Errors are part of the contract: the spec
-/// matches on these messages.
 pub fn fibindex(val: &Json) -> Result<i64, String> {
     let num = match val {
         Json::Num(num) => *num,
@@ -25,7 +23,6 @@ pub fn fibindex(val: &Json) -> Result<i64, String> {
     Ok(num as i64)
 }
 
-/// The nth Fibonacci number: fib(0)=0, fib(1)=1.
 pub fn fibnum(index: i64) -> i64 {
     if 0 == index {
         return 0;
@@ -48,7 +45,6 @@ pub fn fib(val: &Json) -> Result<Json, String> {
     Ok(Json::Num(fibnum(index) as f64))
 }
 
-/// The first n Fibonacci numbers.
 pub fn fibseq(val: &Json) -> Result<Json, String> {
     let count = fibindex(val)?;
     let mut out = Vec::new();
@@ -58,7 +54,6 @@ pub fn fibseq(val: &Json) -> Result<Json, String> {
     Ok(Json::List(out))
 }
 
-/// The Fibonacci numbers from index start to index end, inclusive.
 pub fn fibrange(start: &Json, end: &Json) -> Result<Json, String> {
     let from = fibindex(start)?;
     let to = fibindex(end)?;

@@ -53,12 +53,6 @@ var (
 	FIBINFO = omni.Subject(func(args ...any) (any, error) {
 		return fib.FibInfo(args[0])
 	})
-	// The context-group subject: reports what the runner delivered - the
-	// contextify mark and the attached client - as plain data, so the spec
-	// can pin both with an ordinary `out` comparison in every port.
-	// A subject that returns the sentinel text "__UNDEF__" as ordinary data.
-	// A match of `{"__UNDEF__"}` asserts the key is ABSENT, so it must not be
-	// satisfied by a present key that happens to hold that literal string.
 	FIBUNDEFLIT = omni.Subject(func(args ...any) (any, error) {
 		return map[string]any{"a": "__UNDEF__"}, nil
 	})
@@ -492,13 +486,7 @@ func TestRunner(t *testing.T) {
 	})
 }
 
-// DeepEqual is structural, not IEEE: two NaNs are equal, however they were
-// made. spec/fib.json cannot pin this - JSON has no NaN literal - so it is
-// pinned here.
 func TestDeepEqualNaN(t *testing.T) {
-	// Two NaNs from two DIFFERENT expressions. A test written with one
-	// shared NaN constant used twice can pass on an identity fast-path
-	// while proving nothing.
 	zero := 0.0
 	n1 := zero / zero
 	n2 := math.Inf(1) - math.Inf(1)
@@ -507,9 +495,6 @@ func TestDeepEqualNaN(t *testing.T) {
 		t.Fatalf("omni: expected two NaNs, got: %v %v", n1, n2)
 	}
 
-	// Go floats have no object identity, so IEEE inequality is the check
-	// that keeps the two values honestly distinct: if this ever holds,
-	// someone has replaced a NaN with an ordinary number.
 	if n1 == n2 {
 		t.Fatalf("omni: NaN must not be IEEE-equal to NaN: %v %v", n1, n2)
 	}

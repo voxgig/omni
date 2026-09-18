@@ -1,7 +1,3 @@
-//! Omni internal JSON utilities.
-//!
-//! Self-contained by design: the omni runner must be able to test *any*
-//! library, including libraries that provide these same operations.
 
 use crate::json::Json;
 
@@ -87,7 +83,6 @@ pub fn deepequal(a: &Json, b: &Json) -> bool {
     }
 }
 
-/// Render a number the same way in every port: 5.0 prints as 5.
 pub fn numstr(val: f64) -> String {
     if val.is_nan() || val.is_infinite() {
         return "null".to_string();

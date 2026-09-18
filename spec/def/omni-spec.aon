@@ -1,52 +1,6 @@
 
-# The spec-format shape, written in aontu — the same language the corpus
-# itself is written in.
-#
-# This is used by tools/check-spec-shape.js, which unifies it with each
-# spec SOURCE and discards the result: the question asked is only "does
-# the corpus unify with the shape", and a violation is an ordinary aontu
-# conflict, reported with an error code, the exact spec path, and the
-# source file it came from.
-#
-# It is deliberately NOT unified into the corpus during `make spec`. Under
-# aontu 0.48.2 an optional key holding an empty container (`out: []`) is
-# treated as unresolved and DROPPED from the output, which would silently
-# rewrite entries like fib/seq#empty into "no out" - a different test.
-# Keeping the check separate from the build keeps the artifact exact.
-#
-# WHAT THIS ENFORCES (see DOCS.md 2.7):
-#   - entry fields limited to the nine defined ones - the typo class, where
-#     `matches:` silently replaces `match:` and the assertion disappears
-#   - field types: id and client are strings, doc is boolean, err is a
-#     boolean or a string; `id: null` is rejected here too
-#
-# WHAT IT DOES NOT ENFORCE, and why:
-#   - at most one of in/args/ctx, and `err` never beside `out`: cross-field
-#     rules needing `must()`, which aontu 0.48.2 does not implement (Band B
-#     of its constraint algebra)
-#   - a non-empty `set`: needs the `length()` sizing atom, likewise absent
-# The runner enforces all three at run time in every port, and remains the
-# authority on spec semantics. When aontu gains `must` and `length` they
-# belong here, so that a malformed spec fails at build rather than at test.
 
 
-# The spec metadata block. `version` is what turns on strict entry
-# validation in every runner, so a spec that loses or mistypes it does not
-# fail loudly - it silently downgrades the checking in 23 ports at once.
-# Closed, so a misspelled `versoin:` is an unknown key rather than a
-# second marker nobody reads.
-#
-# `version` is pinned to the one defined version rather than to `integer`:
-# a bump is a decision about every runner's baseline, and it should have to
-# be made here as well as in the spec. Update both when version 2 exists.
-#
-# `requires` is optional and unconstrained - it names capabilities beyond
-# the version baseline, and the runner is the authority on those.
-#
-# ABSENCE is NOT caught here, and cannot be: unifying `{}` with
-# `{version: 1}` fills the key in rather than objecting. That case is
-# checked in tools/build-spec.js against the built artifact, which is what
-# every port actually reads.
 Meta: hide(close({
   version: 1
   requires?: top

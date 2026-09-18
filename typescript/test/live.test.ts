@@ -1,14 +1,3 @@
-// RUN: npm test
-//
-// Behaviour required by ports that drive entries with LIVE objects rather
-// than pure JSON.
-//
-// omni's own conformance suite feeds it spec/fib.json, so every value it
-// sees is finite, acyclic and Error-shaped. A port embedding omni in a
-// larger system does not get that: voxgig/sdkgen runs its corpus against a
-// live client, whose context reaches the client and whose client reaches
-// the context again, and whose generated error path rethrows a plain map.
-// Each case below crashed or silently mismatched before.
 
 import { describe, test } from 'node:test'
 import assert from 'node:assert'
@@ -63,8 +52,6 @@ describe('live-object safety', () => {
 
 
   test('errify keeps the message of an error-SHAPED map', () => {
-    // A thrown plain object, not an Error. Collapsing it to String(err)
-    // gave '[object Object]', which fails every match.err.* leaf.
     const out: any = errify({ name: 'HttpError', message: 'not found', status: 404 })
 
     assert.equal(out.name, 'HttpError')

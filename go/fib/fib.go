@@ -32,7 +32,6 @@ func FibIndex(val any) (int, error) {
 	return int(num), nil
 }
 
-// Fib is the nth Fibonacci number: fib(0)=0, fib(1)=1.
 func Fib(n any) (int, error) {
 	index, err := FibIndex(n)
 	if nil != err {
@@ -53,7 +52,6 @@ func Fib(n any) (int, error) {
 	return cur, nil
 }
 
-// FibSeq is the first n Fibonacci numbers.
 func FibSeq(n any) ([]any, error) {
 	count, err := FibIndex(n)
 	if nil != err {

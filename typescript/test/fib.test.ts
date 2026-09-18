@@ -42,17 +42,6 @@ function fibprovider(shift: number): Provider {
   }
 }
 
-// The same provider, plus the `errify` hook: fib's errors gain a CODE.
-//
-// A SECOND runner rather than a hook on `fibprovider`, so that the
-// `error` group keeps exercising the DEFAULT errify. One provider
-// carrying the hook would have moved every existing `match.err`
-// assertion onto the override and left the default path untested by the
-// spec.
-//
-// The derivation is deliberately message-based: fib's messages are
-// pinned by the spec, and five ports have nothing but the message at
-// this point anyway. A real library reads its own error object.
 function fiberrcode(message: string): string {
   return message.includes('negative index') ? 'fib_negative'
     : message.includes('non-integer') ? 'fib_noninteger'
@@ -337,14 +326,6 @@ describe('runner', () => {
   })
 })
 
-// deepequal is structural, not IEEE: NaN equals NaN, everywhere, including
-// inside containers. The spec suite cannot reach this - spec/fib.json is
-// JSON, and JSON has no NaN literal - so it is pinned here directly.
-//
-// The two NaNs come from two DIFFERENT expressions, deliberately. A test
-// written with one NaN constant used twice can be satisfied by an identity
-// fast-path alone (`a === b` at the top of deepequal) and would prove
-// nothing about the NaN branch.
 describe('deepequal', () => {
   const n1 = 0 / 0
   const n2 = Number.POSITIVE_INFINITY - Number.POSITIVE_INFINITY

@@ -1,10 +1,3 @@
-// Omni internal JSON utilities.
-//
-// This file is deliberately self-contained: the omni runner must be able to
-// test *any* library, including libraries that provide these same
-// operations, so it can never borrow them from the system under test.
-// Standard library only, by design.
-
 package omni
 
 import (
@@ -246,7 +239,6 @@ func DeepEqual(a any, b any) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// NumStr renders a number the same way in every port: 5.0 prints as 5.
 func NumStr(val float64) string {
 	if math.IsNaN(val) || math.IsInf(val, 0) {
 		return "null"
@@ -285,13 +277,6 @@ func Quote(val string) string {
 	return out.String()
 }
 
-// JsonStr is compact JSON text with map keys sorted, so that messages are
-// identical in every port regardless of local map ordering.
-//
-// GUARDED against cycles: this renders FAILURE MESSAGES, and an entry
-// carrying a live cyclic value recursed until the stack gave out. A cycle
-// renders as "[Circular]". The ancestor set tracks the CURRENT PATH only,
-// removed again on the way out, so a DAG still renders in full.
 func JsonStr(val any) string {
 	return jsonstrSeen(val, map[uintptr]bool{})
 }
