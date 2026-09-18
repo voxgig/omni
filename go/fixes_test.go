@@ -36,8 +36,6 @@ func TestJsonStrCycle(t *testing.T) {
 		t.Fatalf("a cycle must render as [Circular], got %s", out)
 	}
 
-	// A DAG - the same object as two siblings - is NOT a cycle and must
-	// render in full both times.
 	leaf := map[string]any{"x": 1}
 	dag := map[string]any{"a": leaf, "b": leaf}
 	out = JsonStr(dag)

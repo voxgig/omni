@@ -156,3 +156,15 @@ scan-prose:
 	  echo " see .github/workflows/docs.yml for the pinned version)"; \
 	fi
 	@python3 tools/check_prose.py
+
+.PHONY: comments comments-test hooks
+comments:
+	node tools/comment-gate.cjs
+
+comments-test:
+	node --test tools/comment-gate.test.cjs
+
+hooks:
+	git config core.hooksPath .githooks
+
+test: comments

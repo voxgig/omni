@@ -1,13 +1,3 @@
-//! A small backtracking regex engine.
-//!
-//! Omni specs match error messages with `/pattern/` expectations, so every
-//! port needs a regex. Rust has no regex in its standard library, and omni
-//! adds no third-party dependencies, so it carries this one.
-//!
-//! Supported: literals, `.`, `^`, `$`, `|`, groups `(...)`, classes
-//! `[a-z0-9_]` and `[^...]`, quantifiers `* + ? {m} {m,} {m,n}` (greedy,
-//! and lazy with a trailing `?`), and the escapes `\d \D \w \W \s \S \n
-//! \r \t` plus any escaped punctuation.
 
 #[derive(Clone, Debug)]
 enum Node {

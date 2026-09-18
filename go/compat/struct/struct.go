@@ -1,24 +1,3 @@
-// Drop-in replacement for the in-situ test runner in the voxgig/struct
-// repository (`go/testutil/runner.go`).
-//
-// struct's own runner and omni's runner implement the same spec format;
-// this package exposes omni behind struct's exact runner API, so the Go
-// port switches over by deleting its runner and re-exporting this package
-// from `go/testutil/omni.go`. Everything else - the corpus, the SDK, the
-// test files - is unchanged. This is the Go peer of
-// javascript/compat/struct.js and python/voxgig_omni/compat/struct.py.
-//
-// The package never imports struct: a compat shim that linked the library
-// under test would make omni depend on the thing it is meant to check. The
-// SDK is reached by reflection instead, over the four names struct's SDK
-// already exposes: Utility(), Utility().Struct(), Utility().Contextify()
-// and Tester().
-//
-// Two shapes cannot cross the language boundary and so stay in struct's
-// own test tree: `NullModifier`, whose signature names struct's
-// `*voxgigstruct.Injection`, and the `Fdt`/`ToJSONString` debug helpers,
-// which are not runner API at all.
-
 package structcompat
 
 import (
@@ -338,29 +317,6 @@ func callnamed(target any, name string) any {
 	return out[0].Interface()
 }
 
-// novalargs is the go peer of the python shim's `zeroargs` and the ruby
-// shim's `undefargs`: struct's corpus carries seventeen entries with no
-// `in`, `args` or `ctx`, meaning "call the subject with no arguments", and
-// each port's runner spelled that its own way.
-//
-// go's runner spelled it by not running them - it skipped this class
-// outright, on a hardcoded T_noval comparison, so the port's suite never
-// asserted them. There is no prior behaviour to reproduce, so the shim
-// gives them the port's own no-value instead, which is what canonical
-// means by them: `typify()` is T_noval where `typify(null)` is
-// T_scalar|T_null.
-//
-// The rewrite is in memory and for this port only; the corpus on disk is
-// untouched. When the port exposes no sentinel the spec is returned
-// unchanged.
-//
-// What goes into the spec is a MARKER, not the sentinel: omni's runner
-// runs `fixjson` over the whole group, arguments included (register 4.2's
-// third channel defect), and a Go sentinel is a struct pointer, so it
-// would arrive at the subject as the string "{NOVAL}" and typify as a map.
-// The marker is a string, so it survives untouched, and `novalsubject`
-// swaps it for the real sentinel at the call boundary. The marker is
-// private to this shim, so nothing in a corpus can collide with it.
 func novalargs(testspec any, sentinel any) (any, bool) {
 	if nil == sentinel {
 		return testspec, false
@@ -409,25 +365,8 @@ func novalargs(testspec any, sentinel any) (any, bool) {
 	return out, true
 }
 
-// NOVALMARK stands in for the port's no-value between novalargs and
-// novalsubject. Deliberately not one of omni's own sentinels: those are
-// meaningful to the runner, and this one must pass through it inert.
 const NOVALMARK = "__STRUCTCOMPAT_NOVAL__"
 
-// novalsubject swaps the marker back for the port's real sentinel, at the
-// point of call - after the runner has finished normalising the spec.
-//
-// `patched` is what keeps the marker honest. Without it, a corpus that
-// legitimately authored the marker string in `in` or `args` would have that
-// value silently replaced. The wrapper is only installed for a spec
-// novalargs actually rewrote, so an authored string is never touched.
-//
-// Known gap: an entry that BOTH omits in/args/ctx and carries `client` gets
-// its subject from the client provider, via omni's resolvetestpack, which
-// bypasses this wrapper - so that subject would see the marker rather than
-// the sentinel. Measured against struct's corpus: of the seventeen implicit
-// entries, zero carry `client`, so it is unreachable today. Closing it means
-// wrapping the subject inside StructProvider, DEF.client providers included.
 func novalsubject(subject Subject, sentinel any, patched bool) Subject {
 	if nil == sentinel || nil == subject || !patched {
 		return subject
@@ -458,31 +397,6 @@ func noargs(entry any) bool {
 	return true
 }
 
-// fixnums reproduces the Float64 branch of struct's own `fixJSON`
-// (`go/testutil/runner.go`, before the swap): an integral JSON number
-// becomes a Go `int`.
-//
-// Go is the only port where this matters, and it is not cosmetic. struct's
-// Go API is written in `int` - `Typename(t int)`, `Flatten(list, depths
-// ...int)`, `Stringify(val, maxlen ...int)`, `Merge(val, maxdepths ...int)`
-// - and struct's test file destructures entries itself, doing
-// `m["depth"].(int)` on the way in. omni's Go runner keeps JSON numbers as
-// `float64`, which is right for its own value model but hands struct a type
-// its API and its tests both reject: a direct subject fails `callarg` with
-// "not assignable to parameter type int", and a destructuring closure
-// panics outright with "interface conversion: interface {} is float64, not
-// int".
-//
-// So the shim normalises where struct's runner did, and on both sides for
-// the same reason struct's did: `fixJSON` ran over the whole group, results
-// included. Normalising only the spec would leave an `int` expectation
-// compared against a `float64` result, which omni's deepequal correctly
-// refuses to conflate.
-//
-// Non-integral numbers are left alone, and so is every other numeric type -
-// `float32` included, deliberately: struct's fixJSON had a Float64 branch and
-// nothing else, and converting a float32 would break a subject whose
-// parameter is typed float32. Nothing outside the Float64 branch is touched.
 func fixnums(val any) any {
 	switch value := val.(type) {
 	case float64:

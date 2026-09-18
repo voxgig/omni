@@ -162,12 +162,6 @@ impl From<String> for Json {
     }
 }
 
-/// Maximum nesting depth the parser will follow. Omni specs are trusted
-/// input, so this is crash-safety, not a security boundary: past this
-/// depth the recursive parser would overflow the stack and abort the
-/// process, so it returns an error instead. 1024 is far beyond any real
-/// spec, and low enough that reaching the limit itself fits comfortably
-/// in a default (2MiB) test-thread stack even in debug builds.
 const MAX_DEPTH: usize = 1024;
 
 /// Parse JSON text into a [`Json`] value.

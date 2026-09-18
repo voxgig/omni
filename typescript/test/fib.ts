@@ -6,8 +6,6 @@
 
 import { stringify } from '../src/Util'
 
-// Validate a Fibonacci index. Errors are part of the contract: the spec
-// matches on these messages.
 function fibindex(val: any): number {
   if ('number' !== typeof val || !isFinite(val)) {
     throw new Error('fib: not a number: ' + stringify(val))
@@ -24,7 +22,6 @@ function fibindex(val: any): number {
   return val
 }
 
-// The nth Fibonacci number: fib(0)=0, fib(1)=1, fib(n)=fib(n-1)+fib(n-2).
 function fib(n: any): number {
   const index = fibindex(n)
 
@@ -44,7 +41,6 @@ function fib(n: any): number {
   return cur
 }
 
-// The first n Fibonacci numbers.
 function fibseq(n: any): number[] {
   const count = fibindex(n)
   const out: number[] = []
@@ -56,7 +52,6 @@ function fibseq(n: any): number[] {
   return out
 }
 
-// The Fibonacci numbers from index start to index end, inclusive.
 function fibrange(start: any, end: any): number[] {
   const from = fibindex(start)
   const to = fibindex(end)

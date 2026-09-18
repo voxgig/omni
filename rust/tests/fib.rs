@@ -737,16 +737,10 @@ fn regex_matching() {
     assert!(!Regex::new("\\d+\\.\\d+").unwrap().is_match("pi is 314"));
 }
 
-// deepequal is structural, not IEEE: two NaNs are equal, however they were
-// made. spec/fib.json cannot pin this - JSON has no NaN literal - so it is
-// pinned here.
 #[test]
 fn deepequal_nan() {
     use voxgig_omni::deepequal;
 
-    // Two NaNs from two DIFFERENT expressions. A test written with one
-    // shared NaN constant used twice can pass on an identity fast-path
-    // while proving nothing.
     let zero = 0.0f64;
     let n1 = zero / zero;
     let n2 = f64::INFINITY - f64::INFINITY;

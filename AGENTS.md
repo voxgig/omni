@@ -226,8 +226,7 @@ release from main would have dropped.
   [`DOCS.md`](DOCS.md#6-failure-messages) is identical in every port and is
   asserted by each port's "reports entry index and id" test. Changing it
   means changing all twenty-four.
-- **Comments explain why, not what.** Match the density of the surrounding
-  code.
+- **Comments explain why, not what.** Follow COMMENT-POLICY.md for the density limit.
 - **Commit messages.** Conventional and scoped: `fix(go): ...`,
   `feat(spec): ...`, `docs: ...`. Say what changed, why, and what tests
   were run.
@@ -418,3 +417,11 @@ or deleted as it goes stale; `handover.md` is the durable half.
 - The contract: [`spec/fib.aon`](spec/fib.aon) (compiled to
   [`spec/fib.json`](spec/fib.json) by `make spec`)
 - The struct replacement path: [`DOCS.md`](DOCS.md#8-replacing-structs-in-situ-runners)
+
+## Source code comments
+
+Follow [COMMENT-POLICY.md](COMMENT-POLICY.md): comments are sparse and terse,
+only for intricate or surprising code. Names carry intent; documents carry
+requirements. Run `make comments comments-test` after editing source.
+
+Durable implementation rationale is in [COMMENT-NOTES.md](COMMENT-NOTES.md).

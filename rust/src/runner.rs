@@ -1,11 +1,3 @@
-//! Omni: the shared multi-language test runner.
-//!
-//! Port of the canonical TypeScript implementation
-//! (typescript/src/Runner.ts). Behaviour must match, case for case.
-//!
-//! Rust has no exceptions, so a failing check is returned as an
-//! [`OmniError`] rather than thrown, and a subject reports failure as
-//! `Err(String)`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,18 +13,6 @@ use crate::util::{
 /// JSON values; an error is reported as its message.
 pub type Subject = Rc<dyn Fn(&[Json]) -> Result<Json, String>>;
 
-/// A subject that may MUTATE its arguments, which `match.args` can then
-/// assert on. `minor/setpath` is the case in point: eight of its nine entries
-/// assert that the store was rewritten in place.
-///
-/// Separate from `Subject` rather than replacing it, because omni's Rust API
-/// has consumers outside this repository (voxgig/sekreto vendors it) and a
-/// signature change would break them for a capability most subjects do not
-/// need. A port that only reads its arguments keeps using `Subject`.
-///
-/// Dynamic-language ports have no equivalent: their shims write the mutation
-/// back into omni's own object after the call, because the value is shared.
-/// A Rust consumer holds a converted COPY and cannot.
 pub type SubjectArgs = Rc<dyn Fn(&mut [Json]) -> Result<Json, String>>;
 
 /// Run-time options for a set of test entries.
@@ -74,24 +54,9 @@ pub struct Provider {
     pub contextify: Option<Rc<dyn Fn(Json) -> Json>>,
     /// Resolve references in client options against the store.
     pub inject: Option<Rc<dyn Fn(&Json, &Json) -> Json>>,
-    /// Build the `match.err` base from the failure, REPLACING `errify`.
-    ///
-    /// Rust reports a subject failure as its message and nothing else -
-    /// `Subject` is `Fn(&[Json]) -> Result<Json, String>` - so a library
-    /// whose errors carry a code has no other way to put it in the base.
-    /// The hook receives that message and returns the base, letting a
-    /// spec assert `match: {err: {code: "x"}}` instead of pattern-matching
-    /// prose.
-    ///
-    /// Adding a field to this struct is source-breaking only for a
-    /// consumer whose `Provider { .. }` literal is exhaustive; the
-    /// in-repo idiom, and the one to recommend, is `..Provider::default()`.
     pub errify: Option<Rc<dyn Fn(&str) -> Json>>,
 }
 
-/// The newest spec format version this runner understands. A spec with no
-/// OMNI block is version 0: the original, lenient format, frozen forever.
-/// Version 1 turns on strict entry validation (see checkentry).
 pub const SPECVERSION: f64 = 1.0;
 
 /// Capability strings this runner supports beyond the version baseline. A
@@ -492,12 +457,6 @@ impl RunPack {
             if let Some(contextify) = &self.provider.contextify {
                 first = contextify(first);
             }
-            // The resolved client is a live Provider (closures over the
-            // system under test), and this port's Json carries no
-            // host-object variant to hold one - so canonical's
-            // `first.client = testpack.client` becomes presence, not
-            // identity: enough for a subject to prove the runner attached
-            // a client at all.
             if let Json::Map(map) = &mut first {
                 map.insert("client".to_string(), Json::Bool(true));
             }
@@ -539,16 +498,6 @@ pub fn fixjson(val: &Json, flags: &Flags) -> Json {
 
 fn fixjsonval(val: &Json, donull: bool) -> Json {
     match val {
-        // Canonical returns the value UNCHANGED when donull is false
-        // (typescript/src/Runner.ts): `undefined` stays undefined and `null`
-        // stays null. Answering Json::Null for both collapsed two states the
-        // corpus distinguishes - an absent result became indistinguishable
-        // from a null one, so a subject that returned nothing could never
-        // match an entry with no `out`.
-        //
-        // Same defect omni-lua carried (voxgig/omni#17). Only ports whose
-        // model has a SEPARATE absent value can express it; the rest have
-        // nothing to lose here.
         Json::Absent | Json::Null => {
             if donull {
                 Json::str(NULLMARK)
@@ -782,15 +731,6 @@ fn matchwalk(
         leaf => {
             let baseval = getpath(base, path);
 
-            // The sentinels are tested BEFORE the identity check below.
-            // Otherwise a subject returning the literal string "__UNDEF__"
-            // satisfies an assertion that the key is absent - two mutually
-            // exclusive states passing one check. A sentinel that accepts
-            // its own literal is not a sentinel. (NULLMARK still accepts
-            // NULLMARK: under the default null flag a real null has already
-            // been normalised to it, so the two are genuinely
-            // indistinguishable here - that one needs a raw-value escape,
-            // not an ordering change.)
 
             // Explicitly absent: satisfied only by a genuinely missing key,
             // never by a present null (the distinction the sentinels exist
@@ -839,8 +779,6 @@ fn matchwalk(
                 ));
             }
 
-            // Identical values match. This sits below the sentinel branches
-            // on purpose - see the note above.
             if deepequal(leaf, &baseval) {
                 return Ok(());
             }
