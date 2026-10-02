@@ -1,5 +1,3 @@
-#![doc = include_str!("../COMMENT-NOTES.md")]
-
 pub mod json;
 pub mod regex;
 pub mod runner;
