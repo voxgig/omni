@@ -10,7 +10,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use Test::More tests => 16;
+use Test::More tests => 19;
 
 use Voxgig::Omni::Runner qw(makeRunner CAPABILITIES);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -177,6 +177,50 @@ subtest "a raising hook is the entry's error, not the set's" => sub {
         { subject => sub { die "subject boom\n" if 'boom' eq $_[0]; return $FIB } }
     )->('fib');
     group( 'a raising subject hook', sub { $F->{runset}->( $F->{spec}{g}, $FIB ) } );
+};
+
+subtest "a waiting entry holds a hook's error raised before the subject starts" => sub {
+    plan tests => 2;
+    my $hooked = {
+        subject => sub {
+            die "subject boom\n" if 'boom' eq $_[0];
+            return 'fib' eq $_[0] ? $FIB : undef;
+        },
+    };
+    my $run = sub { makeRunner( $_[0], $hooked )->('fib') };
+
+    my $H = $run->(
+        v1( [ 'fn', 'wait' ], [ { fn => 'boom', 'in' => 6, out => 8, wait => { cause => 'hook#2' } } ] ) );
+    group( 'held', sub { $H->{runset}->( $H->{spec}{g}, $FIB ) } );
+
+    my $S = $run->(
+        v1( [ 'fn', 'wait' ],
+            [ { fn => 'boom', 'in' => 6, err => 'subject boom', wait => { cause => 'hook#3' } } ] ) );
+    refuses( 'stale', sub { $S->{runset}->( $S->{spec}{g}, $FIB ) }, qr/\[0\]: stale wait: hook#3/ );
+};
+
+subtest 'fn needs no default subject, but an entry without fn does' => sub {
+    plan tests => 3;
+    my $fibx = { subject => sub { return 'fibx' eq $_[0] ? $FIB : undef } };
+
+    my $R = makeRunner( v1( ['fn'], [ { fn => 'fibx', 'in' => 6, out => 8 } ] ), $fibx )->('fib');
+    group( 'fn alone', sub { $R->{runset}->( $R->{spec}{g} ) } );
+
+    my $N = makeRunner( v1( ['fn'], [ { fn => 'fibx', 'in' => 6, out => 8 }, { 'in' => 6, out => 8 } ] ),
+        $fibx )->('fib');
+    refuses( 'an entry without fn', sub { $N->{runset}->( $N->{spec}{g} ) },
+        qr/\Aomni: no test subject for: fib\z/ );
+
+    my $L = makeRunner( v1( [], [ { 'in' => 6, out => 8 } ] ), $fibx )->('fib');
+    refuses( 'no fn capability', sub { $L->{runset}->( $L->{spec}{g} ) },
+        qr/\Aomni: no test subject for: fib\z/ );
+};
+
+subtest 'a wait is found by an id the entry owns, never an inherited one' => sub {
+    plan tests => 2;
+    my $R = runner( v1( [], [ { id => 'constructor', 'in' => 6, out => 8 }, { id => 'toString', 'in' => 7, out => 13 } ] ) );
+    group( 'no flag',    sub { $R->{runset}->( $R->{spec}{g}, $FIB ) } );
+    group( 'empty flag', sub { $R->{runsetflags}->( $R->{spec}{g}, { wait => {} }, $FIB ) } );
 };
 
 subtest 'all reports every failure at once' => sub {

@@ -694,7 +694,7 @@ sub makeRunner {
 
             my $subject = $testsubject || $defsubject;
             die Voxgig::Omni::OmniError->new( 'omni: no test subject for: ' . $useflags->{name} )
-              if !defined $subject;
+              if !defined $subject && !$fnon;
 
             my $testspecmap = fixjson( $testspec, $useflags );
 
@@ -712,29 +712,45 @@ sub makeRunner {
             my @failures;
 
             for my $index ( 0 .. $#$testset ) {
-                my $entry   = $testset->[$index];
-                my $started = 0;
+                my $entry = $testset->[$index];
 
                 my $ok = eval {
-                    $entry = resolveentry( $entry, $useflags );
+                    my ( $testpack, $prestart );
 
-                    my $testpack =
-                      resolvetestpack( $name, $entry, $subject, $useprovider, $clients, $fnon );
+                    # A hook's raw error before the subject starts is still the entry's.
+                    my $resolved = eval {
+                        $entry = resolveentry( $entry, $useflags );
+                        $testpack =
+                          resolvetestpack( $name, $entry, $subject, $useprovider, $clients, $fnon );
+                        1;
+                    };
+                    if ( !$resolved ) {
+                        my $err = $@;
+                        die $err if is_omni_error($err);
+                        $prestart = $err;
+                    }
+
+                    die Voxgig::Omni::OmniError->new(
+                        'omni: no test subject for: ' . $useflags->{name} )
+                      if !defined $prestart && !defined $testpack->{subject};
 
                     my $wait =
-                        ( $waiton && exists $entry->{wait} ) ? $entry->{wait}
+                        !ismap($entry)                       ? undef
+                      : ( $waiton && exists $entry->{wait} ) ? $entry->{wait}
                       : defined $entry->{id}                 ? $waits->{ $entry->{id} }
                       :                                        undef;
 
-                    $started = 1;
+                    my $run = sub {
+                        return defined $prestart
+                          ? handleerror( $useflags, $index, $entry, $prestart, $useprovider )
+                          : runentry( $useflags, $index, $entry, $testpack, $useprovider, $ctxargs );
+                    };
+
                     if ( !defined $wait ) {
-                        runentry( $useflags, $index, $entry, $testpack, $useprovider, $ctxargs );
+                        $run->();
                     }
                     else {
-                        my $passed = eval {
-                            runentry( $useflags, $index, $entry, $testpack, $useprovider, $ctxargs );
-                            1;
-                        };
+                        my $passed = eval { $run->(); 1 };
                         if ( !$passed ) {
                             my $err = $@;
                             die $err if !is_omni_error($err);
@@ -747,16 +763,9 @@ sub makeRunner {
 
                 next if $ok;
 
-                my $failure = $@;
-
-                # Before the subject starts, a hook's raw error is still the entry's.
-                if ( !$started && !is_omni_error($failure) ) {
-                    next if eval { handleerror( $useflags, $index, $entry, $failure, $useprovider ); 1 };
-                    $failure = $@;
-                }
-
-                die $failure if !( $all && is_omni_error($failure) );
-                push @failures, $failure->message;
+                my $err = $@;
+                die $err if !( $all && is_omni_error($err) );
+                push @failures, $err->message;
             }
 
             die Voxgig::Omni::OmniError->new( 'omni: '
