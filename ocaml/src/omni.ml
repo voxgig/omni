@@ -1103,10 +1103,17 @@ let resolvewaits label wait origset =
     waits
   | Some _ -> raise (Omni_error ("omni: " ^ label ^ ": wait flag is not a map"))
 
-let runentry label (flags : flags) index entry subject args (provider : provider) =
+(* A raw error is the entry's, for an `err` expectation to meet; the
+   runner's own failure passes through. *)
+let entryerror label index entry (provider : provider) err =
+  match err with
+  | Omni_error _ -> raise err
+  | _ -> handleerror label index entry (errmessage err) provider
+
+let runentry label (flags : flags) index entry subject (provider : provider) ctxargs =
   (* An args-subject may overwrite its argument array; the runner reads it
      back so `match.args` sees what the subject actually did. *)
-  let invoke () =
+  let invoke args =
     match subject with
     | Subject call -> (args, call args)
     | Subject_args call ->
@@ -1114,12 +1121,14 @@ let runentry label (flags : flags) index entry subject args (provider : provider
       let res = call cells in
       (Array.to_list cells, res)
   in
-  match invoke () with
-  | args, res ->
-    let fixed = fixjson res flags.null in
-    checkresult label index (jset entry "res" fixed) args fixed
-  | exception (Omni_error _ as err) -> raise err
-  | exception err -> handleerror label index entry (errmessage err) provider
+  match resolveargs entry provider ctxargs with
+  | exception err -> entryerror label index entry provider err
+  | args, entry -> (
+    match invoke args with
+    | args, res ->
+      let fixed = fixjson res flags.null in
+      checkresult label index (jset entry "res" fixed) args fixed
+    | exception err -> entryerror label index entry provider err)
 
 (* Make a runner for a spec value and a provider. Resolving the version
    here - outside the returned closure - fails fast: a spec this runner
@@ -1185,22 +1194,25 @@ let make_runner_spec alltests (provider : provider) =
          raise (Omni_error (Printf.sprintf "omni: %s[%d]: entry is not a map" label index));
 
        let entry = resolveentry rawentry flags in
-       let entrysubject = resolvetestpack name entry subject provider clients fnon in
-       let args, entry = resolveargs entry provider ctxargs in
 
-       let held =
-         if waiton && jhas entry "wait" then Some (jget entry "wait")
-         else Option.bind (asstr (jget entry "id")) (fun id -> List.assoc_opt id waits)
-       in
+       (* Only an error raised before the subject starts is handled here, so
+          one escaping handleerror is never handled twice. *)
+       match resolvetestpack name entry subject provider clients fnon with
+       | exception err -> entryerror label index entry provider err
+       | entrysubject -> (
+         let held =
+           if waiton && jhas entry "wait" then Some (jget entry "wait")
+           else Option.bind (asstr (jget entry "id")) (fun id -> List.assoc_opt id waits)
+         in
 
-       match held with
-       | None -> runentry label flags index entry entrysubject args provider
-       | Some heldwait -> (
-         match runentry label flags index entry entrysubject args provider with
-         | () ->
-           raise
-             (fail label index entry ("stale wait: " ^ stringify (jget heldwait "cause")) None None)
-         | exception Omni_error _ -> ())
+         match held with
+         | None -> runentry label flags index entry entrysubject provider ctxargs
+         | Some heldwait -> (
+           match runentry label flags index entry entrysubject provider ctxargs with
+           | () ->
+             raise
+               (fail label index entry ("stale wait: " ^ stringify (jget heldwait "cause")) None None)
+           | exception Omni_error _ -> ()))
      in
 
      let failures = ref [] in

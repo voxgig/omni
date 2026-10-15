@@ -532,6 +532,32 @@ let extsuite () =
       in
       pack.runset (pack.set "g") (Some fibsub));
 
+  testcase "a raising hook is the entry's error, not the set's" (fun () ->
+      let provider =
+        {
+          empty_provider with
+          subject = Some (fun _ -> Some fibsub);
+          contextify = Some (fun _ -> failwith "contextify boom");
+        }
+      in
+      let run spec = (make_runner_spec spec provider) "fib" None in
+      let epack = run (v1 "" {|{"ctx":{"n":6},"err":"contextify boom"}|}) in
+      epack.runset (epack.set "g") (Some fibsub);
+      let upack = run (v1 "" {|{"ctx":{"n":6},"out":8}|}) in
+      refuses
+        (fun () -> upack.runset (upack.set "g") (Some fibsub))
+        {|\[0\]: unexpected error\n\s+actual:\s+contextify boom|};
+      let wpack = run (v1 {|"wait"|} {|{"ctx":{"n":6},"out":8,"wait":{"cause":"hook#1"}}|}) in
+      wpack.runset (wpack.set "g") (Some fibsub);
+      let boom =
+        {
+          empty_provider with
+          subject = Some (fun name -> if name = "boom" then failwith "subject boom" else Some fibsub);
+        }
+      in
+      let fpack = (make_runner_spec (v1 {|"fn"|} {|{"fn":"boom","in":6,"err":"subject boom"}|}) boom) "fib" None in
+      fpack.runset (fpack.set "g") (Some fibsub));
+
   testcase "all reports every failure at once" (fun () ->
       let pack = extrunner (v1 "" {|{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}|}) in
       refuses
