@@ -10,7 +10,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Spec;
 use JSON::PP ();
-use Test::More tests => 15;
+use Test::More tests => 16;
 
 use Voxgig::Omni::Runner qw(makeRunner CAPABILITIES);
 use Fib qw(fib fibinfo fibrange fibseq);
@@ -156,6 +156,28 @@ subtest 'ctx with args needs ctxargs, and never takes in' => sub {
     );
     group( 'a legacy spec ignores fn and wait', sub { $L->{runset}->( $L->{spec}{g}, $FIB ) } );
 }
+
+subtest "a raising hook is the entry's error, not the set's" => sub {
+    plan tests => 4;
+    my $hooked = { subject => sub { $FIB }, contextify => sub { die "contextify boom\n" } };
+    my $run    = sub { makeRunner( $_[0], $hooked )->('fib') };
+
+    my $E = $run->( v1( [], [ { ctx => { n => 6 }, err => 'contextify boom' } ] ) );
+    group( 'err expects it', sub { $E->{runset}->( $E->{spec}{g}, $FIB ) } );
+
+    my $U = $run->( v1( [], [ { ctx => { n => 6 }, out => 8 } ] ) );
+    refuses( 'unexpected without err', sub { $U->{runset}->( $U->{spec}{g}, $FIB ) },
+        qr/\[0\]: unexpected error\n\s+actual:\s+contextify boom/ );
+
+    my $W = $run->( v1( ['wait'], [ { ctx => { n => 6 }, out => 8, wait => { cause => 'hook#1' } } ] ) );
+    group( 'a waiting entry holds it', sub { $W->{runset}->( $W->{spec}{g}, $FIB ) } );
+
+    my $F = makeRunner(
+        v1( ['fn'], [ { fn => 'boom', 'in' => 6, err => 'subject boom' } ] ),
+        { subject => sub { die "subject boom\n" if 'boom' eq $_[0]; return $FIB } }
+    )->('fib');
+    group( 'a raising subject hook', sub { $F->{runset}->( $F->{spec}{g}, $FIB ) } );
+};
 
 subtest 'all reports every failure at once' => sub {
     plan tests => 2;

@@ -647,10 +647,11 @@ sub resolvewaits {
 }
 
 sub runentry {
-    my ( $flags, $index, $entry, $testpack, $args, $provider ) = @_;
+    my ( $flags, $index, $entry, $testpack, $provider, $ctxargs ) = @_;
 
     my $ok = eval {
-        my $res = $testpack->{subject}->(@$args);
+        my $args = resolveargs( $entry, $testpack, $provider, $ctxargs );
+        my $res  = $testpack->{subject}->(@$args);
         $res = fixjson( $res, $flags );
         $entry->{res} = $res;
 
@@ -711,26 +712,27 @@ sub makeRunner {
             my @failures;
 
             for my $index ( 0 .. $#$testset ) {
-                my $entry = $testset->[$index];
+                my $entry   = $testset->[$index];
+                my $started = 0;
 
                 my $ok = eval {
                     $entry = resolveentry( $entry, $useflags );
 
                     my $testpack =
                       resolvetestpack( $name, $entry, $subject, $useprovider, $clients, $fnon );
-                    my $args = resolveargs( $entry, $testpack, $useprovider, $ctxargs );
 
                     my $wait =
                         ( $waiton && exists $entry->{wait} ) ? $entry->{wait}
                       : defined $entry->{id}                 ? $waits->{ $entry->{id} }
                       :                                        undef;
 
+                    $started = 1;
                     if ( !defined $wait ) {
-                        runentry( $useflags, $index, $entry, $testpack, $args, $useprovider );
+                        runentry( $useflags, $index, $entry, $testpack, $useprovider, $ctxargs );
                     }
                     else {
                         my $passed = eval {
-                            runentry( $useflags, $index, $entry, $testpack, $args, $useprovider );
+                            runentry( $useflags, $index, $entry, $testpack, $useprovider, $ctxargs );
                             1;
                         };
                         if ( !$passed ) {
@@ -745,9 +747,16 @@ sub makeRunner {
 
                 next if $ok;
 
-                my $err = $@;
-                die $err if !( $all && is_omni_error($err) );
-                push @failures, $err->message;
+                my $failure = $@;
+
+                # Before the subject starts, a hook's raw error is still the entry's.
+                if ( !$started && !is_omni_error($failure) ) {
+                    next if eval { handleerror( $useflags, $index, $entry, $failure, $useprovider ); 1 };
+                    $failure = $@;
+                }
+
+                die $failure if !( $all && is_omni_error($failure) );
+                push @failures, $failure->message;
             }
 
             die Voxgig::Omni::OmniError->new( 'omni: '
