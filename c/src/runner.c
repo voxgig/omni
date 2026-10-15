@@ -925,6 +925,11 @@ static int omni_prepareentry(omni_runpack *pack, omni_flags flags, omni_json *en
     entrysubject = fnsubject;
   }
 
+  if (NULL == entrysubject) {
+    *errout = omni_join(pool, "omni: no test subject for: ", flags.name, NULL, NULL);
+    return 1;
+  }
+
   call->subject = entrysubject;
   call->client = entryprovider;
   return 0;
@@ -1069,7 +1074,7 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
     flags.name = ('\0' == pack->name[0]) ? "set" : pack->name;
   }
 
-  if (NULL == usesubject) {
+  if (NULL == usesubject && !pack->fnon) {
     *errout = omni_join(pool, "omni: no test subject for: ", flags.name, NULL, NULL);
     return 1;
   }

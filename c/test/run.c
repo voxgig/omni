@@ -893,26 +893,32 @@ static omni_json *jsonof(const char *text) {
   return omni_parse(POOL, text, &err);
 }
 
+/* Run group "g" of an inline spec. Returns 0 on a pass, or 1 with *errout
+ * set. */
+static int extrun(omni_provider *provider, const char *spectext, omni_flags flags,
+                  omni_subject *subject, char **errout) {
+  omni_runner *runner = omni_make_runner(POOL, NULL, jsonof(spectext), provider, errout);
+  omni_runpack *pack;
+
+  if (NULL == runner) {
+    return 1;
+  }
+  pack = omni_runner_run(runner, "fib", NULL, errout);
+  return omni_runsetflags(pack, omni_set(pack, "g"), flags, subject, errout);
+}
+
 /* Run group "g" of an inline spec. A NULL `want` means the group must
  * pass; otherwise it must fail with each non-NULL substring present. */
 static void extexpect(const char *label, const char *spectext, omni_flags flags,
                       omni_subject *subject, const char *want, const char *want2) {
   char *err = NULL;
-  omni_runner *runner;
-  omni_runpack *pack;
   int failed;
 
   if (!wanted(label)) {
     return;
   }
 
-  runner = omni_make_runner(POOL, NULL, jsonof(spectext), fibprovider(0), &err);
-  if (NULL == runner) {
-    report(label, 1, err);
-    return;
-  }
-  pack = omni_runner_run(runner, "fib", NULL, &err);
-  failed = omni_runsetflags(pack, omni_set(pack, "g"), flags, subject, &err);
+  failed = extrun(fibprovider(0), spectext, flags, subject, &err);
 
   if (NULL == want) {
     report(label, failed, err);
@@ -927,6 +933,69 @@ static void extexpect(const char *label, const char *spectext, omni_flags flags,
     return;
   }
   report(label, 0, NULL);
+}
+
+static omni_subject *fibxsubject(omni_provider *self, const char *name) {
+  (void)self;
+  return 0 == strcmp(name, "fibx") ? makesubject(subject_fib, NULL) : NULL;
+}
+
+/* Run each spec with no explicit subject, through a provider that knows
+ * only fibx, so group "fib" has no default subject. */
+static void fnnodefault(void) {
+  const char *label = "fn needs no default subject, but an entry without fn does";
+  const char *want = "omni: no test subject for: fib";
+  const char *const refused[] = {
+      "{\"OMNI\":{\"version\":1,\"requires\":[\"fn\"]},\"fib\":{\"g\":{\"set\":["
+      "{\"fn\":\"fibx\",\"in\":6,\"out\":8},{\"in\":6,\"out\":8}]}}}",
+      "{\"OMNI\":{\"version\":1},\"fib\":{\"g\":{\"set\":[{\"in\":6,\"out\":8}]}}}",
+  };
+  omni_provider *provider = fibprovider(0);
+  char *err = NULL;
+  size_t at;
+
+  if (!wanted(label)) {
+    return;
+  }
+  provider->subject = fibxsubject;
+
+  if (0 != extrun(provider,
+                  "{\"OMNI\":{\"version\":1,\"requires\":[\"fn\"]},\"fib\":{\"g\":{\"set\":["
+                  "{\"fn\":\"fibx\",\"in\":6,\"out\":8}]}}}",
+                  omni_flags_default(), NULL, &err)) {
+    report(label, 1, err);
+    return;
+  }
+  for (at = 0; at < sizeof(refused) / sizeof(refused[0]); at++) {
+    if (0 == extrun(provider, refused[at], omni_flags_default(), NULL, &err)) {
+      report(label, 1, "omni: expected a failure, got none");
+      return;
+    }
+    if (NULL == err || 0 != strcmp(err, want)) {
+      report(label, 1, err);
+      return;
+    }
+  }
+  report(label, 0, NULL);
+}
+
+static void ownwaitid(omni_subject *fibsubject) {
+  const char *label = "a wait is found by an id the entry owns, never an inherited one";
+  const char *spectext = "{\"OMNI\":{\"version\":1},\"fib\":{\"g\":{\"set\":["
+                         "{\"id\":\"constructor\",\"in\":6,\"out\":8},"
+                         "{\"id\":\"toString\",\"in\":7,\"out\":13}]}}}";
+  omni_flags flags = omni_flags_default();
+  char *err = NULL;
+
+  if (!wanted(label)) {
+    return;
+  }
+  if (0 != extrun(fibprovider(0), spectext, flags, fibsubject, &err)) {
+    report(label, 1, err);
+    return;
+  }
+  flags.wait = jsonof("{}");
+  report(label, extrun(fibprovider(0), spectext, flags, fibsubject, &err), err);
 }
 
 static void extsuite(void) {
@@ -1004,6 +1073,9 @@ static void extsuite(void) {
   extexpect("a legacy spec ignores fn and wait",
             "{\"fib\":{\"g\":{\"set\":[{\"in\":6,\"out\":8,\"fn\":\"nope\",\"wait\":{\"cause\":\"c\"}}]}}}",
             omni_flags_default(), fibsubject, NULL, NULL);
+
+  fnnodefault();
+  ownwaitid(fibsubject);
 
   flags = omni_flags_default();
   flags.all = 1;
