@@ -638,7 +638,11 @@ type subject = json list -> json
    object, because the value is shared. *)
 type subject_args = json array -> json
 
-(* Run-time options for a set of test entries. *)
+type testsubject = Subject of subject | Subject_args of subject_args
+
+(* Run-time options for a set of test entries. The canonical flags `all` and
+   `wait` are optional arguments of `runsetflags` instead, so that a record
+   literal of these two fields still builds. *)
 type flags = { null : bool; name : string option }
 
 let default_flags = { null = true; name = None }
@@ -671,15 +675,18 @@ let specversion = 1
 (* Capability strings this runner supports beyond the version baseline. A
    spec's OMNI.requires list is checked against this: an unknown
    capability refuses the spec loudly at load time, instead of a lagging
-   port silently mis-running it. (Empty today; future format features
-   mint a string here.) *)
-let capabilities : string list = []
+   port silently mis-running it. A spec turns each on only by requiring
+   it. *)
+let capabilities : string list = [ "ctxargs"; "fn"; "wait" ]
 
 (* The complete set of fields an entry may carry. Under version 1 anything
    else is an error: an unrecognised key is almost always a typo'd
    assertion, and a typo'd assertion is a test that silently stopped
    testing. *)
 let entryfields = [ "in"; "args"; "ctx"; "out"; "err"; "match"; "client"; "id"; "doc" ]
+
+(* Entry fields a capability adds, permitted only in a spec that requires it. *)
+let capfields = [ ("fn", "fn"); ("wait", "wait") ]
 
 (* Load a spec: a path to a JSON file. *)
 let loadspec path =
@@ -723,6 +730,13 @@ let resolveversion alltests =
        | _ -> raise (Omni_error "omni: malformed OMNI requires list"));
 
     int_of_float version
+
+(* The capabilities a spec requires, which resolveversion has already
+   checked against capabilities. *)
+let resolverequires alltests =
+  match jget (jget alltests "OMNI") "requires" with
+  | JList items -> List.filter_map asstr items
+  | _ -> []
 
 (* Find `primary.<name>`, then `<name>`, then the whole spec. *)
 let resolvespec name alltests =
@@ -837,22 +851,41 @@ let fail label index entry reason expected actual =
   Buffer.add_string buf ("\n  entry:    " ^ stringify (entrysummary entry));
   Omni_error (Buffer.contents buf)
 
+let iswait wait = match jget wait "cause" with Str cause -> cause <> "" | _ -> false
+
 (* Strict entry validation, applied when the spec declares version 1 or
    later. The lenient format converts each of these mistakes into a
    silent pass or a dead field; here they fail with the entry named. *)
-let checkentry label index entry =
+let checkentry label index entry requires =
   (match entry with
   | JMap fields ->
     List.iter
       (fun (key, _) ->
-        if not (List.mem key entryfields) then
+        let capfield =
+          match List.assoc_opt key capfields with Some cap -> List.mem cap requires | None -> false
+        in
+        if not (List.mem key entryfields || capfield) then
           raise (fail label index entry ("unknown entry field: " ^ key) None None))
       fields
   | _ -> raise (fail label index entry "entry is not a map" None None));
 
-  let argsources = List.length (List.filter (fun key -> jhas entry key) [ "in"; "args"; "ctx" ]) in
-  if 1 < argsources then
-    raise (fail label index entry "entry has more than one of in, args, ctx" None None);
+  (if List.mem "ctxargs" requires then begin
+     if jhas entry "in" && (jhas entry "args" || jhas entry "ctx") then
+       raise (fail label index entry "entry has in beside args or ctx" None None)
+   end
+   else
+     let argsources = List.length (List.filter (fun key -> jhas entry key) [ "in"; "args"; "ctx" ]) in
+     if 1 < argsources then
+       raise (fail label index entry "entry has more than one of in, args, ctx" None None));
+
+  (match jget entry "fn" with
+  | Absent -> ()
+  | Str fn when fn <> "" -> ()
+  | _ -> raise (fail label index entry "entry fn is not a name" None None));
+
+  (match jget entry "wait" with
+  | Absent -> ()
+  | wait -> if not (iswait wait) then raise (fail label index entry "entry wait has no cause" None None));
 
   (* `err` here is a presence-and-non-null check (an `err: null` entry is
      not "expects an error"), but `out` is presence alone - the two
@@ -868,7 +901,7 @@ let checkentry label index entry =
    null) into a sentinel string and hide it from validation. A malformed
    spec is a spec error, not a test result, so it fails before any
    subject runs. *)
-let checkset label testspec normalset =
+let checkset label testspec normalset requires =
   let origset =
     if ismap testspec then
       match aslist (jget testspec "set") with Some entries -> entries | None -> normalset
@@ -879,7 +912,7 @@ let checkset label testspec normalset =
 
   if [] = origset && not emptyflag then raise (Omni_error ("omni: empty test set: " ^ label));
 
-  List.iteri (fun index entry -> checkentry label index entry) origset
+  List.iteri (fun index entry -> checkentry label index entry requires) origset
 
 (* Check that every leaf of `check` is present, and matches, in `base`. *)
 let rec matchcheck label index entry check base path =
@@ -999,10 +1032,10 @@ type runpack = {
   spec : json;
   set : string -> json;
   runset : json -> subject option -> unit;
-  runsetflags : json -> flags -> subject option -> unit;
+  runsetflags : ?all:bool -> ?wait:json -> json -> flags -> subject option -> unit;
   (* Everything runsetflags does, for a subject that may rewrite its
      arguments. See `subject_args`. *)
-  runsetflags_args : json -> flags -> subject_args -> unit;
+  runsetflags_args : ?all:bool -> ?wait:json -> json -> flags -> subject_args -> unit;
   defsubject : subject option;
   client : provider;
 }
@@ -1011,12 +1044,93 @@ let resolvesubject name (provider : provider) =
   if name = "" then None
   else match provider.subject with None -> None | Some resolve -> resolve name
 
+(* An entry with no `out` expects a null (or absent) result. *)
+let resolveentry entry (flags : flags) =
+  if flags.null && isnone (jget entry "out") then jset entry "out" (Str nullmark) else entry
+
+let resolvetestpack name entry subject (provider : provider) clients fnon =
+  let client, subject =
+    match asstr (jget entry "client") with
+    | None -> (provider, subject)
+    | Some clientname -> (
+      match List.assoc_opt clientname clients with
+      | None -> raise (Omni_error ("omni: unknown client: " ^ clientname))
+      | Some client ->
+        (client, match resolvesubject name client with Some found -> Subject found | None -> subject))
+  in
+  match asstr (jget entry "fn") with
+  | Some fn when fnon -> (
+    match resolvesubject fn client with
+    | Some found -> Subject found
+    | None -> raise (Omni_error ("omni: unknown fn: " ^ fn)))
+  | _ -> subject
+
+(* Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+   entry with both passes the context first, then each argument. *)
+let resolveargs entry (provider : provider) ctxargs =
+  let hasctx = jhas entry "ctx" in
+  let hasargs = jhas entry "args" in
+  let listargs () = match jget entry "args" with JList list -> list | other -> [ other ] in
+  let args =
+    if ctxargs && hasctx && hasargs then jget entry "ctx" :: listargs ()
+    else if hasctx then [ jget entry "ctx" ]
+    else if hasargs then listargs ()
+    else [ clone (jget entry "in") ]
+  in
+  match args with
+  | first :: rest when (hasctx || hasargs) && ismap first ->
+    let first = match provider.contextify with Some contextify -> contextify first | None -> first in
+    (* json has no variant to hold a live provider, so the canonical
+       `first.client = testpack.client` becomes presence, not identity. *)
+    let first = jset first "client" (Bool true) in
+    (first :: rest, jset entry "ctx" first)
+  | _ -> (args, entry)
+
+(* The runner-side waits: entry id to its declaration. Each must name an
+   entry of the set, so a declaration cannot outlive the entry it held. *)
+let resolvewaits label wait origset =
+  match wait with
+  | None | Some (Absent | Null) -> []
+  | Some (JMap waits) ->
+    let ids = List.filter_map (fun entry -> asstr (jget entry "id")) origset in
+    List.iter
+      (fun (id, decl) ->
+        if not (List.mem id ids) then
+          raise (Omni_error ("omni: " ^ label ^ ": wait names no entry: " ^ id));
+        if not (iswait decl) then
+          raise (Omni_error ("omni: " ^ label ^ ": wait for " ^ id ^ " has no cause")))
+      waits;
+    waits
+  | Some _ -> raise (Omni_error ("omni: " ^ label ^ ": wait flag is not a map"))
+
+let runentry label (flags : flags) index entry subject args (provider : provider) =
+  (* An args-subject may overwrite its argument array; the runner reads it
+     back so `match.args` sees what the subject actually did. *)
+  let invoke () =
+    match subject with
+    | Subject call -> (args, call args)
+    | Subject_args call ->
+      let cells = Array.of_list args in
+      let res = call cells in
+      (Array.to_list cells, res)
+  in
+  match invoke () with
+  | args, res ->
+    let fixed = fixjson res flags.null in
+    checkresult label index (jset entry "res" fixed) args fixed
+  | exception (Omni_error _ as err) -> raise err
+  | exception err -> handleerror label index entry (errmessage err) provider
+
 (* Make a runner for a spec value and a provider. Resolving the version
    here - outside the returned closure - fails fast: a spec this runner
    cannot faithfully run is refused as soon as the runner is made, before
    any group name is even chosen. *)
 let make_runner_spec alltests (provider : provider) =
   let specversion = resolveversion alltests in
+  let requires = resolverequires alltests in
+  let ctxargs = List.mem "ctxargs" requires in
+  let fnon = List.mem "fn" requires in
+  let waiton = List.mem "wait" requires in
   fun name store ->
    let spec = resolvespec name alltests in
 
@@ -1040,17 +1154,16 @@ let make_runner_spec alltests (provider : provider) =
 
    let defsubject = resolvesubject name provider in
 
-   let drive testspec flags testsubject (argsubject : subject_args option) =
+   let drive all wait testspec (flags : flags) testsubject =
      let label =
        match flags.name with Some text -> text | None -> if name = "" then "set" else name
      in
 
-     let usesubject =
-       match (argsubject, testsubject, defsubject) with
-       | Some _, _, _ -> None
-       | None, Some found, _ -> Some found
-       | None, None, Some found -> Some found
-       | None, None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
+     let subject =
+       match (testsubject, defsubject) with
+       | Some found, _ -> found
+       | None, Some found -> Subject found
+       | None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
      in
 
      let testspecmap = fixjson testspec flags.null in
@@ -1062,82 +1175,56 @@ let make_runner_spec alltests (provider : provider) =
 
      (* Validated against the AUTHORED `testspec`, not the null-normalised
         `testset` above - see checkset. *)
-     if 1 <= specversion then checkset label testspec testset;
+     if 1 <= specversion then checkset label testspec testset requires;
 
+     let origset = match aslist (jget testspec "set") with Some entries -> entries | None -> testset in
+     let waits = resolvewaits label wait origset in
+
+     let runone index rawentry =
+       if not (ismap rawentry) then
+         raise (Omni_error (Printf.sprintf "omni: %s[%d]: entry is not a map" label index));
+
+       let entry = resolveentry rawentry flags in
+       let entrysubject = resolvetestpack name entry subject provider clients fnon in
+       let args, entry = resolveargs entry provider ctxargs in
+
+       let held =
+         if waiton && jhas entry "wait" then Some (jget entry "wait")
+         else Option.bind (asstr (jget entry "id")) (fun id -> List.assoc_opt id waits)
+       in
+
+       match held with
+       | None -> runentry label flags index entry entrysubject args provider
+       | Some heldwait -> (
+         match runentry label flags index entry entrysubject args provider with
+         | () ->
+           raise
+             (fail label index entry ("stale wait: " ^ stringify (jget heldwait "cause")) None None)
+         | exception Omni_error _ -> ())
+     in
+
+     let failures = ref [] in
      List.iteri
        (fun index rawentry ->
-         if not (ismap rawentry) then
-           raise (Omni_error (Printf.sprintf "omni: %s[%d]: entry is not a map" label index));
+         match runone index rawentry with
+         | () -> ()
+         | exception Omni_error message when all -> failures := message :: !failures)
+       testset;
 
-         (* An entry with no `out` expects a null (or absent) result. *)
-         let entry =
-           if flags.null && isnone (jget rawentry "out") then jset rawentry "out" (Str nullmark)
-           else rawentry
-         in
-
-         let entrysubject =
-           match (usesubject, asstr (jget entry "client")) with
-           | None, _ -> None
-           | Some found, None -> Some found
-           | Some found, Some clientname -> (
-             match List.assoc_opt clientname clients with
-             | None -> raise (Omni_error ("omni: unknown client: " ^ clientname))
-             | Some client -> (
-               match resolvesubject name client with Some other -> Some other | None -> Some found))
-         in
-
-         (* Build the argument list: `ctx`, `args`, or `in`. *)
-         let hasctx = jhas entry "ctx" in
-         let hasargs = jhas entry "args" in
-         let args =
-           if hasctx then [ jget entry "ctx" ]
-           else if hasargs then
-             match aslist (jget entry "args") with Some list -> list | None -> [ jget entry "args" ]
-           else [ clone (jget entry "in") ]
-         in
-
-         let args, entry =
-           if (hasctx || hasargs) && args <> [] && ismap (List.hd args) then
-             let first =
-               match provider.contextify with
-               | Some contextify -> contextify (List.hd args)
-               | None -> List.hd args
-             in
-             (* The resolved client is a live provider (closures over the
-                system under test), and this port's json carries no
-                host-object variant to hold one - so canonical's
-                `first.client = testpack.client` becomes presence, not
-                identity: enough for a subject to prove the runner
-                attached a client at all. *)
-             let first = jset first "client" (Bool true) in
-             (first :: List.tl args, jset entry "ctx" first)
-           else (args, entry)
-         in
-
-         (* An args-subject may overwrite its argument array; the runner reads
-            it back so `match.args` sees what the subject actually did. *)
-         let invoke () =
-           match (argsubject, entrysubject) with
-           | Some call, _ ->
-             let cells = Array.of_list args in
-             let res = call cells in
-             (Array.to_list cells, res)
-           | None, Some call -> (args, call args)
-           | None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
-         in
-
-         match invoke () with
-         | args, res ->
-           let fixed = fixjson res flags.null in
-           checkresult label index (jset entry "res" fixed) args fixed
-         | exception Omni_error message -> raise (Omni_error message)
-         | exception err -> handleerror label index entry (errmessage err) provider)
-       testset
+     match List.rev !failures with
+     | [] -> ()
+     | messages ->
+       raise
+         (Omni_error
+            (Printf.sprintf "omni: %s: %d of %d entries failed\n%s" label (List.length messages)
+               (List.length testset) (String.concat "\n" messages)))
    in
 
-   let runsetflags testspec flags testsubject = drive testspec flags testsubject None in
-   let runsetflags_args testspec flags argsubject =
-     drive testspec flags None (Some argsubject)
+   let runsetflags ?(all = false) ?wait testspec flags testsubject =
+     drive all wait testspec flags (Option.map (fun found -> Subject found) testsubject)
+   in
+   let runsetflags_args ?(all = false) ?wait testspec flags argsubject =
+     drive all wait testspec flags (Some (Subject_args argsubject))
    in
 
    {
