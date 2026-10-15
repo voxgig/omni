@@ -11,7 +11,7 @@ jar: build
 	jar cf build/omni.jar -C build com
 
 test: build
-	java -cp build FibTest
+	java -cp build FibTest && java -cp build ExtTest
 
 clean:
 	rm -rf build
