@@ -740,6 +740,27 @@ match pack.runset (pack.set "basic") (some FIB) with
 Lean's checks are pure, so a failure is **returned** as
 `Except.error message`; a subject is `List Json → Except String Json`.
 
+### boru
+
+```boru
+import "../src/omni.boru"
+
+def rn (Omni.makeRunner "spec/fib.json" provider)
+def pack (Omni.runner rn "fib" none)
+(Omni.runset pack (Omni.set pack "basic") [fibsub/v]) drop
+(Omni.runsetflags pack (Omni.set pack "nulls") (flex {null: false}) [infosub/v]) drop
+```
+
+The module exports every public name in its canonical spelling, as a field
+of one `Omni` namespace. `Omni.loadspec` reads a path through `boru:io`,
+which parses JSON by file extension, and hands back an already-parsed spec
+unchanged. Failures raise an error whose `code` is the atom `omni_fail`;
+`Omni.errmessage` reads its text. A subject is a lambda, `[av:Any] => [...]`,
+handed over boxed in a one-element list, since a bare function-valued word
+is a call. It receives its arguments as one list, and it runs in the
+runner's registry rather than its author's, so it calls only the functions
+it captured as values.
+
 
 ## 8. Replacing struct's in-situ runners
 
