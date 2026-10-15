@@ -850,7 +850,8 @@ func resolvewaits(flags Flags, origset []any) (map[string]any, error) {
 	return waits, nil
 }
 
-func runentry(flags Flags, index int, entry map[string]any, pack *testpack, args []any, provider *Provider) error {
+func runentry(flags Flags, index int, entry map[string]any, pack *testpack, provider *Provider, ctxargs bool) error {
+	args := resolveargs(entry, pack, provider, ctxargs)
 	res, subjecterr := safecall(pack.subject, args)
 
 	if nil != subjecterr {
@@ -959,8 +960,6 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 						return err
 					}
 
-					args := resolveargs(entry, pack, useprovider, ctxargs)
-
 					wait, haswait := entry["wait"]
 					haswait = haswait && waiton
 					if !haswait {
@@ -970,10 +969,10 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 					}
 
 					if !haswait {
-						return runentry(useflags, index, entry, pack, args, useprovider)
+						return runentry(useflags, index, entry, pack, useprovider, ctxargs)
 					}
 
-					if err := runentry(useflags, index, entry, pack, args, useprovider); nil != err {
+					if err := runentry(useflags, index, entry, pack, useprovider, ctxargs); nil != err {
 						if IsOmniError(err) {
 							return nil
 						}
