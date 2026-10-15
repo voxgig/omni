@@ -127,7 +127,7 @@ namespace Voxgig.Omni
             };
 
             Subject subject = testsubject ?? Subject;
-            if (null == subject)
+            if (null == subject && !fnon)
             {
                 throw new OmniError("omni: no test subject for: " + useflags.Name);
             }
@@ -155,19 +155,31 @@ namespace Voxgig.Omni
 
             for (int index = 0; index < testset.Count; index++)
             {
-                var entry = testset[index] as IDictionary<string, object>;
-                bool started = false;
-
                 try
                 {
-                    if (null == entry)
+                    if (!(testset[index] is IDictionary<string, object> entry))
                     {
                         throw new OmniError("omni: " + useflags.Name + "[" + index + "]: entry is not a map");
                     }
 
-                    ResolveEntry(entry, useflags);
+                    (Provider client, Subject subject) testpack = default;
+                    Exception prestart = null;
 
-                    var testpack = ResolveTestPack(entry, subject);
+                    // A hook's raw error before the subject starts is still the entry's.
+                    try
+                    {
+                        ResolveEntry(entry, useflags);
+                        testpack = ResolveTestPack(entry, subject);
+                    }
+                    catch (Exception err) when (!(err is OmniError))
+                    {
+                        prestart = err;
+                    }
+
+                    if (null == prestart && null == testpack.subject)
+                    {
+                        throw new OmniError("omni: no test subject for: " + useflags.Name);
+                    }
 
                     bool haswait = waiton && entry.ContainsKey("wait");
                     object wait = haswait ? entry["wait"] : null;
@@ -177,17 +189,20 @@ namespace Voxgig.Omni
                         wait = waits[id];
                     }
 
-                    started = true;
+                    Action run = null == prestart
+                        ? () => RunEntry(useflags, index, entry, testpack)
+                        : () => Runner.HandleError(useflags, index, entry, prestart, provider);
+
                     if (!haswait)
                     {
-                        RunEntry(useflags, index, entry, testpack);
+                        run();
                     }
                     else
                     {
                         bool held = false;
                         try
                         {
-                            RunEntry(useflags, index, entry, testpack);
+                            run();
                         }
                         catch (OmniError)
                         {
@@ -199,18 +214,6 @@ namespace Voxgig.Omni
                                 waitmap.ContainsKey("cause") && waitmap["cause"] is string text ? text : "";
                             throw Runner.Fail(useflags, index, entry, "stale wait: " + cause);
                         }
-                    }
-                }
-                // Before the subject starts, a hook's raw error is still the entry's.
-                catch (Exception err) when (!started && !(err is OmniError))
-                {
-                    try
-                    {
-                        Runner.HandleError(useflags, index, entry, err, provider);
-                    }
-                    catch (OmniError herr) when (useflags.All)
-                    {
-                        failures.Add(herr.Message);
                     }
                 }
                 catch (OmniError err) when (useflags.All)

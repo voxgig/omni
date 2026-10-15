@@ -151,6 +151,41 @@ internal static partial class Program
             F.RunSet(F.Set("g"), FIB);
         });
 
+        TestCase("a waiting entry holds a hook's error raised before the subject starts", () =>
+        {
+            var provider = new Provider
+            {
+                SubjectFor = name => "boom" == name ? throw new InvalidOperationException("subject boom")
+                    : "fib" == name ? FIB : null,
+            };
+            RunPack H = Runner.MakeRunner(V1(List("fn", "wait"),
+                Map("fn", "boom", "in", 6.0, "out", 8.0, "wait", Map("cause", "hook#2"))), provider).Run("fib");
+            H.RunSet(H.Set("g"), FIB);
+            RunPack S = Runner.MakeRunner(V1(List("fn", "wait"),
+                Map("fn", "boom", "in", 6.0, "err", "subject boom", "wait", Map("cause", "hook#3"))), provider).Run("fib");
+            Refuses(() => S.RunSet(S.Set("g"), FIB), @"\[0\]: stale wait: hook#3");
+        });
+
+        TestCase("fn needs no default subject, but an entry without fn does", () =>
+        {
+            var provider = new Provider { SubjectFor = name => "fibx" == name ? FIB : null };
+            RunPack R = Runner.MakeRunner(V1(List("fn"), Map("fn", "fibx", "in", 6.0, "out", 8.0)), provider).Run("fib");
+            R.RunSet(R.Set("g"));
+            RunPack N = Runner.MakeRunner(V1(List("fn"),
+                Map("fn", "fibx", "in", 6.0, "out", 8.0), Map("in", 6.0, "out", 8.0)), provider).Run("fib");
+            Refuses(() => N.RunSet(N.Set("g")), "^omni: no test subject for: fib$");
+            RunPack L = Runner.MakeRunner(V1(List(), Map("in", 6.0, "out", 8.0)), provider).Run("fib");
+            Refuses(() => L.RunSet(L.Set("g")), "^omni: no test subject for: fib$");
+        });
+
+        TestCase("a wait is found by an id the entry owns, never an inherited one", () =>
+        {
+            RunPack W = ExtRunner(V1(List(),
+                Map("id", "constructor", "in", 6.0, "out", 8.0), Map("id", "toString", "in", 7.0, "out", 13.0)));
+            W.RunSet(W.Set("g"), FIB);
+            W.RunSetFlags(W.Set("g"), new Flags { Wait = Map() }, FIB);
+        });
+
         TestCase("all reports every failure at once", () =>
         {
             RunPack W = ExtRunner(V1(List(),
