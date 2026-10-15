@@ -135,6 +135,62 @@ public final class ExtTest {
     F.runset(F.set("g"), FIB);
   }
 
+  static void heldhook() throws Exception {
+    Provider provider = new Provider();
+    provider.subject =
+        name -> {
+          if ("boom".equals(name)) {
+            throw new IllegalStateException("subject boom");
+          }
+          return "fib".equals(name) ? FIB : null;
+        };
+
+    RunPack H =
+        Runner.makeRunner(
+                v1(
+                    list("fn", "wait"),
+                    map("fn", "boom", "in", 6.0, "out", 8.0, "wait", map("cause", "hook#2"))),
+                provider)
+            .runner("fib");
+    H.runset(H.set("g"), FIB);
+
+    RunPack S =
+        Runner.makeRunner(
+                v1(
+                    list("fn", "wait"),
+                    map(
+                        "fn", "boom", "in", 6.0, "err", "subject boom",
+                        "wait", map("cause", "hook#3"))),
+                provider)
+            .runner("fib");
+    refuses(() -> S.runset(S.set("g"), FIB), "\\[0\\]: stale wait: hook#3");
+  }
+
+  // runset takes the subject positionally, so null asks for the default.
+  static void nodefault() throws Exception {
+    Provider provider = new Provider();
+    provider.subject = name -> "fibx".equals(name) ? FIB : null;
+
+    RunPack R =
+        Runner.makeRunner(v1(list("fn"), map("fn", "fibx", "in", 6.0, "out", 8.0)), provider)
+            .runner("fib");
+    R.runset(R.set("g"), null);
+
+    RunPack N =
+        Runner.makeRunner(
+                v1(
+                    list("fn"),
+                    map("fn", "fibx", "in", 6.0, "out", 8.0),
+                    map("in", 6.0, "out", 8.0)),
+                provider)
+            .runner("fib");
+    refuses(() -> N.runset(N.set("g"), null), "^omni: no test subject for: fib$");
+
+    RunPack L =
+        Runner.makeRunner(v1(list(), map("in", 6.0, "out", 8.0)), provider).runner("fib");
+    refuses(() -> L.runset(L.set("g"), null), "^omni: no test subject for: fib$");
+  }
+
   static void testcase(String name, FibTest.Body body) {
     if (null != only && !name.equals(only)) {
       return;
@@ -261,6 +317,25 @@ public final class ExtTest {
         });
 
     testcase("a raising hook is the entry's error, not the set's", ExtTest::raisinghook);
+
+    testcase(
+        "a waiting entry holds a hook's error raised before the subject starts",
+        ExtTest::heldhook);
+
+    testcase("fn needs no default subject, but an entry without fn does", ExtTest::nodefault);
+
+    testcase(
+        "a wait is found by an id the entry owns, never an inherited one",
+        () -> {
+          RunPack W =
+              runner(
+                  v1(
+                      list(),
+                      map("id", "constructor", "in", 6.0, "out", 8.0),
+                      map("id", "toString", "in", 7.0, "out", 13.0)));
+          W.runset(W.set("g"), FIB);
+          W.runsetflags(W.set("g"), Runner.flags("wait", map()), FIB);
+        });
 
     testcase(
         "all reports every failure at once",

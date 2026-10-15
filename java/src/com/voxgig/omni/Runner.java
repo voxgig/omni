@@ -170,7 +170,7 @@ public final class Runner {
       }
 
       Subject subject = null != testsubject ? testsubject : this.subject;
-      if (null == subject) {
+      if (null == subject && !fnon) {
         throw new OmniError("omni: no test subject for: " + flags.get("name"));
       }
 
@@ -199,8 +199,6 @@ public final class Runner {
 
       for (int index = 0; index < testset.size(); index++) {
         Object rawentry = testset.get(index);
-        Map<String, Object> entry = null;
-        boolean started = false;
 
         try {
           if (specversion < 1 && !Util.ismap(rawentry)) {
@@ -208,21 +206,34 @@ public final class Runner {
                 "omni: " + flags.get("name") + "[" + index + "]: entry is not a map");
           }
 
-          entry = resolveentry((Map<String, Object>) rawentry, flags);
+          Map<String, Object> entry = (Map<String, Object>) rawentry;
+          TestPack testpack = null;
+          Throwable prestart = null;
 
-          TestPack testpack = resolvetestpack(name, entry, subject, provider, clients, fnon);
+          // A hook's raw error before the subject starts is still the entry's.
+          try {
+            entry = resolveentry(entry, flags);
+            testpack = resolvetestpack(name, entry, subject, provider, clients, fnon);
+          } catch (OmniError err) {
+            throw err;
+          } catch (Throwable err) {
+            prestart = err;
+          }
+
+          if (null == prestart && null == testpack.subject) {
+            throw new OmniError("omni: no test subject for: " + flags.get("name"));
+          }
 
           boolean entrywait = waiton && entry.containsKey("wait");
           Object id = entry.get("id");
           Object wait = entrywait ? entry.get("wait") : id instanceof String ? waits.get(id) : null;
 
-          started = true;
           if (!entrywait && null == wait) {
-            runentry(flags, index, entry, testpack, provider, ctxargs);
+            run(flags, index, entry, testpack, prestart);
           } else {
             boolean held = false;
             try {
-              runentry(flags, index, entry, testpack, provider, ctxargs);
+              run(flags, index, entry, testpack, prestart);
             } catch (OmniError err) {
               held = true;
             }
@@ -231,25 +242,12 @@ public final class Runner {
               throw fail(flags, index, entry, "stale wait: " + cause, null, null);
             }
           }
-        } catch (Throwable err) {
-          OmniError failure = err instanceof OmniError ? (OmniError) err : null;
-          // Before the subject starts, a hook's raw error is still the entry's.
-          if (!started && null == failure) {
-            try {
-              handleerror(flags, index, entry, err, provider);
-              continue;
-            } catch (OmniError herr) {
-              failure = herr;
-            }
-          }
-          if (null == failure) {
-            throw err;
-          }
+        } catch (OmniError err) {
           if (flagbool(flags, "all")) {
-            failures.add(failure.getMessage());
+            failures.add(err.getMessage());
             continue;
           }
-          throw failure;
+          throw err;
         }
       }
 
@@ -257,6 +255,19 @@ public final class Runner {
         throw new OmniError(
             "omni: " + flags.get("name") + ": " + failures.size() + " of " + testset.size()
                 + " entries failed\n" + String.join("\n", failures));
+      }
+    }
+
+    private void run(
+        Map<String, Object> flags,
+        int index,
+        Map<String, Object> entry,
+        TestPack testpack,
+        Throwable prestart) {
+      if (null == prestart) {
+        runentry(flags, index, entry, testpack, provider, ctxargs);
+      } else {
+        handleerror(flags, index, entry, prestart, provider);
       }
     }
   }
