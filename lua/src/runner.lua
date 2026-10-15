@@ -708,7 +708,7 @@ function M.makeRunner(specref, provider)
       local label = flags.name or ((nil == name or '' == name) and 'set' or name)
 
       local usesubject = testsubject or subject
-      if nil == usesubject then
+      if nil == usesubject and not fnon then
         error(M.OmniError('omni: no test subject for: ' .. label))
       end
 
@@ -732,19 +732,44 @@ function M.makeRunner(specref, provider)
 
       for at, entry in ipairs(testset) do
         local index = at - 1
-        local started = false
 
         local ok, err = pcall(function()
-          if not u.ismap(entry) then
-            error(M.OmniError('omni: ' .. label .. '[' .. index .. ']: entry is not a map'))
+          local testpack = nil
+          local prestarted = false
+          local prestart = nil
+
+          -- A hook's raw error before the subject starts is still the entry's.
+          local resolved, rerr = pcall(function()
+            if not u.ismap(entry) then
+              error(M.OmniError('omni: ' .. label .. '[' .. index .. ']: entry is not a map'))
+            end
+
+            -- An entry with no `out` expects a null (or absent) result.
+            if donull and u.isnone(u.get(entry, 'out')) then
+              rawset(entry, 'out', u.NULLMARK)
+            end
+
+            testpack = resolvetestpack(name, entry, usesubject, useprovider, clients, fnon)
+          end)
+          if not resolved then
+            if M.isomnierror(rerr) then
+              error(rerr)
+            end
+            prestarted = true
+            prestart = rerr
           end
 
-          -- An entry with no `out` expects a null (or absent) result.
-          if donull and u.isnone(u.get(entry, 'out')) then
-            rawset(entry, 'out', u.NULLMARK)
+          if not prestarted and nil == testpack.subject then
+            error(M.OmniError('omni: no test subject for: ' .. label))
           end
 
-          local testpack = resolvetestpack(name, entry, usesubject, useprovider, clients, fnon)
+          local function run()
+            if prestarted then
+              handleerror(label, index, entry, prestart, useprovider)
+            else
+              runentry(label, donull, index, entry, testpack, useprovider, ctxargs)
+            end
+          end
 
           local wait = nil
           local id = u.get(entry, 'id')
@@ -754,12 +779,10 @@ function M.makeRunner(specref, provider)
             wait = waits[id]
           end
 
-          started = true
           if nil == wait then
-            runentry(label, donull, index, entry, testpack, useprovider, ctxargs)
+            run()
           else
-            local passed, held = pcall(runentry, label, donull, index, entry, testpack,
-              useprovider, ctxargs)
+            local passed, held = pcall(run)
             if passed then
               local cause = 'table' == type(wait) and rawget(wait, 'cause') or u.ABSENT
               error(fail(label, index, entry, 'stale wait: ' .. u.stringify(cause)))
@@ -770,25 +793,11 @@ function M.makeRunner(specref, provider)
           end
         end)
 
-        local failure = nil
         if not ok then
-          failure = err
-          -- Before the subject starts, a hook's raw error is still the entry's.
-          if not started and not M.isomnierror(err) then
-            local handled, herr = pcall(handleerror, label, index, entry, err, useprovider)
-            if handled then
-              failure = nil
-            else
-              failure = herr
-            end
-          end
-        end
-
-        if nil ~= failure then
-          if true == flags.all and M.isomnierror(failure) then
-            failures[#failures + 1] = failure.message
+          if true == flags.all and M.isomnierror(err) then
+            failures[#failures + 1] = err.message
           else
-            error(failure, 0)
+            error(err, 0)
           end
         end
       end

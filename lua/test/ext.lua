@@ -217,6 +217,58 @@ testcase("a raising hook is the entry's error, not the set's", function()
   F.runset(F.set('g'), FIB)
 end)
 
+testcase("a waiting entry holds a hook's error raised before the subject starts", function()
+  local provider = {
+    subject = function(name)
+      if 'boom' == name then
+        error('subject boom', 0)
+      end
+      if 'fib' == name then
+        return FIB
+      end
+      return nil
+    end,
+  }
+  local function run(spec) return runner.makeRunner(spec, provider)('fib') end
+  local H = run(v1({ 'fn', 'wait' }, {
+    u.map({ fn = 'boom', ['in'] = 6, out = 8, wait = u.map({ cause = 'hook#2' }) }),
+  }))
+  H.runset(H.set('g'), FIB)
+  local S = run(v1({ 'fn', 'wait' }, {
+    u.map({ fn = 'boom', ['in'] = 6, err = 'subject boom', wait = u.map({ cause = 'hook#3' }) }),
+  }))
+  refuses(function() S.runset(S.set('g'), FIB) end, '%[0%]: stale wait: hook#3')
+end)
+
+testcase('fn needs no default subject, but an entry without fn does', function()
+  local provider = {
+    subject = function(name)
+      if 'fibx' == name then
+        return FIB
+      end
+      return nil
+    end,
+  }
+  local R = runner.makeRunner(v1({ 'fn' }, { u.map({ fn = 'fibx', ['in'] = 6, out = 8 }) }), provider)('fib')
+  R.runset(R.set('g'))
+  local N = runner.makeRunner(v1({ 'fn' }, {
+    u.map({ fn = 'fibx', ['in'] = 6, out = 8 }),
+    u.map({ ['in'] = 6, out = 8 }),
+  }), provider)('fib')
+  refuses(function() N.runset(N.set('g')) end, '^omni: no test subject for: fib$')
+  local L = runner.makeRunner(v1({}, { u.map({ ['in'] = 6, out = 8 }) }), provider)('fib')
+  refuses(function() L.runset(L.set('g')) end, '^omni: no test subject for: fib$')
+end)
+
+testcase('a wait is found by an id the entry owns, never an inherited one', function()
+  local R = makerunner(v1({}, {
+    u.map({ id = 'constructor', ['in'] = 6, out = 8 }),
+    u.map({ id = 'toString', ['in'] = 7, out = 13 }),
+  }))
+  R.runset(R.set('g'), FIB)
+  R.runsetflags(R.set('g'), { wait = {} }, FIB)
+end)
+
 testcase('all reports every failure at once', function()
   local A = makerunner(v1({}, {
     u.map({ ['in'] = 5, out = 6 }),
