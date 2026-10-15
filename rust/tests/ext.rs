@@ -246,6 +246,54 @@ fn ext_runner_a_legacy_spec_ignores_fn_and_wait() {
 }
 
 #[test]
+fn ext_runner_fn_needs_no_default_subject_but_an_entry_without_fn_does() {
+    let fibxonly = || Provider {
+        subject: Some(Rc::new(|name: &str| -> Option<Subject> {
+            if "fibx" == name {
+                Some(fibsubject())
+            } else {
+                None
+            }
+        })),
+        ..Provider::default()
+    };
+    let run = |spec: Json| {
+        let runner = make_runner(spec, fibxonly()).expect("runner");
+        runner.runner("fib", None).expect("spec")
+    };
+
+    let named = run(v1(&["fn"], r#"[{"fn":"fibx","in":6,"out":8}]"#));
+    named.runset(&named.set("g"), None).expect("fn");
+
+    let unnamed = run(v1(
+        &["fn"],
+        r#"[{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}]"#,
+    ));
+    refuses(
+        unnamed.runset(&unnamed.set("g"), None),
+        r"^omni: no test subject for: fib$",
+    );
+
+    let legacy = run(v1(&[], r#"[{"in":6,"out":8}]"#));
+    refuses(
+        legacy.runset(&legacy.set("g"), None),
+        r"^omni: no test subject for: fib$",
+    );
+}
+
+#[test]
+fn ext_runner_a_wait_is_found_by_an_id_the_entry_owns_never_an_inherited_one() {
+    let pack = runner(v1(
+        &[],
+        r#"[{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}]"#,
+    ));
+    pack.runset(&pack.set("g"), Some(&fibsubject()))
+        .expect("plain");
+    pack.runsetflags(&pack.set("g"), &waitflag("{}"), Some(&fibsubject()))
+        .expect("empty wait flag");
+}
+
+#[test]
 fn ext_runner_all_reports_every_failure_at_once() {
     let pack = runner(v1(
         &[],

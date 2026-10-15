@@ -378,11 +378,9 @@ pub struct RunPack {
     waiton: bool,
 }
 
-/// The provider and subject one entry runs against. `argsubject` is the
-/// caller's args-taking subject, kept only while no `client` or `fn` chose
-/// another.
+/// The subject one entry runs against. `argsubject` is the caller's
+/// args-taking subject, kept only while no `client` or `fn` chose another.
 struct TestPack {
-    client: Provider,
     subject: Subject,
     argsubject: Option<SubjectArgs>,
 }
@@ -444,8 +442,9 @@ impl RunPack {
             Err("omni: no test subject".to_string())
         });
         let usesubject = match subject.cloned().or_else(|| self.subject.clone()) {
-            Some(found) => found,
-            None if argsubject.is_some() => fallback,
+            Some(found) => Some(found),
+            None if argsubject.is_some() => Some(fallback),
+            None if self.fnon => None,
             None => {
                 return Err(OmniError::new(format!(
                     "omni: no test subject for: {}",
@@ -480,7 +479,16 @@ impl RunPack {
             let mut entry = resolveentry(rawentry.clone(), &useflags);
 
             let outcome = (|| -> Result<(), OmniError> {
-                let testpack = self.resolvetestpack(&entry, &usesubject, argsubject)?;
+                let found = self.resolvetestpack(&entry, usesubject.as_ref(), argsubject)?;
+                let testpack = match found {
+                    Some(testpack) => testpack,
+                    None => {
+                        return Err(OmniError::new(format!(
+                            "omni: no test subject for: {}",
+                            label
+                        )))
+                    }
+                };
 
                 let wait = if self.waiton && entry.has("wait") {
                     Some(entry.get("wait"))
@@ -534,39 +542,41 @@ impl RunPack {
         Ok(())
     }
 
+    /// None when the entry resolves no subject.
     fn resolvetestpack(
         &self,
         entry: &Json,
-        subject: &Subject,
+        subject: Option<&Subject>,
         argsubject: Option<&SubjectArgs>,
-    ) -> Result<TestPack, OmniError> {
-        let mut testpack = TestPack {
-            client: self.provider.clone(),
-            subject: subject.clone(),
-            argsubject: argsubject.cloned(),
-        };
+    ) -> Result<Option<TestPack>, OmniError> {
+        let mut client = &self.provider;
+        let mut entrysubject = subject.cloned();
+        let mut argsubject = argsubject.cloned();
 
         if let Some(name) = entry.get("client").asstr() {
-            let client = self.clients.get(name).ok_or_else(|| OmniError {
+            let named = self.clients.get(name).ok_or_else(|| OmniError {
                 message: format!("omni: unknown client: {}", name),
                 entry: Some(entry.clone()),
             })?;
 
-            testpack.subject =
-                resolvesubject(&self.name, client).unwrap_or_else(|| subject.clone());
-            testpack.client = client.clone();
-            testpack.argsubject = None;
+            entrysubject = resolvesubject(&self.name, named).or(entrysubject);
+            client = named;
+            argsubject = None;
         }
 
         if let (true, Some(name)) = (self.fnon, entry.get("fn").asstr()) {
-            testpack.subject = resolvesubject(name, &testpack.client).ok_or_else(|| OmniError {
+            let fnsubject = resolvesubject(name, client).ok_or_else(|| OmniError {
                 message: format!("omni: unknown fn: {}", name),
                 entry: Some(entry.clone()),
             })?;
-            testpack.argsubject = None;
+            entrysubject = Some(fnsubject);
+            argsubject = None;
         }
 
-        Ok(testpack)
+        Ok(entrysubject.map(|subject| TestPack {
+            subject,
+            argsubject,
+        }))
     }
 }
 
