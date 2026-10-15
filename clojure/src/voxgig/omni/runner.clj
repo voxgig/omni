@@ -18,14 +18,17 @@
 ;; Capability strings this runner supports beyond the version baseline. A
 ;; spec's OMNI.requires list is checked against this: an unknown capability
 ;; refuses the spec loudly at load time, instead of a lagging port silently
-;; mis-running it. (Empty today; future format features mint a string here.)
-(def CAPABILITIES [])
+;; mis-running it. A spec turns each on only by requiring it.
+(def CAPABILITIES ["ctxargs" "fn" "wait"])
 
 ;; The complete set of fields an entry may carry. Under version 1 anything
 ;; else is an error: an unrecognised key is almost always a typo'd
 ;; assertion, and a typo'd assertion is a test that silently stopped
 ;; testing.
 (def ^:private ENTRYFIELDS #{"in" "args" "ctx" "out" "err" "match" "client" "id" "doc"})
+
+;; Entry fields a capability adds, permitted only in a spec that requires it.
+(def ^:private CAPFIELDS {"fn" "fn" "wait" "wait"})
 
 ;; A test failure (or a malformed spec). Distinct from errors thrown by the
 ;; subject under test, which are candidates for an `err` expectation.
@@ -69,6 +72,14 @@
               (throw (omni-error (str "omni: spec requires unsupported capability: " (u/stringify cap))))))))
 
       (long version))))
+
+;; The capabilities a spec requires, which resolveversion has already
+;; checked against CAPABILITIES.
+(defn- resolverequires [alltests]
+  (let [meta (when (u/ismap alltests) (get alltests "OMNI"))]
+    (if (and (u/ismap meta) (u/islist (get meta "requires")))
+      (set (get meta "requires"))
+      #{})))
 
 ;; Find `primary.<name>`, then `<name>`, then the whole spec.
 (defn resolvespec [name alltests]
@@ -167,20 +178,34 @@
                   "\n  entry:    " (u/stringify (entrysummary entry)))]
      (omni-error msg entry))))
 
+(defn- iswait [wait]
+  (and (u/ismap wait) (string? (get wait "cause")) (not= "" (get wait "cause"))))
+
 ;; Strict entry validation, applied when the spec declares version 1 or
 ;; later. The lenient format converts each of these mistakes into a silent
 ;; pass or a dead field; here they fail with the entry named.
-(defn- checkentry [label index entry]
+(defn- checkentry [label index entry requires]
   (when-not (u/ismap entry)
     (throw (fail label index entry "entry is not a map")))
 
   (doseq [key (keys entry)]
-    (when-not (contains? ENTRYFIELDS key)
+    (when-not (or (contains? ENTRYFIELDS key)
+                  (and (contains? CAPFIELDS key) (contains? requires (get CAPFIELDS key))))
       (throw (fail label index entry (str "unknown entry field: " key)))))
 
-  (let [argsources (count (filter #(contains? entry %) ["in" "args" "ctx"]))]
-    (when (< 1 argsources)
-      (throw (fail label index entry "entry has more than one of in, args, ctx"))))
+  (if (contains? requires "ctxargs")
+    (when (and (contains? entry "in") (or (contains? entry "args") (contains? entry "ctx")))
+      (throw (fail label index entry "entry has in beside args or ctx")))
+    (let [argsources (count (filter #(contains? entry %) ["in" "args" "ctx"]))]
+      (when (< 1 argsources)
+        (throw (fail label index entry "entry has more than one of in, args, ctx")))))
+
+  (when (and (contains? entry "fn")
+             (let [fnname (get entry "fn")] (not (and (string? fnname) (not= "" fnname)))))
+    (throw (fail label index entry "entry fn is not a name")))
+
+  (when (and (contains? entry "wait") (not (iswait (get entry "wait"))))
+    (throw (fail label index entry "entry wait has no cause")))
 
   (when (and (some? (get entry "err")) (contains? entry "out"))
     (throw (fail label index entry "entry has both err and out")))
@@ -193,7 +218,7 @@
 ;; id: null) into a sentinel string and hide it from validation. A
 ;; malformed spec is a spec error, not a test result, so it fails before
 ;; any subject runs.
-(defn- checkset [label testspec normalset]
+(defn- checkset [label testspec normalset requires]
   (let [origset (if (and (u/ismap testspec) (u/islist (get testspec "set")))
                   (get testspec "set")
                   normalset)]
@@ -203,7 +228,7 @@
       (throw (omni-error (str "omni: empty test set: " label))))
 
     (doseq [[index entry] (map-indexed vector origset)]
-      (checkentry label index entry))))
+      (checkentry label index entry requires))))
 
 ;; Check that every leaf of `check` is present, and matches, in `base`.
 (defn match
@@ -306,15 +331,43 @@
                      (u/stringify entryerr) (errmessage err))))
       (throw (fail label index entry "unexpected error" nil (errmessage err))))))
 
+(defn- resolvesubject [name provider]
+  (when-let [hook (when (some? name) (:subject provider))]
+    (hook name)))
+
+;; An entry with no `out` expects a null (or absent) result.
+(defn- resolveentry [entry donull]
+  (if (and donull (nil? (get entry "out")))
+    (assoc entry "out" u/NULLMARK)
+    entry))
+
+(defn- resolvetestpack [name entry subject provider clients fnon]
+  (let [clientname (get entry "client")
+        client (when (some? clientname)
+                 (or (get clients clientname)
+                     (throw (omni-error (str "omni: unknown client: " clientname) entry))))
+        testpack (if client
+                   {:client client :subject (or (resolvesubject name client) subject)}
+                   {:client provider :subject subject})
+        fnname (get entry "fn")]
+    (if (and fnon (some? fnname))
+      (assoc testpack :subject
+             (or (resolvesubject fnname (:client testpack))
+                 (throw (omni-error (str "omni: unknown fn: " fnname) entry))))
+      testpack)))
+
 ;; Build the argument list: `ctx`, `args`, or `in`. A leading map argument
 ;; is passed through `provider.contextify` and has the active client
-;; attached under `client`, mirroring canonical resolveargs.
-(defn- resolveargs [entry provider client]
+;; attached under `client`, mirroring canonical resolveargs. Under `ctxargs`
+;; an entry with both passes the context first, then each argument.
+(defn- resolveargs [entry provider client ctxargs]
   (let [hasctx (contains? entry "ctx")
         hasargs (contains? entry "args")
+        rawargs (let [raw (get entry "args")] (if (u/islist raw) (vec raw) [raw]))
         args (cond
+               (and ctxargs hasctx hasargs) (into [(get entry "ctx")] rawargs)
                hasctx [(get entry "ctx")]
-               hasargs (let [raw (get entry "args")] (if (u/islist raw) (vec raw) [raw]))
+               hasargs rawargs
                ;; ABSENT, not nil, when the entry supplies no `in`: a Clojure
                ;; map read answers nil for a missing key and for an authored
                ;; `in: null` alike, and the corpus distinguishes them -
@@ -334,16 +387,50 @@
         [(assoc args 0 first-arg) (assoc entry "ctx" first-arg)])
       [args entry])))
 
+;; The runner-side waits: entry id to its declaration. Each must name an
+;; entry of the set, so a declaration cannot outlive the entry it held.
+(defn- resolvewaits [label flags origset]
+  (let [waits (:wait flags)]
+    (cond
+      (nil? waits) {}
+
+      (not (u/ismap waits))
+      (throw (omni-error (str "omni: " label ": wait flag is not a map")))
+
+      :else
+      (let [ids (set (map #(when (u/ismap %) (get % "id")) origset))]
+        (doseq [[id wait] waits]
+          (when-not (contains? ids id)
+            (throw (omni-error (str "omni: " label ": wait names no entry: " id))))
+          (when-not (iswait wait)
+            (throw (omni-error (str "omni: " label ": wait for " id " has no cause")))))
+        waits))))
+
 ;; `argsmode` true means the subject returns `[args result]` rather than just
 ;; a result, so `match.args` can see what it did with its arguments. Clojure's
 ;; own data is immutable and a consumer's nodes are its own (struct/clojure
 ;; keeps java.util.LinkedHashMap / ArrayList), so returning them alongside the
 ;; result is the only channel there is. See `runsetflags-args`.
+(defn- runentry [label index entry testpack args provider donull argsmode]
+  (try
+    (let [outcome ((:subject testpack) args)
+          callargs (if argsmode (vec (first outcome)) args)
+          rawres (if argsmode (second outcome) outcome)
+          res (fixjson rawres donull)]
+      (checkresult label index (assoc entry "res" res) callargs res))
+    (catch Throwable err
+      (if (omni-error? err)
+        (throw err)
+        (handleerror label index entry err provider)))))
+
 (defn- run-set-flags [runpack testspec flags testsubject & [argsmode]]
-  (let [{:keys [spec subject provider clients name specversion]} runpack
+  (let [{:keys [spec subject provider clients name specversion requires]} runpack
         donull (if (contains? flags :null) (boolean (:null flags)) true)
         label (or (:name flags) (if (string/blank? name) "set" name))
-        usesubject (or testsubject subject)]
+        usesubject (or testsubject subject)
+        ctxargs (contains? requires "ctxargs")
+        fnon (contains? requires "fn")
+        waiton (contains? requires "wait")]
 
     (when (nil? usesubject)
       (throw (omni-error (str "omni: no test subject for: " label))))
@@ -355,43 +442,53 @@
         (throw (omni-error (str "omni: test spec has no set: " label))))
 
       (when (<= 1 specversion)
-        (checkset label testspec testset))
+        (checkset label testspec testset requires))
 
-      (doseq [[index rawentry] (map-indexed vector testset)]
-        (when-not (u/ismap rawentry)
-          (throw (omni-error (str "omni: " label "[" index "]: entry is not a map"))))
+      (let [origset (if (and (u/ismap testspec) (u/islist (get testspec "set")))
+                      (get testspec "set")
+                      testset)
+            waits (resolvewaits label flags origset)
+            failures
+            (reduce
+             (fn [failures [index rawentry]]
+               (when-not (u/ismap rawentry)
+                 (throw (omni-error (str "omni: " label "[" index "]: entry is not a map"))))
 
-        ;; An entry with no `out` expects a null (or absent) result.
-        (let [entry (if (and donull (nil? (get rawentry "out")))
-                      (assoc rawentry "out" u/NULLMARK)
-                      rawentry)
+               (try
+                 (let [entry (resolveentry rawentry donull)
+                       testpack (resolvetestpack name entry usesubject provider clients fnon)
+                       [args withctx] (resolveargs entry provider (:client testpack) ctxargs)
+                       id (get entry "id")
+                       wait (if (and waiton (contains? entry "wait"))
+                              (get entry "wait")
+                              (when (some? id) (get waits id)))
+                       run #(runentry label index withctx testpack args provider donull argsmode)]
+                   (if (nil? wait)
+                     (run)
+                     (let [held (try
+                                  (run)
+                                  false
+                                  (catch Throwable err
+                                    (if (omni-error? err) true (throw err))))]
+                       (when-not held
+                         (throw (fail label index withctx (str "stale wait: " (get wait "cause")))))))
+                   failures)
+                 (catch Throwable err
+                   (if (and (true? (:all flags)) (omni-error? err))
+                     (conj failures (ex-message err))
+                     (throw err)))))
+             []
+             (map-indexed vector testset))]
 
-              clientname (get entry "client")
-              client (when (some? clientname)
-                       (or (get clients clientname)
-                           (throw (omni-error (str "omni: unknown client: " clientname) entry))))
-
-              entrysubject (or (when client ((or (:subject client) (constantly nil)) name))
-                               usesubject)
-
-              [args withctx] (resolveargs entry provider (or client provider))]
-
-          (try
-            (let [outcome (entrysubject args)
-                  callargs (if argsmode (vec (first outcome)) args)
-                  rawres (if argsmode (second outcome) outcome)
-                  res (fixjson rawres donull)
-                  done (assoc withctx "res" res)]
-              (checkresult label index done callargs res))
-            (catch Throwable err
-              (if (omni-error? err)
-                (throw err)
-                (handleerror label index withctx err provider)))))))))
+        (when (seq failures)
+          (throw (omni-error (str "omni: " label ": " (count failures) " of " (count testset)
+                                  " entries failed\n" (string/join "\n" failures)))))))))
 
 ;; What a runner returns for one named spec section.
-(defn- make-runpack [spec subject provider clients name specversion]
+(defn- make-runpack [spec subject provider clients name specversion requires]
   (let [runpack {:spec spec :subject subject :provider provider
-                 :clients clients :name name :client provider :specversion specversion}]
+                 :clients clients :name name :client provider :specversion specversion
+                 :requires requires}]
     (assoc runpack
            :set (fn [setname] (get spec setname))
            :runsetflags (fn [testspec flags testsubject]
@@ -415,7 +512,8 @@
    ;; unsupported capability fails fast - before any runner name is even
    ;; resolved, let alone any test run.
    (let [alltests (if (string? specref) (loadspec specref) specref)
-         specversion (resolveversion alltests)]
+         specversion (resolveversion alltests)
+         requires (resolverequires alltests)]
      (fn runner
        ([name] (runner name nil))
        ([name store]
@@ -439,4 +537,4 @@
 
               subject (when-let [resolve-subject (:subject provider)] (resolve-subject name))]
 
-          (make-runpack spec subject provider clients name specversion)))))))
+          (make-runpack spec subject provider clients name specversion requires)))))))

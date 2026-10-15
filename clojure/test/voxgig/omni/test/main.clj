@@ -11,6 +11,7 @@
 (ns voxgig.omni.test.main
   (:require [clojure.string :as string]
             [voxgig.omni.runner :as runner]
+            [voxgig.omni.test.ext :as ext]
             [voxgig.omni.test.fib :as fib]
             [voxgig.omni.util :as u])
   (:import [java.io File])
@@ -296,6 +297,9 @@
 
     (testcase "reports entry index and id" checkmessage)
     (testcase "deepequal: NaN equals NaN, plain and nested" checknan)
+
+    (doseq [[name body] (ext/cases specfile)]
+      (testcase name body))
 
     (println (str "\n" @PASSCOUNT " passed, " @FAILCOUNT " failed"))
 
