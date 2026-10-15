@@ -639,8 +639,12 @@ local function resolvewaits(label, flags, origset)
   return waits
 end
 
-local function runentry(label, donull, index, entry, testpack, args, provider)
-  local ok, result = pcall(testpack.subject, table.unpack(args))
+local function runentry(label, donull, index, entry, testpack, provider, ctxargs)
+  local args
+  local ok, result = pcall(function()
+    args = resolveargs(entry, testpack.client, provider, ctxargs)
+    return testpack.subject(table.unpack(args))
+  end)
 
   if ok then
     local res = M.fixjson(result, donull)
@@ -728,6 +732,7 @@ function M.makeRunner(specref, provider)
 
       for at, entry in ipairs(testset) do
         local index = at - 1
+        local started = false
 
         local ok, err = pcall(function()
           if not u.ismap(entry) then
@@ -740,7 +745,6 @@ function M.makeRunner(specref, provider)
           end
 
           local testpack = resolvetestpack(name, entry, usesubject, useprovider, clients, fnon)
-          local args = resolveargs(entry, testpack.client, useprovider, ctxargs)
 
           local wait = nil
           local id = u.get(entry, 'id')
@@ -750,11 +754,12 @@ function M.makeRunner(specref, provider)
             wait = waits[id]
           end
 
+          started = true
           if nil == wait then
-            runentry(label, donull, index, entry, testpack, args, useprovider)
+            runentry(label, donull, index, entry, testpack, useprovider, ctxargs)
           else
-            local passed, held = pcall(runentry, label, donull, index, entry, testpack, args,
-              useprovider)
+            local passed, held = pcall(runentry, label, donull, index, entry, testpack,
+              useprovider, ctxargs)
             if passed then
               local cause = 'table' == type(wait) and rawget(wait, 'cause') or u.ABSENT
               error(fail(label, index, entry, 'stale wait: ' .. u.stringify(cause)))
@@ -765,11 +770,25 @@ function M.makeRunner(specref, provider)
           end
         end)
 
+        local failure = nil
         if not ok then
-          if true == flags.all and M.isomnierror(err) then
-            failures[#failures + 1] = err.message
+          failure = err
+          -- Before the subject starts, a hook's raw error is still the entry's.
+          if not started and not M.isomnierror(err) then
+            local handled, herr = pcall(handleerror, label, index, entry, err, useprovider)
+            if handled then
+              failure = nil
+            else
+              failure = herr
+            end
+          end
+        end
+
+        if nil ~= failure then
+          if true == flags.all and M.isomnierror(failure) then
+            failures[#failures + 1] = failure.message
           else
-            error(err, 0)
+            error(failure, 0)
           end
         end
       end

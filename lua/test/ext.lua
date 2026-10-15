@@ -191,6 +191,32 @@ testcase('a legacy spec ignores fn and wait', function()
   L.runset(L.set('g'), FIB)
 end)
 
+testcase("a raising hook is the entry's error, not the set's", function()
+  local provider = {
+    subject = function() return FIB end,
+    contextify = function() error('contextify boom', 0) end,
+  }
+  local function run(spec) return runner.makeRunner(spec, provider)('fib') end
+  local E = run(v1({}, { u.map({ ctx = u.map({ n = 6 }), err = 'contextify boom' }) }))
+  E.runset(E.set('g'), FIB)
+  local U = run(v1({}, { u.map({ ctx = u.map({ n = 6 }), out = 8 }) }))
+  refuses(function() U.runset(U.set('g'), FIB) end,
+    '%[0%]: unexpected error\n%s+actual:%s+contextify boom')
+  local W = run(v1({ 'wait' }, {
+    u.map({ ctx = u.map({ n = 6 }), out = 8, wait = u.map({ cause = 'hook#1' }) }),
+  }))
+  W.runset(W.set('g'), FIB)
+  local F = runner.makeRunner(v1({ 'fn' }, { u.map({ fn = 'boom', ['in'] = 6, err = 'subject boom' }) }), {
+    subject = function(name)
+      if 'boom' == name then
+        error('subject boom', 0)
+      end
+      return FIB
+    end,
+  })('fib')
+  F.runset(F.set('g'), FIB)
+end)
+
 testcase('all reports every failure at once', function()
   local A = makerunner(v1({}, {
     u.map({ ['in'] = 5, out = 6 }),
