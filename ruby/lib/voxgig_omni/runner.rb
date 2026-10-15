@@ -16,8 +16,8 @@ module VoxgigOmni
   # Capability strings this runner supports beyond the version baseline. A
   # spec's OMNI.requires list is checked against this: an unknown capability
   # refuses the spec loudly at load time, instead of a lagging port silently
-  # mis-running it. (Empty today; future format features mint a string here.)
-  CAPABILITIES = []
+  # mis-running it. A spec turns each on only by requiring it.
+  CAPABILITIES = %w[ctxargs fn wait].freeze
 
   # A test failure (or a malformed spec). Distinct from errors raised by
   # the subject under test, which are candidates for an `err` expectation.
@@ -40,6 +40,9 @@ module VoxgigOmni
     # typo'd assertion, and a typo'd assertion is a test that silently
     # stopped testing.
     ENTRYFIELDS = %w[in args ctx out err match client id doc]
+
+    # Entry fields a capability adds, permitted only in a spec that requires it.
+    CAPFIELDS = { 'fn' => 'fn', 'wait' => 'wait' }.freeze
 
     # Load a spec: a path to a JSON file, or an already-parsed object.
     def loadspec(specref)
@@ -79,18 +82,39 @@ module VoxgigOmni
       version
     end
 
+    # The capabilities a spec requires, which resolveversion has already
+    # checked against CAPABILITIES.
+    def resolverequires(alltests)
+      meta = U.ismap(alltests) ? alltests['OMNI'] : nil
+      U.ismap(meta) && U.islist(meta['requires']) ? meta['requires'] : []
+    end
+
     # Strict entry validation, applied when the spec declares version 1 or
     # later. The lenient format converts each of these mistakes into a
     # silent pass or a dead field; here they fail with the entry named.
-    def checkentry(flags, index, entry)
+    def checkentry(flags, index, entry, requires)
       raise fail(flags, index, entry, 'entry is not a map') unless U.ismap(entry)
 
       entry.each_key do |key|
-        raise fail(flags, index, entry, 'unknown entry field: ' + key.to_s) unless ENTRYFIELDS.include?(key)
+        next if ENTRYFIELDS.include?(key) || (CAPFIELDS.key?(key) && requires.include?(CAPFIELDS[key]))
+
+        raise fail(flags, index, entry, 'unknown entry field: ' + key.to_s)
       end
 
-      argsources = %w[in args ctx].count { |key| entry.key?(key) }
-      raise fail(flags, index, entry, 'entry has more than one of in, args, ctx') if argsources > 1
+      if requires.include?('ctxargs')
+        if entry.key?('in') && (entry.key?('args') || entry.key?('ctx'))
+          raise fail(flags, index, entry, 'entry has in beside args or ctx')
+        end
+      else
+        argsources = %w[in args ctx].count { |key| entry.key?(key) }
+        raise fail(flags, index, entry, 'entry has more than one of in, args, ctx') if argsources > 1
+      end
+
+      if entry.key?('fn') && !(entry['fn'].is_a?(String) && !entry['fn'].empty?)
+        raise fail(flags, index, entry, 'entry fn is not a name')
+      end
+
+      raise fail(flags, index, entry, 'entry wait has no cause') if entry.key?('wait') && !wait?(entry['wait'])
 
       raise fail(flags, index, entry, 'entry has both err and out') if !entry['err'].nil? && entry.key?('out')
 
@@ -102,7 +126,7 @@ module VoxgigOmni
     # id: null) into a sentinel string and hide it from validation. A
     # malformed spec is a spec error, not a test result, so it fails
     # before any subject runs.
-    def checkset(flags, testspec, normalset)
+    def checkset(flags, testspec, normalset, requires)
       origset = U.ismap(testspec) && U.islist(testspec['set']) ? testspec['set'] : normalset
 
       if origset.empty? && (U.ismap(testspec) ? testspec['empty'] : nil) != true
@@ -110,7 +134,7 @@ module VoxgigOmni
       end
 
       origset.each_with_index do |entry, index|
-        checkentry(flags, index, entry)
+        checkentry(flags, index, entry, requires)
       end
     end
 
@@ -167,7 +191,7 @@ module VoxgigOmni
       entry
     end
 
-    def resolvetestpack(name, entry, subject, provider, clients)
+    def resolvetestpack(name, entry, subject, provider, clients, fnon = false)
       testpack = { client: provider, subject: subject }
 
       unless entry['client'].nil?
@@ -178,12 +202,22 @@ module VoxgigOmni
         testpack[:subject] = resolvesubject(name, client) || subject
       end
 
+      if fnon && !entry['fn'].nil?
+        fnsubject = resolvesubject(entry['fn'], testpack[:client])
+        raise OmniError.new('omni: unknown fn: ' + entry['fn'].to_s, entry) if fnsubject.nil?
+
+        testpack[:subject] = fnsubject
+      end
+
       testpack
     end
 
-    # Build the argument list: `ctx`, `args`, or `in`.
-    def resolveargs(entry, testpack, provider)
-      args = if entry.key?('ctx')
+    # Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+    # entry with both passes the context first, then each argument.
+    def resolveargs(entry, testpack, provider, ctxargs = false)
+      args = if ctxargs && entry.key?('ctx') && entry.key?('args')
+               [entry['ctx']] + (U.islist(entry['args']) ? entry['args'] : [entry['args']])
+             elsif entry.key?('ctx')
                [entry['ctx']]
              elsif entry.key?('args')
                entry['args']
@@ -427,10 +461,45 @@ module VoxgigOmni
       end
     end
 
+    def wait?(wait)
+      U.ismap(wait) && wait['cause'].is_a?(String) && !wait['cause'].empty?
+    end
+
+    # The runner-side waits: entry id to its declaration. Each must name an
+    # entry of the set, so a declaration cannot outlive the entry it held.
+    def resolvewaits(flags, origset)
+      waits = flags[:wait]
+      return {} if waits.nil?
+      raise OmniError, 'omni: ' + flags[:name].to_s + ': wait flag is not a map' unless U.ismap(waits)
+
+      ids = origset.map { |entry| U.ismap(entry) ? entry['id'] : nil }
+      waits.each do |id, wait|
+        raise OmniError, 'omni: ' + flags[:name].to_s + ': wait names no entry: ' + id.to_s unless ids.include?(id)
+        raise OmniError, 'omni: ' + flags[:name].to_s + ': wait for ' + id.to_s + ' has no cause' unless wait?(wait)
+      end
+      waits
+    end
+
+    def runentry(flags, index, entry, testpack, args, provider)
+      res = testpack[:subject].call(*args)
+      res = fixjson(res, flags)
+      entry['res'] = res
+
+      checkresult(flags, index, entry, args, res)
+    rescue OmniError
+      raise
+    rescue StandardError => e
+      handleerror(flags, index, entry, e, provider)
+    end
+
     # Make a runner for a spec file (or spec object) and a provider.
     def make_runner(specref, provider = nil)
       alltests = loadspec(specref)
       specversion = resolveversion(alltests)
+      requires = resolverequires(alltests)
+      ctxargs = requires.include?('ctxargs')
+      fnon = requires.include?('fn')
+      waiton = requires.include?('wait')
       useprovider = provider || {}
 
       lambda do |name = nil, store = nil|
@@ -453,25 +522,44 @@ module VoxgigOmni
 
           testset = testspecmap['set']
 
-          checkset(useflags, testspec, testset) if 1 <= specversion
+          checkset(useflags, testspec, testset, requires) if 1 <= specversion
+
+          origset = U.ismap(testspec) && U.islist(testspec['set']) ? testspec['set'] : testset
+          waits = resolvewaits(useflags, origset)
+          failures = []
 
           testset.each_with_index do |entry, index|
-            begin
-              entry = resolveentry(entry, useflags)
+            entry = resolveentry(entry, useflags)
 
-              testpack = resolvetestpack(name, entry, subject, useprovider, clients)
-              args = resolveargs(entry, testpack, useprovider)
+            testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+            args = resolveargs(entry, testpack, useprovider, ctxargs)
 
-              res = testpack[:subject].call(*args)
-              res = fixjson(res, useflags)
-              entry['res'] = res
+            wait = if waiton && entry.key?('wait')
+                     entry['wait']
+                   elsif !entry['id'].nil?
+                     waits[entry['id']]
+                   end
 
-              checkresult(useflags, index, entry, args, res)
-            rescue OmniError
-              raise
-            rescue StandardError => e
-              handleerror(useflags, index, entry, e, useprovider)
+            if wait.nil?
+              runentry(useflags, index, entry, testpack, args, useprovider)
+            else
+              held = false
+              begin
+                runentry(useflags, index, entry, testpack, args, useprovider)
+              rescue OmniError
+                held = true
+              end
+              raise fail(useflags, index, entry, 'stale wait: ' + wait['cause'].to_s) unless held
             end
+          rescue OmniError => e
+            raise unless useflags[:all] == true
+
+            failures << e.message
+          end
+
+          unless failures.empty?
+            raise OmniError, 'omni: ' + useflags[:name].to_s + ': ' + failures.length.to_s + ' of ' +
+                             testset.length.to_s + " entries failed\n" + failures.join("\n")
           end
         end
 
