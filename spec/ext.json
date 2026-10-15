@@ -1,0 +1,104 @@
+{
+  "OMNI": {
+    "requires": [
+      "ctxargs",
+      "fn",
+      "wait"
+    ],
+    "version": 1
+  },
+  "primary": {
+    "fib": {
+      "ctxargs": {
+        "set": [
+          {
+            "args": [
+              3,
+              5
+            ],
+            "ctx": {
+              "shift": 2
+            },
+            "doc": true,
+            "id": "ext/ctxargs#shift",
+            "out": [
+              5,
+              8,
+              13
+            ]
+          },
+          {
+            "args": [
+              0,
+              3
+            ],
+            "ctx": {
+              "shift": 0
+            },
+            "out": [
+              0,
+              1,
+              1,
+              2
+            ]
+          }
+        ]
+      },
+      "fn": {
+        "set": [
+          {
+            "doc": true,
+            "fn": "fibseq",
+            "id": "ext/fn#seq",
+            "in": 5,
+            "out": [
+              0,
+              1,
+              1,
+              2,
+              3
+            ]
+          },
+          {
+            "args": [
+              3,
+              5
+            ],
+            "fn": "fibrange",
+            "out": [
+              2,
+              3,
+              5
+            ]
+          },
+          {
+            "fn": "fib",
+            "in": 10,
+            "out": 55
+          }
+        ]
+      },
+      "wait": {
+        "set": [
+          {
+            "in": 5,
+            "out": 5
+          },
+          {
+            "doc": true,
+            "id": "ext/wait#held",
+            "in": 6,
+            "out": 9,
+            "wait": {
+              "cause": "omni-spec#held"
+            }
+          },
+          {
+            "in": 7,
+            "out": 13
+          }
+        ]
+      }
+    }
+  }
+}

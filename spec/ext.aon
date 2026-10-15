@@ -1,0 +1,29 @@
+# Requires every capability beyond the version-1 baseline, so a runner
+# lacking one refuses this file while fib.aon still runs everywhere.
+OMNI: {
+  version: 1
+  requires: ['ctxargs', 'fn', 'wait']
+}
+
+
+primary: fib: {
+
+  ctxargs: set: [
+    { id: 'ext/ctxargs#shift', doc: true, ctx: { shift: 2 }, args: [3, 5], out: [5, 8, 13] }
+    { ctx: { shift: 0 }, args: [0, 3], out: [0, 1, 1, 2] }
+  ]
+
+
+  fn: set: [
+    { id: 'ext/fn#seq', doc: true, fn: 'fibseq', in: 5, out: [0, 1, 1, 2, 3] }
+    { fn: 'fibrange', args: [3, 5], out: [2, 3, 5] }
+    { fn: 'fib', in: 10, out: 55 }
+  ]
+
+
+  wait: set: [
+    { in: 5, out: 5 }
+    { id: 'ext/wait#held', doc: true, in: 6, out: 9, wait: { cause: 'omni-spec#held' } }
+    { in: 7, out: 13 }
+  ]
+}

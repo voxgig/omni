@@ -60,14 +60,17 @@ export const SPECVERSION = 1
 // Capability strings this runner supports beyond the version baseline. A
 // spec's OMNI.requires list is checked against this: an unknown capability
 // refuses the spec loudly at load time, instead of a lagging port silently
-// mis-running it. (Empty today; future format features mint a string here.)
-export const CAPABILITIES: string[] = []
+// mis-running it. A spec turns each on only by requiring it.
+export const CAPABILITIES: string[] = ['ctxargs', 'fn', 'wait']
 
 // The complete set of fields an entry may carry. Under version 1 anything
 // else is an error: an unrecognised key is almost always a typo'd
 // assertion, and a typo'd assertion is a test that silently stopped
 // testing.
 const ENTRYFIELDS = ['in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc']
+
+// Entry fields a capability adds, permitted only in a spec that requires it.
+const CAPFIELDS: Record<string, string> = { fn: 'fn', wait: 'wait' }
 
 // A test failure (or a malformed spec). Distinct from errors thrown by the
 // subject under test, which are candidates for an `err` expectation.
@@ -121,28 +124,49 @@ function resolveversion(alltests: Json): number {
   return meta.version
 }
 
+// The capabilities a spec requires, which resolveversion has already
+// checked against CAPABILITIES.
+function resolverequires(alltests: Json): string[] {
+  const meta = ismap(alltests) ? alltests.OMNI : undefined
+  return ismap(meta) && islist(meta.requires) ? meta.requires : []
+}
+
 // Strict entry validation, applied when the spec declares version 1 or
 // later. The lenient format converts each of these mistakes into a silent
 // pass or a dead field; here they fail with the entry named.
-function checkentry(flags: Flags, index: number, entry: Json): void {
+function checkentry(flags: Flags, index: number, entry: Json, requires: string[]): void {
   if (!ismap(entry)) {
     throw fail(flags, index, entry, 'entry is not a map')
   }
 
   for (const key of Object.keys(entry)) {
-    if (!ENTRYFIELDS.includes(key)) {
+    if (!ENTRYFIELDS.includes(key) && !(key in CAPFIELDS && requires.includes(CAPFIELDS[key]))) {
       throw fail(flags, index, entry, 'unknown entry field: ' + key)
     }
   }
 
-  let argsources = 0
-  for (const key of ['in', 'args', 'ctx']) {
-    if (undefined !== entry[key]) {
-      argsources++
+  if (requires.includes('ctxargs')) {
+    if (undefined !== entry.in && (undefined !== entry.args || undefined !== entry.ctx)) {
+      throw fail(flags, index, entry, 'entry has in beside args or ctx')
+    }
+  } else {
+    let argsources = 0
+    for (const key of ['in', 'args', 'ctx']) {
+      if (undefined !== entry[key]) {
+        argsources++
+      }
+    }
+    if (1 < argsources) {
+      throw fail(flags, index, entry, 'entry has more than one of in, args, ctx')
     }
   }
-  if (1 < argsources) {
-    throw fail(flags, index, entry, 'entry has more than one of in, args, ctx')
+
+  if (undefined !== entry.fn && ('string' !== typeof entry.fn || '' === entry.fn)) {
+    throw fail(flags, index, entry, 'entry fn is not a name')
+  }
+
+  if (undefined !== entry.wait && !iswait(entry.wait)) {
+    throw fail(flags, index, entry, 'entry wait has no cause')
   }
 
   if (null != entry.err && undefined !== entry.out) {
@@ -159,7 +183,7 @@ function checkentry(flags: Flags, index: number, entry: Json): void {
 // id: null) into a sentinel string and hide it from validation. A
 // malformed spec is a spec error, not a test result, so it fails before
 // any subject runs.
-function checkset(flags: Flags, testspec: Json, normalset: Json[]): void {
+function checkset(flags: Flags, testspec: Json, normalset: Json[], requires: string[]): void {
   const origset =
     ismap(testspec) && islist(testspec.set) ? testspec.set : normalset
 
@@ -168,7 +192,7 @@ function checkset(flags: Flags, testspec: Json, normalset: Json[]): void {
   }
 
   for (let index = 0; index < origset.length; index++) {
-    checkentry(flags, index, origset[index])
+    checkentry(flags, index, origset[index], requires)
   }
 }
 
@@ -261,15 +285,31 @@ function resolvetestpack(
     testpack.subject = resolvesubject(name, client) || subject
   }
 
+  if (null != entry.fn) {
+    const fnsubject = resolvesubject(entry.fn, testpack.client)
+    if (null == fnsubject) {
+      throw new OmniError('omni: unknown fn: ' + entry.fn, entry)
+    }
+    testpack.subject = fnsubject
+  }
+
   return testpack
 }
 
 // Build the argument list for one entry: `ctx` (single context argument),
-// `args` (explicit list), or `in` (single value).
-function resolveargs(entry: Json, testpack: { client: Provider }, provider: Provider): Json[] {
+// `args` (explicit list), or `in` (single value). Under `ctxargs` an entry
+// with both passes the context first, then each argument.
+function resolveargs(
+  entry: Json,
+  testpack: { client: Provider },
+  provider: Provider,
+  ctxargs: boolean,
+): Json[] {
   let args: Json[]
 
-  if (undefined !== entry.ctx) {
+  if (ctxargs && undefined !== entry.ctx && undefined !== entry.args) {
+    args = [entry.ctx, ...entry.args]
+  } else if (undefined !== entry.ctx) {
     args = [entry.ctx]
   } else if (undefined !== entry.args) {
     args = entry.args
@@ -574,9 +614,59 @@ function nullmodifier(val: Json, key: any, parent: Json) {
   }
 }
 
+function iswait(wait: Json): boolean {
+  return ismap(wait) && 'string' === typeof wait.cause && '' !== wait.cause
+}
+
+// The runner-side waits: entry id to its declaration. Each must name an
+// entry of the set, so a declaration cannot outlive the entry it held.
+function resolvewaits(flags: Flags, origset: Json[]): Record<string, Json> {
+  const waits = flags.wait
+  if (null == waits) {
+    return {}
+  }
+  if (!ismap(waits)) {
+    throw new OmniError('omni: ' + flags.name + ': wait flag is not a map')
+  }
+  const ids = origset.map((entry: Json) => (ismap(entry) ? entry.id : undefined))
+  for (const id of Object.keys(waits)) {
+    if (!ids.includes(id)) {
+      throw new OmniError('omni: ' + flags.name + ': wait names no entry: ' + id)
+    }
+    if (!iswait(waits[id])) {
+      throw new OmniError('omni: ' + flags.name + ': wait for ' + id + ' has no cause')
+    }
+  }
+  return waits
+}
+
+async function runentry(
+  flags: Flags,
+  index: number,
+  entry: Json,
+  testpack: { client: Provider, subject: Subject },
+  args: Json[],
+  provider: Provider,
+): Promise<void> {
+  try {
+    let res = await testpack.subject(...args)
+    res = fixjson(res, flags)
+    entry.res = res
+
+    checkresult(flags, index, entry, args, res)
+  } catch (err: any) {
+    if (err instanceof OmniError) {
+      throw err
+    }
+    handleerror(flags, index, entry, err, provider)
+  }
+}
+
 async function makeRunner(specref: string | Json, provider?: Provider): Promise<Runner> {
   const alltests = loadspec(specref)
   const specversion = resolveversion(alltests)
+  const requires = resolverequires(alltests)
+  const ctxargs = requires.includes('ctxargs')
   const useprovider: Provider = provider || {}
 
   return async function runner(name?: string, store?: Json): Promise<RunPack> {
@@ -606,8 +696,12 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
       const testset: Json[] = testspecmap.set
 
       if (1 <= specversion) {
-        checkset(useflags, testspec, testset)
+        checkset(useflags, testspec, testset, requires)
       }
+
+      const origset = ismap(testspec) && islist(testspec.set) ? testspec.set : testset
+      const waits = resolvewaits(useflags, origset)
+      const failures: string[] = []
 
       for (let index = 0; index < testset.length; index++) {
         let entry = testset[index]
@@ -616,19 +710,39 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
           entry = resolveentry(entry, useflags)
 
           const testpack = resolvetestpack(name, entry, subject, useprovider, clients)
-          const args = resolveargs(entry, testpack, useprovider)
+          const args = resolveargs(entry, testpack, useprovider, ctxargs)
 
-          let res = await testpack.subject(...args)
-          res = fixjson(res, useflags)
-          entry.res = res
+          const wait = undefined !== entry.wait ? entry.wait
+            : null != entry.id ? waits[entry.id] : undefined
 
-          checkresult(useflags, index, entry, args, res)
-        } catch (err: any) {
-          if (err instanceof OmniError) {
-            throw err
+          if (undefined === wait) {
+            await runentry(useflags, index, entry, testpack, args, useprovider)
+          } else {
+            let held = false
+            try {
+              await runentry(useflags, index, entry, testpack, args, useprovider)
+            } catch (err: any) {
+              if (!(err instanceof OmniError)) {
+                throw err
+              }
+              held = true
+            }
+            if (!held) {
+              throw fail(useflags, index, entry, 'stale wait: ' + wait.cause)
+            }
           }
-          handleerror(useflags, index, entry, err, useprovider)
+        } catch (err: any) {
+          if (true === useflags.all && err instanceof OmniError) {
+            failures.push(err.message)
+            continue
+          }
+          throw err
         }
+      }
+
+      if (0 < failures.length) {
+        throw new OmniError('omni: ' + useflags.name + ': ' + failures.length + ' of ' +
+          testset.length + ' entries failed\n' + failures.join('\n'))
       }
     }
 
