@@ -175,6 +175,31 @@ testcase('a legacy spec ignores fn and wait', function () use ($fib) {
     ($R['runset'])($R['spec']['g'], $fib);
 });
 
+testcase('a raising hook is the entry\'s error, not the set\'s', function () use ($fib) {
+    $provider = [
+        'subject' => fn($name) => $fib,
+        'contextify' => function (array $val) {
+            throw new \RuntimeException('contextify boom');
+        },
+    ];
+    $run = fn($spec) => (Runner::makeRunner($spec, $provider))('fib');
+    $E = $run(v1([], [['ctx' => ['n' => 6], 'err' => 'contextify boom']]));
+    ($E['runset'])($E['spec']['g'], $fib);
+    $U = $run(v1([], [['ctx' => ['n' => 6], 'out' => 8]]));
+    refuses(fn() => ($U['runset'])($U['spec']['g'], $fib), '/\[0\]: unexpected error\n\s+actual:\s+contextify boom/');
+    $W = $run(v1(['wait'], [['ctx' => ['n' => 6], 'out' => 8, 'wait' => ['cause' => 'hook#1']]]));
+    ($W['runset'])($W['spec']['g'], $fib);
+    $F = (Runner::makeRunner(v1(['fn'], [['fn' => 'boom', 'in' => 6, 'err' => 'subject boom']]), [
+        'subject' => function (string $name) use ($fib) {
+            if ('boom' === $name) {
+                throw new \RuntimeException('subject boom');
+            }
+            return $fib;
+        },
+    ]))('fib');
+    ($F['runset'])($F['spec']['g'], $fib);
+});
+
 testcase('all reports every failure at once', function () use ($fib) {
     $R = runner(v1([], [['in' => 5, 'out' => 6], ['in' => 6, 'out' => 8], ['in' => 7, 'out' => 14]]));
     refuses(

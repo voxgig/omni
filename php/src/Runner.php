@@ -650,9 +650,16 @@ final class Runner
         return $waits;
     }
 
-    public static function runentry(array $flags, int $index, array &$entry, array $testpack, array $args, array $provider): void
-    {
+    public static function runentry(
+        array $flags,
+        int $index,
+        array &$entry,
+        array $testpack,
+        array $provider,
+        bool $ctxargs
+    ): void {
         try {
+            $args = self::resolveargs($entry, $testpack, $provider, $ctxargs);
             $res = ($testpack['subject'])(...$args);
             $res = self::fixjson($res, $flags);
             $entry['res'] = $res;
@@ -731,22 +738,24 @@ final class Runner
                 $failures = [];
 
                 foreach ($testset as $index => $entry) {
+                    $started = false;
+
                     try {
                         $entry = self::resolveentry($entry, $useflags);
 
                         $testpack = self::resolvetestpack($name, $entry, $subject, $useprovider, $clients, $fnon);
-                        $args = self::resolveargs($entry, $testpack, $useprovider, $ctxargs);
 
                         $id = $entry['id'] ?? null;
                         $wait = $waiton && array_key_exists('wait', $entry) ? $entry['wait']
                             : (is_string($id) || is_int($id) ? ($waits[$id] ?? null) : null);
 
+                        $started = true;
                         if (null === $wait) {
-                            self::runentry($useflags, $index, $entry, $testpack, $args, $useprovider);
+                            self::runentry($useflags, $index, $entry, $testpack, $useprovider, $ctxargs);
                         } else {
                             $held = false;
                             try {
-                                self::runentry($useflags, $index, $entry, $testpack, $args, $useprovider);
+                                self::runentry($useflags, $index, $entry, $testpack, $useprovider, $ctxargs);
                             } catch (OmniError) {
                                 $held = true;
                             }
@@ -759,12 +768,22 @@ final class Runner
                                 );
                             }
                         }
-                    } catch (OmniError $omnierr) {
-                        if (true === ($useflags['all'] ?? null)) {
-                            $failures[] = $omnierr->getMessage();
+                    } catch (\Throwable $err) {
+                        $failure = $err;
+                        // Before the subject starts, a hook's raw error is still the entry's.
+                        if (!$started && !($err instanceof OmniError)) {
+                            try {
+                                self::handleerror($useflags, $index, $entry, $err, $useprovider);
+                                continue;
+                            } catch (\Throwable $herr) {
+                                $failure = $herr;
+                            }
+                        }
+                        if (true === ($useflags['all'] ?? null) && $failure instanceof OmniError) {
+                            $failures[] = $failure->getMessage();
                             continue;
                         }
-                        throw $omnierr;
+                        throw $failure;
                     }
                 }
 
