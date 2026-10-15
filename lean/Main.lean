@@ -441,6 +441,28 @@ def testExtLegacy : Except String Unit := do
           ("wait", jmap [("cause", jstr "c")])]])])])])
   pack.runset (pack.set "g") (some FIB)
 
+-- `runset` takes `Option Subject`, so `none` is "no subject".
+def testExtFnNoDefault : Except String Unit := do
+  let fibx := Omni.provider (subject := some (fun name => if name == "fibx" then some FIB else none))
+  let named := jmap [("fn", jstr "fibx"), ("in", jnum 6), ("out", jnum 8)]
+  let unnamed := jmap [("in", jnum 6), ("out", jnum 8)]
+
+  let pack ← makeRunnerSpec (extv1 ["fn"] [named]) fibx "fib"
+  pack.runset (pack.set "g") none
+
+  let mixed ← makeRunnerSpec (extv1 ["fn"] [named, unnamed]) fibx "fib"
+  refuses (mixed.runset (mixed.set "g") none) "^omni: no test subject for: fib$"
+
+  let legacy ← makeRunnerSpec (extv1 [] [unnamed]) fibx "fib"
+  refuses (legacy.runset (legacy.set "g") none) "^omni: no test subject for: fib$"
+
+def testExtWaitOwnId : Except String Unit := do
+  let pack ← extrunner (extv1 [] [
+    jmap [("id", jstr "constructor"), ("in", jnum 6), ("out", jnum 8)],
+    jmap [("id", jstr "toString"), ("in", jnum 7), ("out", jnum 13)]])
+  pack.runset (pack.set "g") (some FIB)
+  pack.runsetflags (pack.set "g") { wait := some (jmap []) } (some FIB)
+
 def testExtAll : Except String Unit := do
   let pack ← extrunner (extv1 [] [
     jmap [("in", jnum 5), ("out", jnum 6)],
@@ -513,6 +535,9 @@ def main (argv : List String) : IO UInt32 := do
   run "ext runner: an unknown fn is a spec error" testExtUnknownFn
   run "ext runner: ctx with args needs ctxargs, and never takes in" testExtCtxArgs
   run "ext runner: a legacy spec ignores fn and wait" testExtLegacy
+  run "ext runner: fn needs no default subject, but an entry without fn does" testExtFnNoDefault
+  run "ext runner: a wait is found by an id the entry owns, never an inherited one"
+    testExtWaitOwnId
   run "ext runner: all reports every failure at once" testExtAll
 
   let final ← counts.get

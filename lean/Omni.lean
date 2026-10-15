@@ -873,7 +873,7 @@ def RunPack.set (pack : RunPack) (setname : String) : Json :=
 lifted, handing its arguments back unchanged. -/
 private structure TestPack where
   client : Provider
-  subject : SubjectArgs
+  subject : Option SubjectArgs
 
 private def liftsubject (subject : Subject) : SubjectArgs :=
   fun args => (subject args).map (fun res => (args, res))
@@ -889,7 +889,7 @@ private def resolveentry (entry : Json) (flags : Flags) : Json :=
   if flags.null && isnone (jget (some entry) "out") then jset entry "out" (jstr nullmark)
   else entry
 
-private def resolvetestpack (pack : RunPack) (entry : Json) (subject : SubjectArgs)
+private def resolvetestpack (pack : RunPack) (entry : Json) (subject : Option SubjectArgs)
     (fnon : Bool) : Except String TestPack := do
   let mut testpack : TestPack := { client := pack.client, subject := subject }
 
@@ -898,13 +898,14 @@ private def resolvetestpack (pack : RunPack) (entry : Json) (subject : SubjectAr
     | none => throw s!"omni: unknown client: {clientname}"
     | some client =>
       testpack := { client := client,
-                    subject := ((resolvesubject pack.name client).map liftsubject).getD subject }
+                    subject := ((resolvesubject pack.name client).map liftsubject).orElse
+                      (fun _ => subject) }
 
   if fnon then
     if let some fnname := asstr (jget (some entry) "fn") then
       match resolvesubject fnname testpack.client with
       | none => throw s!"omni: unknown fn: {fnname}"
-      | some found => testpack := { testpack with subject := liftsubject found }
+      | some found => testpack := { testpack with subject := some (liftsubject found) }
 
   pure testpack
 
@@ -962,9 +963,9 @@ private def resolvewaits (label : String) (flags : Flags) (origset : Array Json)
 -- An args-subject returns its arguments alongside the result, so
 -- `match.args` sees what the subject actually did with them.
 private def runentry (label : String) (flags : Flags) (index : Nat) (entry : Json)
-    (testpack : TestPack) (prov : Provider) (ctxargs : Bool) : Except String Unit :=
+    (subject : SubjectArgs) (prov : Provider) (ctxargs : Bool) : Except String Unit :=
   let (args, entry) := resolveargs entry prov ctxargs
-  match testpack.subject args with
+  match subject args with
   | .ok (callargs, rawres) =>
     let res := fixjson rawres flags.null
     let done := match res with
@@ -983,12 +984,13 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
   let fnon := pack.requires.contains "fn"
   let waiton := pack.requires.contains "wait"
 
-  let usesubject : SubjectArgs ← match argsubject with
-    | some call => pure call
-    | none =>
-      match testsubject.orElse (fun _ => pack.subject) with
-      | some found => pure (liftsubject found)
-      | none => throw s!"omni: no test subject for: {label}"
+  let usesubject : Option SubjectArgs := match argsubject with
+    | some call => some call
+    | none => (testsubject.orElse (fun _ => pack.subject)).map liftsubject
+
+  -- Under `fn` each entry may name its own subject, so the check is per entry.
+  if usesubject.isNone && !fnon then
+    throw s!"omni: no test subject for: {label}"
 
   let testspecmap := fixjson (some testspec) flags.null
 
@@ -1011,6 +1013,8 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
 
     let entry := resolveentry rawentry flags
     let testpack ← resolvetestpack pack entry usesubject fnon
+    let some subject := testpack.subject
+      | throw s!"omni: no test subject for: {label}"
 
     let wait : Val :=
       if waiton && jhas (some entry) "wait" then jget (some entry) "wait"
@@ -1018,7 +1022,7 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
         | some id => waits.lookup id
         | none => none
 
-    let ran := runentry label flags index entry testpack pack.client ctxargs
+    let ran := runentry label flags index entry subject pack.client ctxargs
     match wait, ran with
     | none, _ => ran
     | some _, .error _ => pure ()
