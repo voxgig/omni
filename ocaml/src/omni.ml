@@ -1056,12 +1056,12 @@ let resolvetestpack name entry subject (provider : provider) clients fnon =
       match List.assoc_opt clientname clients with
       | None -> raise (Omni_error ("omni: unknown client: " ^ clientname))
       | Some client ->
-        (client, match resolvesubject name client with Some found -> Subject found | None -> subject))
+        (client, match resolvesubject name client with Some found -> Some (Subject found) | None -> subject))
   in
   match asstr (jget entry "fn") with
   | Some fn when fnon -> (
     match resolvesubject fn client with
-    | Some found -> Subject found
+    | Some found -> Some (Subject found)
     | None -> raise (Omni_error ("omni: unknown fn: " ^ fn)))
   | _ -> subject
 
@@ -1169,11 +1169,12 @@ let make_runner_spec alltests (provider : provider) =
      in
 
      let subject =
-       match (testsubject, defsubject) with
-       | Some found, _ -> found
-       | None, Some found -> Subject found
-       | None, None -> raise (Omni_error ("omni: no test subject for: " ^ label))
+       match testsubject with
+       | Some _ -> testsubject
+       | None -> Option.map (fun found -> Subject found) defsubject
      in
+     if Option.is_none subject && not fnon then
+       raise (Omni_error ("omni: no test subject for: " ^ label));
 
      let testspecmap = fixjson testspec flags.null in
      let testset =
@@ -1195,24 +1196,34 @@ let make_runner_spec alltests (provider : provider) =
 
        let entry = resolveentry rawentry flags in
 
-       (* Only an error raised before the subject starts is handled here, so
-          one escaping handleerror is never handled twice. *)
-       match resolvetestpack name entry subject provider clients fnon with
-       | exception err -> entryerror label index entry provider err
-       | entrysubject -> (
-         let held =
-           if waiton && jhas entry "wait" then Some (jget entry "wait")
-           else Option.bind (asstr (jget entry "id")) (fun id -> List.assoc_opt id waits)
-         in
+       (* A hook's raw error before the subject starts is still the entry's,
+          and runs through the held path like any other failure. *)
+       let resolved =
+         match resolvetestpack name entry subject provider clients fnon with
+         | Some entrysubject -> Ok entrysubject
+         | None -> raise (Omni_error ("omni: no test subject for: " ^ label))
+         | exception (Omni_error _ as err) -> raise err
+         | exception prestart -> Error prestart
+       in
 
-         match held with
-         | None -> runentry label flags index entry entrysubject provider ctxargs
-         | Some heldwait -> (
-           match runentry label flags index entry entrysubject provider ctxargs with
-           | () ->
-             raise
-               (fail label index entry ("stale wait: " ^ stringify (jget heldwait "cause")) None None)
-           | exception Omni_error _ -> ()))
+       let held =
+         if waiton && jhas entry "wait" then Some (jget entry "wait")
+         else Option.bind (asstr (jget entry "id")) (fun id -> List.assoc_opt id waits)
+       in
+
+       let run () =
+         match resolved with
+         | Ok entrysubject -> runentry label flags index entry entrysubject provider ctxargs
+         | Error prestart -> handleerror label index entry (errmessage prestart) provider
+       in
+
+       match held with
+       | None -> run ()
+       | Some heldwait -> (
+         match run () with
+         | () ->
+           raise (fail label index entry ("stale wait: " ^ stringify (jget heldwait "cause")) None None)
+         | exception Omni_error _ -> ())
      in
 
      let failures = ref [] in

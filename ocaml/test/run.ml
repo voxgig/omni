@@ -558,6 +558,39 @@ let extsuite () =
       let fpack = (make_runner_spec (v1 {|"fn"|} {|{"fn":"boom","in":6,"err":"subject boom"}|}) boom) "fib" None in
       fpack.runset (fpack.set "g") (Some fibsub));
 
+  testcase "a waiting entry holds a hook's error raised before the subject starts" (fun () ->
+      let provider =
+        {
+          empty_provider with
+          subject =
+            Some
+              (fun name ->
+                if name = "boom" then failwith "subject boom" else if name = "fib" then Some fibsub else None);
+        }
+      in
+      let run spec = (make_runner_spec spec provider) "fib" None in
+      let hpack = run (v1 {|"fn","wait"|} {|{"fn":"boom","in":6,"out":8,"wait":{"cause":"hook#2"}}|}) in
+      hpack.runset (hpack.set "g") (Some fibsub);
+      let spack = run (v1 {|"fn","wait"|} {|{"fn":"boom","in":6,"err":"subject boom","wait":{"cause":"hook#3"}}|}) in
+      refuses (fun () -> spack.runset (spack.set "g") (Some fibsub)) {|\[0\]: stale wait: hook#3|});
+
+  testcase "fn needs no default subject, but an entry without fn does" (fun () ->
+      let provider =
+        { empty_provider with subject = Some (fun name -> if name = "fibx" then Some fibsub else None) }
+      in
+      let run spec = (make_runner_spec spec provider) "fib" None in
+      let rpack = run (v1 {|"fn"|} {|{"fn":"fibx","in":6,"out":8}|}) in
+      rpack.runset (rpack.set "g") None;
+      let npack = run (v1 {|"fn"|} {|{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}|}) in
+      refuses (fun () -> npack.runset (npack.set "g") None) {|^omni: no test subject for: fib$|};
+      let lpack = run (v1 "" {|{"in":6,"out":8}|}) in
+      refuses (fun () -> lpack.runset (lpack.set "g") None) {|^omni: no test subject for: fib$|});
+
+  testcase "a wait is found by an id the entry owns, never an inherited one" (fun () ->
+      let pack = extrunner (v1 "" {|{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}|}) in
+      pack.runset (pack.set "g") (Some fibsub);
+      pack.runsetflags ~wait:(JMap []) (pack.set "g") default_flags (Some fibsub));
+
   testcase "all reports every failure at once" (fun () ->
       let pack = extrunner (v1 "" {|{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}|}) in
       refuses
