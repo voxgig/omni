@@ -204,6 +204,61 @@ defmodule OmniExtTest do
     f.runset.(f.set.("g"), &fib/1)
   end
 
+  def prestart_held do
+    subject = fn
+      "boom" -> raise "subject boom"
+      "fib" -> &fib/1
+      _name -> nil
+    end
+
+    run = fn spec -> Runner.make_runner(spec, %{subject: subject}).("fib", nil) end
+
+    h =
+      run.(
+        v1(["fn", "wait"], [
+          %{"fn" => "boom", "in" => 6, "out" => 8, "wait" => %{"cause" => "hook#2"}}
+        ])
+      )
+
+    h.runset.(h.set.("g"), &fib/1)
+
+    s =
+      run.(
+        v1(["fn", "wait"], [
+          %{"fn" => "boom", "in" => 6, "err" => "subject boom", "wait" => %{"cause" => "hook#3"}}
+        ])
+      )
+
+    refuses(fn -> s.runset.(s.set.("g"), &fib/1) end, ~r/\[0\]: stale wait: hook#3/)
+  end
+
+  def fn_no_default do
+    provider = %{subject: fn name -> if "fibx" == name, do: &fib/1, else: nil end}
+    run = fn spec -> Runner.make_runner(spec, provider).("fib", nil) end
+
+    r = run.(v1(["fn"], [%{"fn" => "fibx", "in" => 6, "out" => 8}]))
+    r.runset.(r.set.("g"), nil)
+
+    n = run.(v1(["fn"], [%{"fn" => "fibx", "in" => 6, "out" => 8}, %{"in" => 6, "out" => 8}]))
+    refuses(fn -> n.runset.(n.set.("g"), nil) end, ~r/\Aomni: no test subject for: fib\z/)
+
+    l = run.(v1([], [%{"in" => 6, "out" => 8}]))
+    refuses(fn -> l.runset.(l.set.("g"), nil) end, ~r/\Aomni: no test subject for: fib\z/)
+  end
+
+  def wait_own_id do
+    r =
+      runner(
+        v1([], [
+          %{"id" => "constructor", "in" => 6, "out" => 8},
+          %{"id" => "toString", "in" => 7, "out" => 13}
+        ])
+      )
+
+    r.runset.(r.set.("g"), &fib/1)
+    r.runsetflags.(r.set.("g"), %{wait: %{}}, &fib/1)
+  end
+
   def all_failures do
     r =
       runner(
@@ -291,6 +346,27 @@ state =
   OmniExtTest.testcase(
     "a raising hook is the entry's error, not the set's",
     &OmniExtTest.raising_hook/0,
+    state
+  )
+
+state =
+  OmniExtTest.testcase(
+    "a waiting entry holds a hook's error raised before the subject starts",
+    &OmniExtTest.prestart_held/0,
+    state
+  )
+
+state =
+  OmniExtTest.testcase(
+    "fn needs no default subject, but an entry without fn does",
+    &OmniExtTest.fn_no_default/0,
+    state
+  )
+
+state =
+  OmniExtTest.testcase(
+    "a wait is found by an id the entry owns, never an inherited one",
+    &OmniExtTest.wait_own_id/0,
     state
   )
 

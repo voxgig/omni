@@ -366,7 +366,7 @@ defmodule Voxgig.Omni.Runner do
 
     usesubject = testsubject || runpack.subject
 
-    if is_nil(usesubject) do
+    if is_nil(usesubject) and not runpack.fnon do
       raise OmniError, message: "omni: no test subject for: #{label}"
     end
 
@@ -402,41 +402,43 @@ defmodule Voxgig.Omni.Runner do
         entry = resolveentry(rawentry, donull)
 
         try do
-          case attempt(fn -> resolvetestpack(runpack, entry, usesubject) end) do
-            # Before the subject starts, a hook's raw error is still the entry's.
-            {:error, err} ->
-              handleerror(label, index, entry, err, runpack.provider)
+          # A hook's raw error before the subject starts is still the entry's.
+          run =
+            case attempt(fn -> resolvetestpack(runpack, entry, usesubject) end) do
+              {:ok, %{subject: nil}} ->
+                raise OmniError, message: "omni: no test subject for: #{label}"
 
-            {:ok, testpack} ->
-              id = U.get(entry, "id")
+              {:ok, testpack} ->
+                fn -> runentry(label, index, entry, testpack, runpack, donull, argsmode) end
 
-              wait =
-                cond do
-                  runpack.waiton and U.has(entry, "wait") -> U.get(entry, "wait")
-                  U.isnone(id) -> nil
-                  true -> Map.get(waits, id)
-                end
+              {:error, prestart} ->
+                fn -> handleerror(label, index, entry, prestart, runpack.provider) end
+            end
 
-              run = fn ->
-                runentry(label, index, entry, testpack, runpack, donull, argsmode)
-              end
+          id = U.get(entry, "id")
 
-              if is_nil(wait) do
+          wait =
+            cond do
+              runpack.waiton and U.has(entry, "wait") -> U.get(entry, "wait")
+              U.isnone(id) -> nil
+              true -> Map.get(waits, id)
+            end
+
+          if is_nil(wait) do
+            run.()
+          else
+            held =
+              try do
                 run.()
-              else
-                held =
-                  try do
-                    run.()
-                    false
-                  rescue
-                    _err in OmniError -> true
-                  end
-
-                if not held do
-                  cause = U.stringify(U.get(wait, "cause"))
-                  raise fail(label, index, entry, "stale wait: #{cause}", nil, nil)
-                end
+                false
+              rescue
+                _err in OmniError -> true
               end
+
+            if not held do
+              cause = U.stringify(U.get(wait, "cause"))
+              raise fail(label, index, entry, "stale wait: #{cause}", nil, nil)
+            end
           end
 
           failures
