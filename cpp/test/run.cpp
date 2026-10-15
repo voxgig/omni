@@ -8,12 +8,15 @@
 // any host framework (Catch2, GoogleTest) reports it as a failure. This
 // harness keeps `make test` dependency-free.
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <regex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -494,6 +497,129 @@ void nanequality() {
   check(omni::deepequal(omni::Json::num(1), omni::Json::num(2)), false, "deepequal(1, 2)");
 }
 
+// ---- capabilities (spec/ext.json) ----------------------------------
+
+// The ctxargs subject: the context comes first, and must arrive
+// contextified with its client attached.
+const omni::Subject FIBSHIFTED = [](const std::vector<omni::Json>& args) {
+  omni::Json mark = 0 < args.size() ? args[0].get("mark") : omni::Json::absent();
+  if (3 > args.size() || !mark.isstr() || "CTX" != mark.strval || args[0].get("client").isnone()) {
+    throw std::runtime_error("fib: context not delivered");
+  }
+  double shift = args[0].get("shift").numval;
+  return fib::fibrange(omni::Json::num(args[1].numval + shift),
+                       omni::Json::num(args[2].numval + shift));
+};
+
+omni::RunPack extrunner(const omni::Json& spec) {
+  return omni::makeRunner(spec, fibprovider(0)).runner("fib");
+}
+
+omni::Json v1(const std::vector<std::string>& required, const std::string& set) {
+  omni::Json reqlist = omni::Json::list();
+  for (const auto& cap : required) {
+    reqlist.push(omni::Json::str(cap));
+  }
+  return omni::Json::map({
+      {"OMNI", omni::Json::map({{"version", omni::Json::num(1)}, {"requires", reqlist}})},
+      {"fib", omni::Json::map({{"g", omni::Json::map({{"set", omni::Json::parse(set)}})}})},
+  });
+}
+
+omni::Flags flagswait(const std::string& wait) {
+  omni::Flags flags;
+  flags.wait = omni::Json::parse(wait);
+  return flags;
+}
+
+// Run `body`, and require it to throw an OmniError whose message the
+// ECMAScript `pattern` finds.
+void refuses(const std::function<void()>& body, const std::string& pattern) {
+  try {
+    body();
+  } catch (const omni::OmniError& err) {
+    std::string msg = err.what();
+    if (!std::regex_search(msg, std::regex(pattern, std::regex::ECMAScript))) {
+      throw std::runtime_error("omni: message does not match /" + pattern + "/: " + msg);
+    }
+    return;
+  }
+
+  throw std::runtime_error("omni: expected OmniError matching /" + pattern + "/");
+}
+
+void extcapabilities() {
+  for (const std::string cap : {"ctxargs", "fn", "wait"}) {
+    if (omni::CAPABILITIES.end() ==
+        std::find(omni::CAPABILITIES.begin(), omni::CAPABILITIES.end(), cap)) {
+      throw std::runtime_error("omni: missing capability: " + cap);
+    }
+  }
+}
+
+void extstalewait() {
+  omni::RunPack R = extrunner(v1({"wait"}, R"([{"in":5,"out":5,"wait":{"cause":"gone#1"}}])"));
+  refuses([&R] { R.runset(R.set("g"), FIB); }, R"(\[0\]: stale wait: gone#1)");
+}
+
+void extwaitflagholds() {
+  omni::RunPack R = extrunner(v1({}, R"([{"id":"a","in":6,"out":9},{"in":7,"out":13}])"));
+  R.runsetflags(R.set("g"), flagswait(R"({"a":{"cause":"flag#1"}})"), FIB);
+}
+
+void extwaitflagstale() {
+  omni::RunPack R = extrunner(v1({}, R"([{"id":"a","in":6,"out":8}])"));
+  refuses([&R] { R.runsetflags(R.set("g"), flagswait(R"({"a":{"cause":"flag#1"}})"), FIB); },
+          R"(stale wait: flag#1)");
+}
+
+void extwaitflagnames() {
+  omni::RunPack R = extrunner(v1({}, R"([{"id":"a","in":6,"out":8}])"));
+  refuses([&R] { R.runsetflags(R.set("g"), flagswait(R"({"zz":{"cause":"c"}})"), FIB); },
+          R"(wait names no entry: zz)");
+}
+
+void extwaitcause() {
+  omni::RunPack R = extrunner(v1({"wait"}, R"([{"in":6,"out":9,"wait":{}}])"));
+  refuses([&R] { R.runset(R.set("g"), FIB); }, R"(entry wait has no cause)");
+}
+
+void extunrequired() {
+  omni::RunPack W = extrunner(v1({}, R"([{"in":6,"out":9,"wait":{"cause":"c"}}])"));
+  refuses([&W] { W.runset(W.set("g"), FIB); }, R"(unknown entry field: wait)");
+  omni::RunPack F = extrunner(v1({}, R"([{"fn":"fib","in":6,"out":8}])"));
+  refuses([&F] { F.runset(F.set("g"), FIB); }, R"(unknown entry field: fn)");
+}
+
+void extunknownfn() {
+  omni::RunPack R = extrunner(v1({"fn"}, R"([{"fn":"nope","in":6,"out":8}])"));
+  refuses([&R] { R.runset(R.set("g"), FIB); }, R"(unknown fn: nope)");
+}
+
+void extctxargs() {
+  omni::RunPack N = extrunner(v1({}, R"([{"ctx":{"shift":0},"args":[0,1],"out":[0,1]}])"));
+  refuses([&N] { N.runset(N.set("g"), FIBSHIFTED); }, R"(more than one of in, args, ctx)");
+  omni::RunPack I = extrunner(v1({"ctxargs"}, R"([{"in":1,"ctx":{"shift":0},"out":[0]}])"));
+  refuses([&I] { I.runset(I.set("g"), FIBSHIFTED); }, R"(entry has in beside args or ctx)");
+}
+
+void extlegacy() {
+  omni::RunPack R = extrunner(omni::Json::parse(
+      R"({"fib":{"g":{"set":[{"in":6,"out":8,"fn":"nope","wait":{"cause":"c"}}]}}})"));
+  R.runset(R.set("g"), FIB);
+}
+
+void extall() {
+  omni::RunPack R =
+      extrunner(v1({}, R"([{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}])"));
+  omni::Flags flags;
+  flags.all = true;
+  refuses([&R, &flags] { R.runsetflags(R.set("g"), flags, FIB); },
+          R"(^omni: fib: 2 of 3 entries failed\n[\s\S]*fib\[0\]: result mismatch)"
+          R"([\s\S]*fib\[2\]: result mismatch)");
+  refuses([&R] { R.runset(R.set("g"), FIB); }, R"(^omni: fib\[0\]: result mismatch)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -504,6 +630,7 @@ int main(int argc, char** argv) {
   omni::RunPack R = omni::makeRunner(specfile("fib.json"), fibprovider(0)).runner("fib");
   omni::RunPack RC =
       omni::makeRunner(specfile("fib.json"), fibcodedprovider()).runner("fib");
+  omni::RunPack E = omni::makeRunner(specfile("ext.json"), fibprovider(0)).runner("fib");
 
   testcase("basic", [&R] { R.runset(R.set("basic"), FIB); });
   testcase("seq", [&R] { R.runset(R.set("seq"), FIBSEQ); });
@@ -548,6 +675,22 @@ int main(int argc, char** argv) {
   testcase("reports entry index and id", checkmessage);
 
   testcase("deepequal: two distinct NaNs are structurally equal", nanequality);
+
+  testcase("ext capabilities", extcapabilities);
+  testcase("ext ctxargs", [&E] { E.runset(E.set("ctxargs"), FIBSHIFTED); });
+  testcase("ext fn", [&E] { E.runset(E.set("fn"), FIB); });
+  testcase("ext wait", [&E] { E.runset(E.set("wait"), FIB); });
+
+  testcase("a waiting entry that passes fails the set", extstalewait);
+  testcase("the wait flag holds an entry by id", extwaitflagholds);
+  testcase("the wait flag fails when its entry passes", extwaitflagstale);
+  testcase("the wait flag must name an entry", extwaitflagnames);
+  testcase("a wait needs a cause", extwaitcause);
+  testcase("wait and fn are unknown fields unless required", extunrequired);
+  testcase("an unknown fn is a spec error", extunknownfn);
+  testcase("ctx with args needs ctxargs, and never takes in", extctxargs);
+  testcase("a legacy spec ignores fn and wait", extlegacy);
+  testcase("all reports every failure at once", extall);
 
   std::cout << "\n" << PASSCOUNT << " passed, " << FAILCOUNT << " failed\n";
 
