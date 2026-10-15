@@ -3,7 +3,7 @@
 build:
 
 test:
-	php test/run.php
+	php test/run.php && php test/ext.php
 
 clean:
 
