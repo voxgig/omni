@@ -129,6 +129,27 @@ describe('ext runner', () => {
     await R.runset(R.spec.g, fib)
   })
 
+  test('a raising hook is the entry\'s error, not the set\'s', async () => {
+    const boom = (): any => { throw new Error('contextify boom') }
+    const provider: Provider = { subject: () => fib, contextify: boom }
+    const run = async (spec: any) => (await makeRunner(spec, provider))('fib')
+    const E = await run(v1([], [{ ctx: { n: 6 }, err: 'contextify boom' }]))
+    await E.runset(E.spec.g, fib)
+    const U = await run(v1([], [{ ctx: { n: 6 }, out: 8 }]))
+    await refuses(() => U.runset(U.spec.g, fib), /\[0\]: unexpected error\n\s+actual:\s+contextify boom/)
+    const W = await run(v1(['wait'], [{ ctx: { n: 6 }, out: 8, wait: { cause: 'hook#1' } }]))
+    await W.runset(W.spec.g, fib)
+    const F = await (await makeRunner(v1(['fn'], [{ fn: 'boom', in: 6, err: 'subject boom' }]), {
+      subject: (name: string) => {
+        if ('boom' === name) {
+          throw new Error('subject boom')
+        }
+        return fib
+      },
+    }))('fib')
+    await F.runset(F.spec.g, fib)
+  })
+
   test('all reports every failure at once', async () => {
     const R = await runner(v1([], [{ in: 5, out: 6 }, { in: 6, out: 8 }, { in: 7, out: 14 }]))
     await refuses(() => R.runsetflags(R.spec.g, { all: true }, fib),

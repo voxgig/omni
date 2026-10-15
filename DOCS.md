@@ -356,7 +356,9 @@ Every port does exactly this.
       `provider.contextify`.
    4. **Call the subject.**
    5. **On failure** - go to `err` handling ([2.4](#24-errors)), then the
-      `match` check against a base carrying `err`.
+      `match` check against a base carrying `err`. An error a provider
+      hook raises in steps 2 and 3, such as a `contextify` that throws, is
+      the entry's failure too, so `err` can expect it.
    6. **On success** - normalise the result the same way as the group,
       record it as `entry.res`, then:
       - if `err` was expected, fail;

@@ -646,10 +646,11 @@ async function runentry(
   index: number,
   entry: Json,
   testpack: { client: Provider, subject: Subject },
-  args: Json[],
   provider: Provider,
+  ctxargs: boolean,
 ): Promise<void> {
   try {
+    const args = resolveargs(entry, testpack, provider, ctxargs)
     let res = await testpack.subject(...args)
     res = fixjson(res, flags)
     entry.res = res
@@ -708,22 +709,23 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
 
       for (let index = 0; index < testset.length; index++) {
         let entry = testset[index]
+        let started = false
 
         try {
           entry = resolveentry(entry, useflags)
 
           const testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
-          const args = resolveargs(entry, testpack, useprovider, ctxargs)
 
           const wait = waiton && undefined !== entry.wait ? entry.wait
             : null != entry.id ? waits[entry.id] : undefined
 
+          started = true
           if (undefined === wait) {
-            await runentry(useflags, index, entry, testpack, args, useprovider)
+            await runentry(useflags, index, entry, testpack, useprovider, ctxargs)
           } else {
             let held = false
             try {
-              await runentry(useflags, index, entry, testpack, args, useprovider)
+              await runentry(useflags, index, entry, testpack, useprovider, ctxargs)
             } catch (err: any) {
               if (!(err instanceof OmniError)) {
                 throw err
@@ -735,11 +737,21 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
             }
           }
         } catch (err: any) {
-          if (true === useflags.all && err instanceof OmniError) {
-            failures.push(err.message)
+          let failure = err
+          // Before the subject starts, a hook's raw error is still the entry's.
+          if (!started && !(err instanceof OmniError)) {
+            try {
+              handleerror(useflags, index, entry, err, useprovider)
+              continue
+            } catch (herr: any) {
+              failure = herr
+            }
+          }
+          if (true === useflags.all && failure instanceof OmniError) {
+            failures.push(failure.message)
             continue
           }
-          throw err
+          throw failure
         }
       }
 
