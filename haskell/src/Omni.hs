@@ -67,7 +67,7 @@ module Omni
   )
 where
 
-import Control.Exception (Exception, SomeException, displayException, fromException, throwIO, try)
+import Control.Exception (Exception, SomeException, displayException, evaluate, fromException, throwIO, try)
 import Data.Char (isAlphaNum, isDigit, isSpace, toLower)
 import Data.List (isInfixOf, isPrefixOf, sortBy)
 import Data.Maybe (fromMaybe, isJust)
@@ -1083,7 +1083,9 @@ resolvetestpack name entry subject provider clients fnon = do
     Nothing -> pure (provider, subject)
     Just clientname -> case lookup clientname clients of
       Nothing -> throwIO (OmniError ("omni: unknown client: " ++ clientname))
-      Just client -> pure (client, fmap (\found -> fromMaybe found (resolvesubject name client)) subject)
+      Just client -> case (resolvesubject name client, subject) of
+        (Just found, Right _) -> pure (client, Right found)
+        _ -> pure (client, subject)
 
   case asstr (jget entry "fn") of
     Just fnname | fnon -> case resolvesubject fnname client of
@@ -1118,19 +1120,39 @@ resolveargs entry provider ctxargs =
       | hasargs = arglist
       | otherwise = [clone (jget entry "in")]
 
-runentry :: Flags -> String -> Int -> Json -> Either SubjectArgs Subject -> [Json] -> Provider -> IO ()
-runentry flags label index entry subject args provider = do
-  -- An args-subject returns its arguments alongside the result, so
-  -- `match.args` sees what the subject actually did with them.
-  outcome <- try (either ($ args) (\call -> (,) args <$> call args) subject)
+-- Evaluate a value in full, so that a hook which built it raises here.
+settle :: Json -> ()
+settle value = case value of
+  Bool flag -> flag `seq` ()
+  Num num -> num `seq` ()
+  Str text -> foldr seq () text
+  JList entries -> foldr (seq . settle) () entries
+  JMap entries -> foldr (\(key, entry) rest -> foldr seq () key `seq` settle entry `seq` rest) () entries
+  _ -> ()
 
-  case outcome of
-    Right (callargs, rawres) -> do
-      let res = fixjson rawres (flagNull flags)
-      checkresult label index (jset entry "res" res) callargs res
-    Left err -> case fromOmni err of
+runentry :: Flags -> String -> Int -> Json -> Either SubjectArgs Subject -> Provider -> Bool -> IO ()
+runentry flags label index entry subject provider ctxargs = do
+  resolved <- try (do
+    let (args, argentry) = resolveargs entry provider ctxargs
+    _ <- evaluate (foldr (seq . settle) () args)
+    pure (args, argentry))
+
+  case resolved of
+    Left err -> raised entry err
+    Right (args, argentry) -> do
+      -- An args-subject returns its arguments alongside the result, so
+      -- `match.args` sees what the subject actually did with them.
+      outcome <- try (either ($ args) (\call -> (,) args <$> call args) subject)
+
+      case outcome of
+        Right (callargs, rawres) -> do
+          let res = fixjson rawres (flagNull flags)
+          checkresult label index (jset argentry "res" res) callargs res
+        Left err -> raised argentry err
+  where
+    raised at err = case fromOmni err of
       Just omnierr -> throwIO omnierr
-      Nothing -> handleerror label index entry (errmessage err) provider
+      Nothing -> handleerror label index at (errmessage err) provider
 
 -- | Make a runner for a spec value and a provider.
 makeRunnerSpec :: Json -> Provider -> String -> IO RunPack
@@ -1219,25 +1241,36 @@ makeRunnerSpec alltests provider name = do
                 then jset rawentry "out" (Str nullmark)
                 else rawentry
 
-        entrysubject <- resolvetestpack name resolved subject provider clients fnon
+        prepared <- try (resolvetestpack name resolved subject provider clients fnon)
 
-        let (args, entry) = resolveargs resolved provider ctxargs
+        case prepared of
+          -- Before the subject starts, a hook's raw error is still the entry's.
+          Left err -> case fromOmni err of
+            Just omnierr -> throwIO omnierr
+            Nothing -> handleerror label index resolved (errmessage err) provider
+          Right entrysubject -> do
+            let wait = case jget resolved "wait" of
+                  declared | waiton && not (isabsent declared) -> Just declared
+                  _ -> asstr (jget resolved "id") >>= (`lookup` waits)
 
-            wait = case jget entry "wait" of
-              declared | waiton && not (isabsent declared) -> Just declared
-              _ -> asstr (jget entry "id") >>= (`lookup` waits)
+                run = runentry flags label index resolved entrysubject provider ctxargs
 
-            run = runentry flags label index entry entrysubject args provider
-
-        case wait of
-          Nothing -> run
-          Just declared -> do
-            outcome <- try run
-            case outcome of
-              Left (OmniError _) -> pure ()
-              Right () ->
-                throwIO
-                  (failure label index entry ("stale wait: " ++ stringify (jget declared "cause")) Nothing Nothing)
+            case wait of
+              Nothing -> run
+              Just declared -> do
+                outcome <- try run
+                case outcome of
+                  Left (OmniError _) -> pure ()
+                  Right () ->
+                    throwIO
+                      ( failure
+                          label
+                          index
+                          resolved
+                          ("stale wait: " ++ stringify (jget declared "cause"))
+                          Nothing
+                          Nothing
+                      )
 
   pure
     RunPack

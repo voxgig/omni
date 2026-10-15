@@ -10,7 +10,7 @@
 
 module Main (main) where
 
-import Control.Exception (SomeException, fromException, throwIO, try)
+import Control.Exception (SomeException, fromException, throw, throwIO, try)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Fib
@@ -607,6 +607,39 @@ legacyIgnoresFnWait = do
   pack <- extpack (JMap [("fib", JMap [("g", JMap [("set", JList [entry])])])])
   rung pack fibsub
 
+-- A hook raises from pure code, with the subject's own error type.
+boomprovider :: Provider
+boomprovider =
+  emptyProvider
+    { providerSubject = Just (const (Just fibsub)),
+      providerContextify = Just (\_ -> throw (FibError "contextify boom"))
+    }
+
+raisingHook :: IO ()
+raisingHook = do
+  let run spec = makeRunnerSpec spec boomprovider "fib"
+      ctx = ("ctx", JMap [("n", Num 6)])
+  expected <- run (v1 [] [JMap [ctx, ("err", Str "contextify boom")]])
+  rung expected fibsub
+  unexpected <- run (v1 [] [JMap [ctx, ("out", Num 8)]])
+  refuses (rung unexpected fibsub) "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom"
+  held <- run (v1 ["wait"] [JMap [ctx, ("out", Num 8), ("wait", JMap [("cause", Str "hook#1")])]])
+  rung held fibsub
+  let boom name = if "boom" == name then throw (FibError "subject boom") else Just fibsub
+  fnpack <-
+    makeRunnerSpec
+      (v1 ["fn"] [JMap [("fn", Str "boom"), ("in", Num 6), ("err", Str "subject boom")]])
+      emptyProvider {providerSubject = Just boom}
+      "fib"
+  rung fnpack fibsub
+
+-- Laziness must not let a raising hook pass unseen: the runner forces the
+-- arguments, whether or not the subject reads them.
+raisingHookUnread :: IO ()
+raisingHookUnread = do
+  pack <- makeRunnerSpec (v1 [] [JMap [("ctx", JMap [("n", Num 6)]), ("out", Num 8)]]) boomprovider "fib"
+  refuses (rung pack (const (pure (Num 8)))) "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom"
+
 allReportsEvery :: IO ()
 allReportsEvery = do
   pack <-
@@ -694,6 +727,8 @@ main = do
   run "an unknown fn is a spec error" unknownFn
   run "ctx with args needs ctxargs, and never takes in" ctxWithArgs
   run "a legacy spec ignores fn and wait" legacyIgnoresFnWait
+  run "a raising hook is the entry's error, not the set's" raisingHook
+  run "a raising hook fails the entry even when the subject ignores its arguments" raisingHookUnread
   run "all reports every failure at once" allReportsEvery
 
   passed <- readIORef passcount
