@@ -154,6 +154,39 @@ class TestExtRunner < Minitest::Test
     f[:runset].call(f[:spec]['g'], FIBSUBJECT)
   end
 
+  def test_waiting_entry_holds_prestart_hook_error
+    subject = lambda do |name|
+      raise 'subject boom' if name == 'boom'
+
+      name == 'fib' ? FIBSUBJECT : nil
+    end
+    run = ->(spec) { VoxgigOmni.make_runner(spec, { subject: subject }).call('fib') }
+    h = run.call(v1(%w[fn wait], [{ 'fn' => 'boom', 'in' => 6, 'out' => 8, 'wait' => { 'cause' => 'hook#2' } }]))
+    h[:runset].call(h[:spec]['g'], FIBSUBJECT)
+    s = run.call(v1(%w[fn wait], [{ 'fn' => 'boom', 'in' => 6, 'err' => 'subject boom',
+                                     'wait' => { 'cause' => 'hook#3' } }]))
+    refuses('\[0\]: stale wait: hook#3') { s[:runset].call(s[:spec]['g'], FIBSUBJECT) }
+  end
+
+  def test_fn_needs_no_default_subject
+    provider = { subject: ->(name) { name == 'fibx' ? FIBSUBJECT : nil } }
+    run = ->(spec) { VoxgigOmni.make_runner(spec, provider).call('fib') }
+    r = run.call(v1(['fn'], [{ 'fn' => 'fibx', 'in' => 6, 'out' => 8 }]))
+    r[:runset].call(r[:spec]['g'])
+    n = run.call(v1(['fn'], [{ 'fn' => 'fibx', 'in' => 6, 'out' => 8 }, { 'in' => 6, 'out' => 8 }]))
+    refuses('\Aomni: no test subject for: fib\z') { n[:runset].call(n[:spec]['g']) }
+    l = run.call(v1([], [{ 'in' => 6, 'out' => 8 }]))
+    refuses('\Aomni: no test subject for: fib\z') { l[:runset].call(l[:spec]['g']) }
+  end
+
+  def test_wait_found_by_own_id
+    r = extrunner(v1([], [{ 'id' => 'constructor', 'in' => 6, 'out' => 8 },
+                          { 'id' => 'toString', 'in' => 7, 'out' => 13 }]))
+    r[:runset].call(r[:spec]['g'], FIBSUBJECT)
+    r[:runsetflags].call(r[:spec]['g'], { wait: {} }, FIBSUBJECT)
+    r[:runsetflags].call(r[:spec]['g'], { wait: Hash.new({ 'cause' => 'default#1' }) }, FIBSUBJECT)
+  end
+
   def test_all_reports_every_failure
     r = extrunner(v1([], [{ 'in' => 5, 'out' => 6 }, { 'in' => 6, 'out' => 8 }, { 'in' => 7, 'out' => 14 }]))
     refuses('\Aomni: fib: 2 of 3 entries failed\n.*fib\[0\]: result mismatch.*fib\[2\]: result mismatch') do

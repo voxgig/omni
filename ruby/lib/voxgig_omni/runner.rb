@@ -513,7 +513,7 @@ module VoxgigOmni
           useflags[:name] = useflags[:name] || name || 'set'
 
           subject = testsubject || defsubject
-          raise OmniError, 'omni: no test subject for: ' + useflags[:name].to_s if subject.nil?
+          raise OmniError, 'omni: no test subject for: ' + useflags[:name].to_s if subject.nil? && !fnon
 
           testspecmap = fixjson(testspec, useflags)
 
@@ -530,43 +530,55 @@ module VoxgigOmni
           failures = []
 
           testset.each_with_index do |entry, index|
-            started = false
-            entry = resolveentry(entry, useflags)
+            testpack = nil
+            prestart = nil
 
-            testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+            # A hook's raw error before the subject starts is still the entry's.
+            begin
+              entry = resolveentry(entry, useflags)
+              testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+            rescue OmniError
+              raise
+            rescue StandardError => e
+              prestart = e
+            end
 
-            wait = if waiton && entry.key?('wait')
+            if prestart.nil? && testpack[:subject].nil?
+              raise OmniError, 'omni: no test subject for: ' + useflags[:name].to_s
+            end
+
+            # A Hash default answers for any key, so the flag must hold the id.
+            wait = if !U.ismap(entry)
+                     nil
+                   elsif waiton && entry.key?('wait')
                      entry['wait']
-                   elsif !entry['id'].nil?
+                   elsif !entry['id'].nil? && waits.key?(entry['id'])
                      waits[entry['id']]
                    end
 
-            started = true
+            run = lambda do
+              if prestart.nil?
+                runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+              else
+                handleerror(useflags, index, entry, prestart, useprovider)
+              end
+            end
+
             if wait.nil?
-              runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+              run.call
             else
               held = false
               begin
-                runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+                run.call
               rescue OmniError
                 held = true
               end
               raise fail(useflags, index, entry, 'stale wait: ' + wait['cause'].to_s) unless held
             end
-          rescue StandardError => e
-            failure = e
-            # Before the subject starts, a hook's raw error is still the entry's.
-            unless started || e.is_a?(OmniError)
-              begin
-                handleerror(useflags, index, entry, e, useprovider)
-                next
-              rescue StandardError => herr
-                failure = herr
-              end
-            end
-            raise failure unless useflags[:all] == true && failure.is_a?(OmniError)
+          rescue OmniError => e
+            raise unless useflags[:all] == true
 
-            failures << failure.message
+            failures << e.message
           end
 
           unless failures.empty?
