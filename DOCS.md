@@ -448,6 +448,10 @@ the Fibonacci spec.
 `wait` is a flag as well as a field because which entries wait is often a
 property of one port, while the spec is shared by all of them.
 
+Two ports spell the new flags differently: Scala names the `wait` flag
+`waits`, and OCaml takes `all` and `wait` as optional arguments. See
+[9](#9-per-port-variance).
+
 
 ## 6. Failure messages
 
@@ -887,6 +891,9 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | Lean | Checks are pure: failures are returned as `Except String`, so there is no `OmniError`. The regex matcher is a `partial def`. |
 | Clojure, Elixir, Scala, Lean | Map key order is not preserved (or is sorted). Order is never significant for equality. |
 | OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |
+| OCaml | `all` and `wait` are optional arguments of `runsetflags` and `runsetflags_args` (`~all:true`, `~wait:...`), not fields of `flags`, so a `flags` record written as a literal still compiles. |
+| Scala | The `wait` flag is the `Flags` field `waits`: `wait` is a final method of `java.lang.Object`, which a case-class field cannot shadow. |
+| Go, Perl, Lua, Rust, Elixir | The `wait` flag's keys are checked in sorted order, not insertion order. When several of its ids are wrong, the first one named can differ. |
 | boru | One `none` plays both JSON null and "no value", so under `null: false` an entry with no `out` is satisfied by a null result as well as by no result - canonical `deepequal` holds those apart (*"undefined and null are distinct"*) and reports a mismatch for the first. Under `null: true` the question does not arise: both sides become `__NULL__` first. The regex engine behind `mini re` is RE2, so a `/.../` match leaf using a backreference or lookaround cannot behave as it does in TypeScript; the common subset - literals, classes, groups, alternation, `* + ? {m,n}`, `\d \w \s`, anchors - is what is available, as in Rust and C. |
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,
