@@ -8,6 +8,7 @@ package voxgig.omni
 import java.nio.file.{Files, Paths}
 import java.util.regex.Pattern
 import scala.collection.immutable.ListMap
+import scala.collection.mutable.ListBuffer
 import scala.util.control.NonFatal
 
 import Util.*
@@ -40,7 +41,13 @@ type SubjectArgs = List[Json] => (List[Json], Json)
 class OmniError(val text: String, val entry: Json = Json.Absent) extends RuntimeException(text)
 
 /** Run-time options for a set of test entries. */
-case class Flags(nulls: Boolean = true, name: Option[String] = None)
+case class Flags(
+    nulls: Boolean = true,
+    name: Option[String] = None,
+    all: Boolean = false,
+    // The canonical `wait` flag: `wait` is final on java.lang.Object.
+    waits: Json = Json.Absent,
+)
 
 object Flags:
   def nonull(): Flags = Flags(nulls = false)
@@ -65,8 +72,8 @@ val SPECVERSION: Int = 1
 // Capability strings this runner supports beyond the version baseline. A
 // spec's OMNI.requires list is checked against this: an unknown capability
 // refuses the spec loudly at load time, instead of a lagging port silently
-// mis-running it. (Empty today; future format features mint a string here.)
-val CAPABILITIES: List[String] = List.empty[String]
+// mis-running it. A spec turns each on only by requiring it.
+val CAPABILITIES: List[String] = List("ctxargs", "fn", "wait")
 
 // The complete set of fields an entry may carry. Under version 1 anything
 // else is an error: an unrecognised key is almost always a typo'd
@@ -74,6 +81,12 @@ val CAPABILITIES: List[String] = List.empty[String]
 // testing.
 private val ENTRYFIELDS =
   List("in", "args", "ctx", "out", "err", "match", "client", "id", "doc")
+
+// Entry fields a capability adds, permitted only in a spec that requires it.
+private val CAPFIELDS = Map("fn" -> "fn", "wait" -> "wait")
+
+// The client and subject one entry runs against.
+private case class TestPack(client: Provider, subject: Option[Subject])
 
 object Runner:
 
@@ -113,6 +126,11 @@ object Runner:
             throw OmniError(s"omni: spec requires unsupported capability: ${stringify(cap)}")
 
     versionval.toInt
+
+  // The capabilities a spec requires, which resolveversion has already
+  // checked against CAPABILITIES.
+  def resolverequires(alltests: Json): List[String] =
+    alltests.get("OMNI").get("requires").aslist.getOrElse(List()).flatMap(_.asstr)
 
   /** Find `primary.<name>`, then `<name>`, then the whole spec. */
   def resolvespec(name: String, alltests: Json): Json =
@@ -186,6 +204,7 @@ class RunnerPack(alltests: Json, provider: Provider):
   // Resolved once, at construction (i.e. inside makeRunner) - fail fast on
   // a spec version this runner cannot faithfully run, before any set runs.
   private val specversion: Int = Runner.resolveversion(alltests)
+  private val requires: List[String] = Runner.resolverequires(alltests)
 
   /** Resolve one named section of the spec. */
   def runner(name: String, store: Json = Json.Absent): RunPack =
@@ -208,7 +227,7 @@ class RunnerPack(alltests: Json, provider: Provider):
 
     val subject = if name.isEmpty then None else provider.subject.flatMap(_(name))
 
-    RunPack(spec, subject, provider, clients, name, specversion)
+    RunPack(spec, subject, provider, clients, name, specversion, requires)
 
 /** What a runner returns for one named spec section. */
 class RunPack(
@@ -218,7 +237,12 @@ class RunPack(
     clients: Map[String, Provider],
     name: String,
     specversion: Int,
+    requires: List[String] = List(),
 ):
+
+  private val ctxargs = requires.contains("ctxargs")
+  private val fnon = requires.contains("fn")
+  private val waiton = requires.contains("wait")
 
   /** A named group of the resolved spec. */
   def set(setname: String): Json = spec.get(setname)
@@ -261,60 +285,130 @@ class RunPack(
     // null-normalisation above would otherwise hide an authored null from
     // checkentry. A malformed spec fails here, before any subject runs.
     if 1 <= specversion then
-      checkset(label, testspec, testset)
+      checkset(label, testspec, testset, requires)
+
+    val origset = testspec.get("set").aslist.getOrElse(testset)
+    val waits = resolvewaits(label, flags, origset)
+    val failures = ListBuffer.empty[String]
 
     for (rawentry, index) <- testset.zipWithIndex do
-      if !rawentry.ismap then
-        throw OmniError(s"omni: $label[$index]: entry is not a map")
+      try
+        if !rawentry.ismap then
+          throw OmniError(s"omni: $label[$index]: entry is not a map")
 
-      var entry = rawentry
+        val resolved = resolveentry(rawentry, flags)
+        val testpack = resolvetestpack(resolved, usesubject)
+        val (args, entry) = resolveargs(resolved, testpack.client)
 
-      // An entry with no `out` expects a null (or absent) result.
-      if flags.nulls && entry.get("out").isnone then
-        entry = entry.set("out", Json.str(NULLMARK))
+        val wait =
+          if waiton && entry.has("wait") then Some(entry.get("wait"))
+          else entry.get("id").asstr.flatMap(waits.get)
 
-      var entrysubject = usesubject
-      var entryclient = client
+        wait match
+          case None => runentry(label, index, entry, testpack, argsubject, args, flags)
+          case Some(held) =>
+            val stale =
+              try
+                runentry(label, index, entry, testpack, argsubject, args, flags)
+                true
+              catch case _: OmniError => false
+            if stale then
+              throw fail(label, index, entry, s"stale wait: ${stringify(held.get("cause"))}")
+      catch
+        case err: OmniError if flags.all => failures += err.text
 
-      entry.get("client").asstr.foreach { clientname =>
-        val found = clients.getOrElse(
-          clientname,
-          throw OmniError(s"omni: unknown client: $clientname", entry),
-        )
-        entryclient = found
-        if entrysubject.isDefined then
-          found.subject.flatMap(_(name)).foreach { clientsubject =>
-            entrysubject = Some(clientsubject)
-          }
+    if failures.nonEmpty then
+      throw OmniError(
+        s"omni: $label: ${failures.length} of ${testset.length} entries failed\n" +
+          failures.mkString("\n"),
+      )
+
+  // An entry with no `out` expects a null (or absent) result.
+  private def resolveentry(entry: Json, flags: Flags): Json =
+    if flags.nulls && entry.get("out").isnone then entry.set("out", Json.str(NULLMARK))
+    else entry
+
+  private def resolvetestpack(entry: Json, usesubject: Option[Subject]): TestPack =
+    var testpack = TestPack(client, usesubject)
+
+    entry.get("client").asstr.foreach { clientname =>
+      val found = clients.getOrElse(
+        clientname,
+        throw OmniError(s"omni: unknown client: $clientname", entry),
+      )
+      testpack = testpack.copy(client = found)
+      if testpack.subject.isDefined then
+        found.subject.flatMap(_(name)).foreach { clientsubject =>
+          testpack = testpack.copy(subject = Some(clientsubject))
+        }
+    }
+
+    if fnon then
+      entry.get("fn").asstr.foreach { fn =>
+        val fnsubject = testpack.client.subject.flatMap(_(fn)).getOrElse {
+          throw OmniError(s"omni: unknown fn: $fn", entry)
+        }
+        testpack = testpack.copy(subject = Some(fnsubject))
       }
 
-      val (args, withctx) = resolveargs(entry, entryclient)
-      entry = withctx
+    testpack
 
-      try
-        // An args-subject returns its arguments alongside the result, so
-        // `match.args` sees what the subject actually did with them.
-        val (callargs, rawres) = (argsubject, entrysubject) match
-          case (Some(call), _) => call(args)
-          case (None, Some(call)) => (args, call(args))
-          case (None, None) => throw OmniError(s"omni: no test subject for: $label")
-        val res = Runner.fixjson(rawres, flags.nulls)
-        entry = entry.set("res", res)
-        checkresult(label, index, entry, callargs, res)
-      catch
-        case omnierr: OmniError => throw omnierr
-        case NonFatal(err)      => handleerror(label, index, entry, err)
+  private def runentry(
+      label: String,
+      index: Int,
+      rawentry: Json,
+      testpack: TestPack,
+      argsubject: Option[SubjectArgs],
+      args: List[Json],
+      flags: Flags,
+  ): Unit =
+    var entry = rawentry
+    try
+      // An args-subject returns its arguments alongside the result, so
+      // `match.args` sees what the subject actually did with them. Under
+      // one, only an entry's `fn` sets testpack.subject, and `fn` wins.
+      val (callargs, rawres) = (testpack.subject, argsubject) match
+        case (Some(call), _)    => (args, call(args))
+        case (None, Some(call)) => call(args)
+        case (None, None)       => throw OmniError(s"omni: no test subject for: $label")
+      val res = Runner.fixjson(rawres, flags.nulls)
+      entry = entry.set("res", res)
+      checkresult(label, index, entry, callargs, res)
+    catch
+      case omnierr: OmniError => throw omnierr
+      case NonFatal(err)      => handleerror(label, index, entry, err)
 
-  // Build the argument list: `ctx`, `args`, or `in`. `entryclient` is the
-  // provider resolved for this entry (the root provider, or its own
-  // `client:` override) - always set by the time this runs.
+  private def iswait(wait: Json): Boolean =
+    wait.ismap && wait.get("cause").asstr.exists(_.nonEmpty)
+
+  // The runner-side waits: entry id to its declaration. Each must name an
+  // entry of the set, so a declaration cannot outlive the entry it held.
+  private def resolvewaits(label: String, flags: Flags, origset: List[Json]): ListMap[String, Json] =
+    if flags.waits.isnone then return ListMap.empty
+
+    val waits = flags.waits.asmap.getOrElse {
+      throw OmniError(s"omni: $label: wait flag is not a map")
+    }
+    val ids = origset.flatMap(_.get("id").asstr)
+
+    for (id, wait) <- waits do
+      if !ids.contains(id) then throw OmniError(s"omni: $label: wait names no entry: $id")
+      if !iswait(wait) then throw OmniError(s"omni: $label: wait for $id has no cause")
+
+    waits
+
+  // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+  // entry with both passes the context first, then each argument.
+  // `entryclient` is this entry's provider: the root, or its `client:`.
   private def resolveargs(entry: Json, entryclient: Provider): (List[Json], Json) =
     val hasctx = entry.has("ctx")
     val hasargs = entry.has("args")
+    def arglist = entry.get("args").aslist.getOrElse(List(entry.get("args")))
 
     var args =
-      if hasctx then List(entry.get("ctx"))
-      else if hasargs then entry.get("args").aslist.getOrElse(List(entry.get("args")))
+      if ctxargs && hasctx && hasargs then entry.get("ctx") :: arglist
+      else if hasctx then List(entry.get("ctx"))
+      else if hasargs then arglist
       else List(entry.get("in"))
 
     var out = entry
@@ -342,7 +436,12 @@ class RunPack(
   // id: null) into a sentinel string and hide it from validation. A
   // malformed spec is a spec error, not a test result, so it fails before
   // any subject runs.
-  private def checkset(label: String, testspec: Json, normalset: List[Json]): Unit =
+  private def checkset(
+      label: String,
+      testspec: Json,
+      normalset: List[Json],
+      requires: List[String],
+  ): Unit =
     val origset = testspec.get("set").aslist.getOrElse(normalset)
 
     val markedempty = testspec.get("empty") match
@@ -353,21 +452,31 @@ class RunPack(
       throw OmniError(s"omni: empty test set: $label")
 
     for (entry, index) <- origset.zipWithIndex do
-      checkentry(label, index, entry)
+      checkentry(label, index, entry, requires)
 
   // Strict entry validation, applied when the spec declares version 1 or
   // later. The lenient format converts each of these mistakes into a
   // silent pass or a dead field; here they fail with the entry named.
-  private def checkentry(label: String, index: Int, entry: Json): Unit =
+  private def checkentry(label: String, index: Int, entry: Json, requires: List[String]): Unit =
     if !entry.ismap then throw fail(label, index, entry, "entry is not a map")
 
     for key <- entry.asmap.get.keys do
-      if !ENTRYFIELDS.contains(key) then
+      if !ENTRYFIELDS.contains(key) && !CAPFIELDS.get(key).exists(requires.contains) then
         throw fail(label, index, entry, s"unknown entry field: $key")
 
-    val argsources = List("in", "args", "ctx").count(entry.has)
-    if 1 < argsources then
-      throw fail(label, index, entry, "entry has more than one of in, args, ctx")
+    if requires.contains("ctxargs") then
+      if entry.has("in") && (entry.has("args") || entry.has("ctx")) then
+        throw fail(label, index, entry, "entry has in beside args or ctx")
+    else
+      val argsources = List("in", "args", "ctx").count(entry.has)
+      if 1 < argsources then
+        throw fail(label, index, entry, "entry has more than one of in, args, ctx")
+
+    if entry.has("fn") && !entry.get("fn").asstr.exists(_.nonEmpty) then
+      throw fail(label, index, entry, "entry fn is not a name")
+
+    if entry.has("wait") && !iswait(entry.get("wait")) then
+      throw fail(label, index, entry, "entry wait has no cause")
 
     if !entry.get("err").isnone && entry.has("out") then
       throw fail(label, index, entry, "entry has both err and out")

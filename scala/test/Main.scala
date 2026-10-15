@@ -452,6 +452,8 @@ object Main:
       r.runset(r.set("g"), Some(FIB))
     }
 
+    Ext.suite()
+
     println(s"\n$passcount passed, $failcount failed")
 
     System.exit(if 0 == failcount then 0 else 1)
