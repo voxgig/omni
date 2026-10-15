@@ -133,6 +133,27 @@ class TestExtRunner < Minitest::Test
     r[:runset].call(r[:spec]['g'], FIBSUBJECT)
   end
 
+  def test_raising_hook_is_entry_error
+    provider = { subject: ->(_name) { FIBSUBJECT }, contextify: ->(_val) { raise 'contextify boom' } }
+    run = ->(spec) { VoxgigOmni.make_runner(spec, provider).call('fib') }
+    e = run.call(v1([], [{ 'ctx' => { 'n' => 6 }, 'err' => 'contextify boom' }]))
+    e[:runset].call(e[:spec]['g'], FIBSUBJECT)
+    u = run.call(v1([], [{ 'ctx' => { 'n' => 6 }, 'out' => 8 }]))
+    refuses('\[0\]: unexpected error\n\s+actual:\s+contextify boom') do
+      u[:runset].call(u[:spec]['g'], FIBSUBJECT)
+    end
+    w = run.call(v1(['wait'], [{ 'ctx' => { 'n' => 6 }, 'out' => 8, 'wait' => { 'cause' => 'hook#1' } }]))
+    w[:runset].call(w[:spec]['g'], FIBSUBJECT)
+    subject = lambda do |name|
+      raise 'subject boom' if name == 'boom'
+
+      FIBSUBJECT
+    end
+    f = VoxgigOmni.make_runner(v1(['fn'], [{ 'fn' => 'boom', 'in' => 6, 'err' => 'subject boom' }]),
+                               { subject: subject }).call('fib')
+    f[:runset].call(f[:spec]['g'], FIBSUBJECT)
+  end
+
   def test_all_reports_every_failure
     r = extrunner(v1([], [{ 'in' => 5, 'out' => 6 }, { 'in' => 6, 'out' => 8 }, { 'in' => 7, 'out' => 14 }]))
     refuses('\Aomni: fib: 2 of 3 entries failed\n.*fib\[0\]: result mismatch.*fib\[2\]: result mismatch') do

@@ -480,7 +480,8 @@ module VoxgigOmni
       waits
     end
 
-    def runentry(flags, index, entry, testpack, args, provider)
+    def runentry(flags, index, entry, testpack, provider, ctxargs)
+      args = resolveargs(entry, testpack, provider, ctxargs)
       res = testpack[:subject].call(*args)
       res = fixjson(res, flags)
       entry['res'] = res
@@ -529,10 +530,10 @@ module VoxgigOmni
           failures = []
 
           testset.each_with_index do |entry, index|
+            started = false
             entry = resolveentry(entry, useflags)
 
             testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
-            args = resolveargs(entry, testpack, useprovider, ctxargs)
 
             wait = if waiton && entry.key?('wait')
                      entry['wait']
@@ -540,21 +541,32 @@ module VoxgigOmni
                      waits[entry['id']]
                    end
 
+            started = true
             if wait.nil?
-              runentry(useflags, index, entry, testpack, args, useprovider)
+              runentry(useflags, index, entry, testpack, useprovider, ctxargs)
             else
               held = false
               begin
-                runentry(useflags, index, entry, testpack, args, useprovider)
+                runentry(useflags, index, entry, testpack, useprovider, ctxargs)
               rescue OmniError
                 held = true
               end
               raise fail(useflags, index, entry, 'stale wait: ' + wait['cause'].to_s) unless held
             end
-          rescue OmniError => e
-            raise unless useflags[:all] == true
+          rescue StandardError => e
+            failure = e
+            # Before the subject starts, a hook's raw error is still the entry's.
+            unless started || e.is_a?(OmniError)
+              begin
+                handleerror(useflags, index, entry, e, useprovider)
+                next
+              rescue StandardError => herr
+                failure = herr
+              end
+            end
+            raise failure unless useflags[:all] == true && failure.is_a?(OmniError)
 
-            failures << e.message
+            failures << failure.message
           end
 
           unless failures.empty?
