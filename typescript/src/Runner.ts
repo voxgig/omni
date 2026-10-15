@@ -273,6 +273,7 @@ function resolvetestpack(
   subject: Subject,
   provider: Provider,
   clients: Record<string, Provider>,
+  fnon: boolean,
 ) {
   const testpack = { client: provider, subject }
 
@@ -285,7 +286,7 @@ function resolvetestpack(
     testpack.subject = resolvesubject(name, client) || subject
   }
 
-  if (null != entry.fn) {
+  if (fnon && null != entry.fn) {
     const fnsubject = resolvesubject(entry.fn, testpack.client)
     if (null == fnsubject) {
       throw new OmniError('omni: unknown fn: ' + entry.fn, entry)
@@ -667,6 +668,8 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
   const specversion = resolveversion(alltests)
   const requires = resolverequires(alltests)
   const ctxargs = requires.includes('ctxargs')
+  const fnon = requires.includes('fn')
+  const waiton = requires.includes('wait')
   const useprovider: Provider = provider || {}
 
   return async function runner(name?: string, store?: Json): Promise<RunPack> {
@@ -709,10 +712,10 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
         try {
           entry = resolveentry(entry, useflags)
 
-          const testpack = resolvetestpack(name, entry, subject, useprovider, clients)
+          const testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
           const args = resolveargs(entry, testpack, useprovider, ctxargs)
 
-          const wait = undefined !== entry.wait ? entry.wait
+          const wait = waiton && undefined !== entry.wait ? entry.wait
             : null != entry.id ? waits[entry.id] : undefined
 
           if (undefined === wait) {

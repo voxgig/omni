@@ -124,6 +124,11 @@ describe('ext runner', () => {
     await refuses(() => I.runset(I.spec.g, fibshifted), /entry has in beside args or ctx/)
   })
 
+  test('a legacy spec ignores fn and wait', async () => {
+    const R = await runner({ fib: { g: { set: [{ in: 6, out: 8, fn: 'nope', wait: { cause: 'c' } }] } } })
+    await R.runset(R.spec.g, fib)
+  })
+
   test('all reports every failure at once', async () => {
     const R = await runner(v1([], [{ in: 5, out: 6 }, { in: 6, out: 8 }, { in: 7, out: 14 }]))
     await refuses(() => R.runsetflags(R.spec.g, { all: true }, fib),

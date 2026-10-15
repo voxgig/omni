@@ -168,6 +168,14 @@ func TestExtRunner(t *testing.T) {
 		refuses(t, I.RunSet(g(I), FIBSHIFTED), `entry has in beside args or ctx`)
 	})
 
+	t.Run("a legacy spec ignores fn and wait", func(t *testing.T) {
+		R := extrunner(t, map[string]any{"fib": map[string]any{"g": map[string]any{"set": []any{
+			entry("in", 6.0, "out", 8.0, "fn", "nope", "wait", map[string]any{"cause": "c"})}}}})
+		if err := R.RunSet(g(R), FIB); nil != err {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("all reports every failure at once", func(t *testing.T) {
 		R := extrunner(t, v1([]any{}, []any{
 			entry("in", 5.0, "out", 6.0), entry("in", 6.0, "out", 8.0), entry("in", 7.0, "out", 14.0)}))

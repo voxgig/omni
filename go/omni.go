@@ -385,6 +385,7 @@ func resolvetestpack(
 	subject Subject,
 	provider *Provider,
 	clients map[string]*Provider,
+	fnon bool,
 ) (*testpack, error) {
 	pack := &testpack{client: provider, subject: subject}
 
@@ -400,7 +401,7 @@ func resolvetestpack(
 		}
 	}
 
-	if fn, has := entry["fn"].(string); has {
+	if fn, has := entry["fn"].(string); fnon && has {
 		fnsubject := resolvesubject(fn, pack.client)
 		if nil == fnsubject {
 			return nil, &OmniError{Message: "omni: unknown fn: " + fn, Entry: entry}
@@ -876,6 +877,8 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 
 	requires := resolverequires(alltests)
 	ctxargs := slices.Contains(requires, "ctxargs")
+	fnon := slices.Contains(requires, "fn")
+	waiton := slices.Contains(requires, "wait")
 
 	useprovider := provider
 	if nil == useprovider {
@@ -951,7 +954,7 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 
 					entry = resolveentry(entry, useflags)
 
-					pack, err := resolvetestpack(name, entry, usesubject, useprovider, clients)
+					pack, err := resolvetestpack(name, entry, usesubject, useprovider, clients, fnon)
 					if nil != err {
 						return err
 					}
@@ -959,6 +962,7 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 					args := resolveargs(entry, pack, useprovider, ctxargs)
 
 					wait, haswait := entry["wait"]
+					haswait = haswait && waiton
 					if !haswait {
 						if id, is := entry["id"].(string); is {
 							wait, haswait = waits[id]
