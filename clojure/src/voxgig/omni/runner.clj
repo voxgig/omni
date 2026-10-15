@@ -411,17 +411,21 @@
 ;; own data is immutable and a consumer's nodes are its own (struct/clojure
 ;; keeps java.util.LinkedHashMap / ArrayList), so returning them alongside the
 ;; result is the only channel there is. See `runsetflags-args`.
-(defn- runentry [label index entry testpack args provider donull argsmode]
-  (try
-    (let [outcome ((:subject testpack) args)
-          callargs (if argsmode (vec (first outcome)) args)
-          rawres (if argsmode (second outcome) outcome)
-          res (fixjson rawres donull)]
-      (checkresult label index (assoc entry "res" res) callargs res))
-    (catch Throwable err
-      (if (omni-error? err)
-        (throw err)
-        (handleerror label index entry err provider)))))
+;; Answers the entry as resolveargs left it, carrying the contextified ctx.
+(defn- runentry [label index entry testpack provider ctxargs donull argsmode]
+  (let [ran (volatile! entry)]
+    (try
+      (let [[args withctx] (resolveargs entry provider (:client testpack) ctxargs)
+            outcome (do (vreset! ran withctx) ((:subject testpack) args))
+            callargs (if argsmode (vec (first outcome)) args)
+            rawres (if argsmode (second outcome) outcome)
+            res (fixjson rawres donull)]
+        (checkresult label index (assoc withctx "res" res) callargs res))
+      (catch Throwable err
+        (if (omni-error? err)
+          (throw err)
+          (handleerror label index @ran err provider))))
+    @ran))
 
 (defn- run-set-flags [runpack testspec flags testsubject & [argsmode]]
   (let [{:keys [spec subject provider clients name specversion requires]} runpack
@@ -454,29 +458,36 @@
                (when-not (u/ismap rawentry)
                  (throw (omni-error (str "omni: " label "[" index "]: entry is not a map"))))
 
-               (try
-                 (let [entry (resolveentry rawentry donull)
-                       testpack (resolvetestpack name entry usesubject provider clients fnon)
-                       [args withctx] (resolveargs entry provider (:client testpack) ctxargs)
-                       id (get entry "id")
-                       wait (if (and waiton (contains? entry "wait"))
-                              (get entry "wait")
-                              (when (some? id) (get waits id)))
-                       run #(runentry label index withctx testpack args provider donull argsmode)]
-                   (if (nil? wait)
-                     (run)
-                     (let [held (try
-                                  (run)
-                                  false
-                                  (catch Throwable err
-                                    (if (omni-error? err) true (throw err))))]
-                       (when-not held
-                         (throw (fail label index withctx (str "stale wait: " (get wait "cause")))))))
-                   failures)
-                 (catch Throwable err
-                   (if (and (true? (:all flags)) (omni-error? err))
-                     (conj failures (ex-message err))
-                     (throw err)))))
+               (let [entry (resolveentry rawentry donull)
+                     started (volatile! false)]
+                 (try
+                   (let [testpack (resolvetestpack name entry usesubject provider clients fnon)
+                         id (get entry "id")
+                         wait (if (and waiton (contains? entry "wait"))
+                                (get entry "wait")
+                                (when (some? id) (get waits id)))
+                         run #(runentry label index entry testpack provider ctxargs donull argsmode)]
+                     (vreset! started true)
+                     (if (nil? wait)
+                       (run)
+                       (when-let [ran (try
+                                        (run)
+                                        (catch Throwable err
+                                          (if (omni-error? err) nil (throw err))))]
+                         (throw (fail label index ran (str "stale wait: " (get wait "cause"))))))
+                     failures)
+                   (catch Throwable err
+                     ;; Before the subject starts, a hook's raw error is still the entry's.
+                     (let [failure (if (or @started (omni-error? err))
+                                     err
+                                     (try
+                                       (handleerror label index entry err provider)
+                                       nil
+                                       (catch Throwable herr herr)))]
+                       (cond
+                         (nil? failure) failures
+                         (and (true? (:all flags)) (omni-error? failure)) (conj failures (ex-message failure))
+                         :else (throw failure)))))))
              []
              (map-indexed vector testset))]
 

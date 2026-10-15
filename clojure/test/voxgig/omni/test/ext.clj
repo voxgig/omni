@@ -98,6 +98,25 @@
              #"(?s)^omni: fib: 2 of 3 entries failed\n.*fib\[0\]: result mismatch.*fib\[2\]: result mismatch")
     (refuses #((:runset R) (g R) FIB) #"^omni: fib\[0\]: result mismatch")))
 
+(defn- raisinghook []
+  (let [boom (fn [_] (throw (RuntimeException. "contextify boom")))
+        provider {:subject (fn [_] FIB) :contextify boom}
+        run (fn [spec] ((runner/make-runner spec provider) "fib"))
+        E (run (v1 [] [{"ctx" {"n" 6.0} "err" "contextify boom"}]))
+        U (run (v1 [] [{"ctx" {"n" 6.0} "out" 8.0}]))
+        W (run (v1 ["wait"] [{"ctx" {"n" 6.0} "out" 8.0 "wait" {"cause" "hook#1"}}]))
+        F ((runner/make-runner
+            (v1 ["fn"] [{"fn" "boom" "in" 6.0 "err" "subject boom"}])
+            {:subject (fn [name]
+                        (when (= "boom" name)
+                          (throw (RuntimeException. "subject boom")))
+                        FIB)})
+           "fib")]
+    ((:runset E) (g E) FIB)
+    (refuses #((:runset U) (g U) FIB) #"\[0\]: unexpected error\n\s+actual:\s+contextify boom")
+    ((:runset W) (g W) FIB)
+    ((:runset F) (g F) FIB)))
+
 ;; Each case as [name body], for the main harness to run and count.
 (defn cases [specfile]
   [["ext: capabilities" capabilities]
@@ -113,4 +132,5 @@
    ["ext: an unknown fn is a spec error" unknownfn]
    ["ext: ctx with args needs ctxargs, and never takes in" ctxwithargs]
    ["ext: a legacy spec ignores fn and wait" legacyignores]
+   ["ext: a raising hook is the entry's error, not the set's" raisinghook]
    ["ext: all reports every failure at once" allfailures]])
