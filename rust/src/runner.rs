@@ -22,6 +22,10 @@ pub struct Flags {
     pub null: bool,
     /// Label used in failure messages (default: the runner name).
     pub name: Option<String>,
+    /// Run every entry, then fail once listing each failure (default: false).
+    pub all: bool,
+    /// Entry id to `{ cause }`, holding those entries (default: none).
+    pub wait: Option<Json>,
 }
 
 impl Default for Flags {
@@ -29,6 +33,8 @@ impl Default for Flags {
         Flags {
             null: true,
             name: None,
+            all: false,
+            wait: None,
         }
     }
 }
@@ -38,7 +44,7 @@ impl Flags {
     pub fn nonull() -> Flags {
         Flags {
             null: false,
-            name: None,
+            ..Flags::default()
         }
     }
 }
@@ -62,15 +68,17 @@ pub const SPECVERSION: f64 = 1.0;
 /// Capability strings this runner supports beyond the version baseline. A
 /// spec's OMNI.requires list is checked against this: an unknown
 /// capability refuses the spec loudly at load time, instead of a lagging
-/// port silently mis-running it. (Empty today; future format features
-/// mint a string here.)
-pub const CAPABILITIES: &[&str] = &[];
+/// port silently mis-running it. A spec turns each on only by requiring it.
+pub const CAPABILITIES: &[&str] = &["ctxargs", "fn", "wait"];
 
 /// The complete set of fields an entry may carry. Under version 1 anything
 /// else is an error: an unrecognised key is almost always a typo'd
 /// assertion, and a typo'd assertion is a test that silently stopped
 /// testing.
 const ENTRYFIELDS: &[&str] = &["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"];
+
+/// Entry fields a capability adds, permitted only in a spec that requires it.
+const CAPFIELDS: &[(&str, &str)] = &[("fn", "fn"), ("wait", "wait")];
 
 /// A test failure (or a malformed spec). Distinct from an error returned
 /// by the subject under test, which is a candidate for an `err`
@@ -186,17 +194,37 @@ fn resolveversion(alltests: &Json) -> Result<f64, OmniError> {
     Ok(version)
 }
 
+/// The capabilities a spec requires, which resolveversion has already
+/// checked against CAPABILITIES.
+fn resolverequires(alltests: &Json) -> Vec<String> {
+    match alltests.get("OMNI").get("requires") {
+        Json::List(list) => list
+            .iter()
+            .filter_map(|cap| cap.asstr().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Strict entry validation, applied when the spec declares version 1 or
 /// later. The lenient format converts each of these mistakes into a
 /// silent pass or a dead field; here they fail with the entry named.
-fn checkentry(flags: &Flags, index: usize, entry: &Json) -> Result<(), OmniError> {
+fn checkentry(
+    flags: &Flags,
+    index: usize,
+    entry: &Json,
+    requires: &[String],
+) -> Result<(), OmniError> {
     let map = match entry.asmap() {
         Some(map) => map,
         None => return Err(fail(flags, index, entry, "entry is not a map", None, None)),
     };
 
     for key in map.keys() {
-        if !ENTRYFIELDS.contains(&key.as_str()) {
+        let capfield = CAPFIELDS
+            .iter()
+            .any(|(field, cap)| key == field && requires.iter().any(|req| req == cap));
+        if !ENTRYFIELDS.contains(&key.as_str()) && !capfield {
             return Err(fail(
                 flags,
                 index,
@@ -208,18 +236,53 @@ fn checkentry(flags: &Flags, index: usize, entry: &Json) -> Result<(), OmniError
         }
     }
 
-    let mut argsources = 0;
-    for key in ["in", "args", "ctx"] {
-        if entry.has(key) {
-            argsources += 1;
+    if requires.iter().any(|req| "ctxargs" == req) {
+        if entry.has("in") && (entry.has("args") || entry.has("ctx")) {
+            return Err(fail(
+                flags,
+                index,
+                entry,
+                "entry has in beside args or ctx",
+                None,
+                None,
+            ));
+        }
+    } else {
+        let mut argsources = 0;
+        for key in ["in", "args", "ctx"] {
+            if entry.has(key) {
+                argsources += 1;
+            }
+        }
+        if 1 < argsources {
+            return Err(fail(
+                flags,
+                index,
+                entry,
+                "entry has more than one of in, args, ctx",
+                None,
+                None,
+            ));
         }
     }
-    if 1 < argsources {
+
+    if entry.has("fn") && entry.get("fn").asstr().unwrap_or("").is_empty() {
         return Err(fail(
             flags,
             index,
             entry,
-            "entry has more than one of in, args, ctx",
+            "entry fn is not a name",
+            None,
+            None,
+        ));
+    }
+
+    if entry.has("wait") && !iswait(&entry.get("wait")) {
+        return Err(fail(
+            flags,
+            index,
+            entry,
+            "entry wait has no cause",
             None,
             None,
         ));
@@ -256,7 +319,12 @@ fn checkentry(flags: &Flags, index: usize, entry: &Json) -> Result<(), OmniError
 /// id: null) into a sentinel string and hide it from validation. A
 /// malformed spec is a spec error, not a test result, so it fails before
 /// any subject runs.
-fn checkset(flags: &Flags, testspec: &Json, normalset: &[Json]) -> Result<(), OmniError> {
+fn checkset(
+    flags: &Flags,
+    testspec: &Json,
+    normalset: &[Json],
+    requires: &[String],
+) -> Result<(), OmniError> {
     let origset: Vec<Json> = match testspec.get("set") {
         Json::List(list) => list,
         _ => normalset.to_vec(),
@@ -269,7 +337,7 @@ fn checkset(flags: &Flags, testspec: &Json, normalset: &[Json]) -> Result<(), Om
     }
 
     for (index, entry) in origset.iter().enumerate() {
-        checkentry(flags, index, entry)?;
+        checkentry(flags, index, entry, requires)?;
     }
 
     Ok(())
@@ -304,6 +372,19 @@ pub struct RunPack {
     provider: Provider,
     clients: BTreeMap<String, Provider>,
     specversion: f64,
+    requires: Vec<String>,
+    ctxargs: bool,
+    fnon: bool,
+    waiton: bool,
+}
+
+/// The provider and subject one entry runs against. `argsubject` is the
+/// caller's args-taking subject, kept only while no `client` or `fn` chose
+/// another.
+struct TestPack {
+    client: Provider,
+    subject: Subject,
+    argsubject: Option<SubjectArgs>,
 }
 
 impl RunPack {
@@ -385,30 +466,70 @@ impl RunPack {
         };
 
         if 1.0 <= self.specversion {
-            checkset(&useflags, testspec, &testset)?;
+            checkset(&useflags, testspec, &testset, &self.requires)?;
         }
+
+        let origset = match testspec.get("set") {
+            Json::List(list) => list,
+            _ => testset.clone(),
+        };
+        let waits = resolvewaits(&useflags, &origset)?;
+        let mut failures: Vec<String> = Vec::new();
 
         for (index, rawentry) in testset.iter().enumerate() {
             let mut entry = resolveentry(rawentry.clone(), &useflags);
 
-            let (client, entrysubject) = self.resolvetestpack(&entry, &usesubject)?;
-            let mut args = self.resolveargs(&mut entry, &client);
+            let outcome = (|| -> Result<(), OmniError> {
+                let testpack = self.resolvetestpack(&entry, &usesubject, argsubject)?;
+                let mut args = self.resolveargs(&mut entry, &testpack.client);
 
-            let called = match argsubject {
-                Some(mutable) if entry.get("client").asstr().is_none() => mutable(&mut args),
-                _ => entrysubject(&args),
-            };
+                let wait = if self.waiton && entry.has("wait") {
+                    Some(entry.get("wait"))
+                } else {
+                    let id = entry.get("id");
+                    id.asstr().and_then(|id| waits.get(id)).cloned()
+                };
 
-            match called {
-                Err(message) => {
-                    handleerror(&useflags, index, &entry, &message, &self.provider)?;
+                let ran = runentry(
+                    &useflags,
+                    index,
+                    &mut entry,
+                    &testpack,
+                    &mut args,
+                    &self.provider,
+                );
+
+                match wait {
+                    None => ran,
+                    Some(_) if ran.is_err() => Ok(()),
+                    Some(wait) => Err(fail(
+                        &useflags,
+                        index,
+                        &entry,
+                        &format!("stale wait: {}", stringify(&wait.get("cause"))),
+                        None,
+                        None,
+                    )),
                 }
-                Ok(rawres) => {
-                    let res = fixjson(&rawres, &useflags);
-                    jset(&mut entry, "res", res.clone());
-                    checkresult(&useflags, index, &entry, &args, &res)?;
+            })();
+
+            if let Err(err) = outcome {
+                if useflags.all {
+                    failures.push(err.message);
+                    continue;
                 }
+                return Err(err);
             }
+        }
+
+        if !failures.is_empty() {
+            return Err(OmniError::new(format!(
+                "omni: {}: {} of {} entries failed\n{}",
+                label,
+                failures.len(),
+                testset.len(),
+                failures.join("\n")
+            )));
         }
 
         Ok(())
@@ -418,36 +539,56 @@ impl RunPack {
         &self,
         entry: &Json,
         subject: &Subject,
-    ) -> Result<(Provider, Subject), OmniError> {
-        let clientname = entry.get("client");
-
-        let name = match clientname.asstr() {
-            Some(text) => text,
-            None => return Ok((self.provider.clone(), subject.clone())),
+        argsubject: Option<&SubjectArgs>,
+    ) -> Result<TestPack, OmniError> {
+        let mut testpack = TestPack {
+            client: self.provider.clone(),
+            subject: subject.clone(),
+            argsubject: argsubject.cloned(),
         };
 
-        let client = self.clients.get(name).ok_or_else(|| OmniError {
-            message: format!("omni: unknown client: {}", name),
-            entry: Some(entry.clone()),
-        })?;
+        if let Some(name) = entry.get("client").asstr() {
+            let client = self.clients.get(name).ok_or_else(|| OmniError {
+                message: format!("omni: unknown client: {}", name),
+                entry: Some(entry.clone()),
+            })?;
 
-        let clientsubject = resolvesubject(&self.name, client).unwrap_or_else(|| subject.clone());
+            testpack.subject =
+                resolvesubject(&self.name, client).unwrap_or_else(|| subject.clone());
+            testpack.client = client.clone();
+            testpack.argsubject = None;
+        }
 
-        Ok((client.clone(), clientsubject))
+        if let (true, Some(name)) = (self.fnon, entry.get("fn").asstr()) {
+            testpack.subject = resolvesubject(name, &testpack.client).ok_or_else(|| OmniError {
+                message: format!("omni: unknown fn: {}", name),
+                entry: Some(entry.clone()),
+            })?;
+            testpack.argsubject = None;
+        }
+
+        Ok(testpack)
     }
 
-    /// Build the argument list: `ctx`, `args`, or `in`.
+    /// Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+    /// entry with both passes the context first, then each argument.
     fn resolveargs(&self, entry: &mut Json, _client: &Provider) -> Vec<Json> {
         let hasctx = entry.has("ctx");
         let hasargs = entry.has("args");
 
-        let mut args: Vec<Json> = if hasctx {
+        let listargs = |rawargs: Json| match rawargs {
+            Json::List(list) => list,
+            other => vec![other],
+        };
+
+        let mut args: Vec<Json> = if self.ctxargs && hasctx && hasargs {
+            let mut both = vec![entry.get("ctx")];
+            both.extend(listargs(entry.get("args")));
+            both
+        } else if hasctx {
             vec![entry.get("ctx")]
         } else if hasargs {
-            match entry.get("args") {
-                Json::List(list) => list,
-                other => vec![other],
-            }
+            listargs(entry.get("args"))
         } else {
             vec![entry.get("in")]
         };
@@ -856,11 +997,78 @@ pub fn nullmodifier(val: &Json) -> Json {
     }
 }
 
+fn iswait(wait: &Json) -> bool {
+    !wait.get("cause").asstr().unwrap_or("").is_empty()
+}
+
+/// The runner-side waits: entry id to its declaration. Each must name an
+/// entry of the set, so a declaration cannot outlive the entry it held.
+fn resolvewaits(flags: &Flags, origset: &[Json]) -> Result<BTreeMap<String, Json>, OmniError> {
+    let label = flags.name.clone().unwrap_or_else(|| "set".to_string());
+
+    let waits = match &flags.wait {
+        None | Some(Json::Absent) | Some(Json::Null) => return Ok(BTreeMap::new()),
+        Some(Json::Map(map)) => map.clone(),
+        Some(_) => {
+            return Err(OmniError::new(format!(
+                "omni: {}: wait flag is not a map",
+                label
+            )))
+        }
+    };
+
+    let ids: Vec<Json> = origset.iter().map(|entry| entry.get("id")).collect();
+
+    for (id, wait) in waits.iter() {
+        if !ids.contains(&Json::Str(id.clone())) {
+            return Err(OmniError::new(format!(
+                "omni: {}: wait names no entry: {}",
+                label, id
+            )));
+        }
+        if !iswait(wait) {
+            return Err(OmniError::new(format!(
+                "omni: {}: wait for {} has no cause",
+                label, id
+            )));
+        }
+    }
+
+    Ok(waits)
+}
+
+fn runentry(
+    flags: &Flags,
+    index: usize,
+    entry: &mut Json,
+    testpack: &TestPack,
+    args: &mut [Json],
+    provider: &Provider,
+) -> Result<(), OmniError> {
+    let called = match &testpack.argsubject {
+        Some(mutable) => mutable(args),
+        None => (testpack.subject)(args),
+    };
+
+    match called {
+        Err(message) => handleerror(flags, index, entry, &message, provider),
+        Ok(rawres) => {
+            let res = fixjson(&rawres, flags);
+            jset(entry, "res", res.clone());
+            checkresult(flags, index, entry, args, &res)
+        }
+    }
+}
+
 /// A loaded spec plus its provider.
 pub struct Runner {
     alltests: Json,
     provider: Provider,
     specversion: f64,
+    requires: Vec<String>,
+    ctxargs: bool,
+    fnon: bool,
+    waiton: bool,
 }
 
 impl Runner {
@@ -878,6 +1086,10 @@ impl Runner {
             provider: self.provider.clone(),
             clients,
             specversion: self.specversion,
+            requires: self.requires.clone(),
+            ctxargs: self.ctxargs,
+            fnon: self.fnon,
+            waiton: self.waiton,
         })
     }
 
@@ -923,10 +1135,16 @@ impl Runner {
 pub fn make_runner<S: Into<SpecRef>>(specref: S, provider: Provider) -> Result<Runner, OmniError> {
     let alltests = loadspec(specref.into())?;
     let specversion = resolveversion(&alltests)?;
+    let requires = resolverequires(&alltests);
+    let has = |cap: &str| requires.iter().any(|req| cap == req);
     Ok(Runner {
         alltests,
         provider,
         specversion,
+        ctxargs: has("ctxargs"),
+        fnon: has("fn"),
+        waiton: has("wait"),
+        requires,
     })
 }
 
