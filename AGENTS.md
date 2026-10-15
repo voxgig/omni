@@ -144,8 +144,8 @@ Dispatching the workflow by hand still runs it.
 
 **The packages ship source.** omni is open source, and `files` carries
 `src/` and `compat/` alongside the compiled `dist/`. A consumer who wants
-to read the runner, or a porter translating it into a fourteenth
-language, gets it from the package rather than having to find the repo.
+to read the runner, or a porter translating it into another language,
+gets it from the package rather than having to find the repo.
 The npm entry points all resolve to `dist/`; the sources ride along.
 `make pack-diff` will refuse a release that drops any of them.
 
