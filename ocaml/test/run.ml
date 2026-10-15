@@ -446,6 +446,158 @@ let checkdeepequalnan () =
   checkequal false (Bool true) (Num 1.0) "true, 1";
   checkequal false (Num 1.0) (Num 2.0) "1, 2"
 
+(* ---- capabilities (spec/ext.json) and the `all` flag ---------------- *)
+
+(* The ctxargs subject: the context comes first, and must arrive
+   contextified with its client attached. *)
+let fibshifted args =
+  match args with
+  | [ ctx; start; stop ] when asstr (jget ctx "mark") = Some "CTX" && not (isnone (jget ctx "client")) ->
+    let shift value =
+      match (asnum value, asnum (jget ctx "shift")) with
+      | Some num, Some by -> Num (num +. by)
+      | _ -> value
+    in
+    Fib.fibrange (shift start) (shift stop)
+  | _ -> raise (Fib.Fib_error "fib: context not delivered")
+
+let extrunner spec = (make_runner_spec spec (fibprovider 0.0)) "fib" None
+
+let v1 requires set =
+  parse (Printf.sprintf {|{"OMNI":{"version":1,"requires":[%s]},"fib":{"g":{"set":[%s]}}}|} requires set)
+
+let refuses run pattern =
+  match run () with
+  | () -> raise (Failure ("omni: expected a failure matching /" ^ pattern ^ "/"))
+  | exception Omni_error message ->
+    if not (regex_find pattern message) then
+      raise (Failure ("omni: message does not match /" ^ pattern ^ "/: " ^ message))
+
+let extsuite () =
+  let pack = extrunner (loadspec (specfile "ext.json")) in
+
+  testcase "ext capabilities" (fun () ->
+      List.iter
+        (fun cap -> if not (List.mem cap capabilities) then raise (Failure ("omni: missing capability: " ^ cap)))
+        [ "ctxargs"; "fn"; "wait" ]);
+  testcase "ext ctxargs" (fun () -> pack.runset (pack.set "ctxargs") (Some fibshifted));
+  testcase "ext fn" (fun () -> pack.runset (pack.set "fn") (Some fibsub));
+  testcase "ext wait" (fun () -> pack.runset (pack.set "wait") (Some fibsub));
+
+  testcase "a waiting entry that passes fails the set" (fun () ->
+      let pack = extrunner (v1 {|"wait"|} {|{"in":5,"out":5,"wait":{"cause":"gone#1"}}|}) in
+      refuses (fun () -> pack.runset (pack.set "g") (Some fibsub)) {|\[0\]: stale wait: gone#1|});
+
+  testcase "the wait flag holds an entry by id" (fun () ->
+      let pack = extrunner (v1 "" {|{"id":"a","in":6,"out":9},{"in":7,"out":13}|}) in
+      pack.runsetflags ~wait:(parse {|{"a":{"cause":"flag#1"}}|}) (pack.set "g") default_flags (Some fibsub));
+
+  testcase "the wait flag fails when its entry passes" (fun () ->
+      let pack = extrunner (v1 "" {|{"id":"a","in":6,"out":8}|}) in
+      refuses
+        (fun () ->
+          pack.runsetflags ~wait:(parse {|{"a":{"cause":"flag#1"}}|}) (pack.set "g") default_flags (Some fibsub))
+        "stale wait: flag#1");
+
+  testcase "the wait flag must name an entry" (fun () ->
+      let pack = extrunner (v1 "" {|{"id":"a","in":6,"out":8}|}) in
+      refuses
+        (fun () ->
+          pack.runsetflags ~wait:(parse {|{"zz":{"cause":"c"}}|}) (pack.set "g") default_flags (Some fibsub))
+        "wait names no entry: zz");
+
+  testcase "a wait needs a cause" (fun () ->
+      let pack = extrunner (v1 {|"wait"|} {|{"in":6,"out":9,"wait":{}}|}) in
+      refuses (fun () -> pack.runset (pack.set "g") (Some fibsub)) "entry wait has no cause");
+
+  testcase "wait and fn are unknown fields unless required" (fun () ->
+      let wpack = extrunner (v1 "" {|{"in":6,"out":9,"wait":{"cause":"c"}}|}) in
+      refuses (fun () -> wpack.runset (wpack.set "g") (Some fibsub)) "unknown entry field: wait";
+      let fpack = extrunner (v1 "" {|{"fn":"fib","in":6,"out":8}|}) in
+      refuses (fun () -> fpack.runset (fpack.set "g") (Some fibsub)) "unknown entry field: fn");
+
+  testcase "an unknown fn is a spec error" (fun () ->
+      let pack = extrunner (v1 {|"fn"|} {|{"fn":"nope","in":6,"out":8}|}) in
+      refuses (fun () -> pack.runset (pack.set "g") (Some fibsub)) "unknown fn: nope");
+
+  testcase "ctx with args needs ctxargs, and never takes in" (fun () ->
+      let npack = extrunner (v1 "" {|{"ctx":{"shift":0},"args":[0,1],"out":[0,1]}|}) in
+      refuses (fun () -> npack.runset (npack.set "g") (Some fibshifted)) "more than one of in, args, ctx";
+      let ipack = extrunner (v1 {|"ctxargs"|} {|{"in":1,"ctx":{"shift":0},"out":[0]}|}) in
+      refuses (fun () -> ipack.runset (ipack.set "g") (Some fibshifted)) "entry has in beside args or ctx");
+
+  testcase "a legacy spec ignores fn and wait" (fun () ->
+      let pack =
+        extrunner (parse {|{"fib":{"g":{"set":[{"in":6,"out":8,"fn":"nope","wait":{"cause":"c"}}]}}}|})
+      in
+      pack.runset (pack.set "g") (Some fibsub));
+
+  testcase "a raising hook is the entry's error, not the set's" (fun () ->
+      let provider =
+        {
+          empty_provider with
+          subject = Some (fun _ -> Some fibsub);
+          contextify = Some (fun _ -> failwith "contextify boom");
+        }
+      in
+      let run spec = (make_runner_spec spec provider) "fib" None in
+      let epack = run (v1 "" {|{"ctx":{"n":6},"err":"contextify boom"}|}) in
+      epack.runset (epack.set "g") (Some fibsub);
+      let upack = run (v1 "" {|{"ctx":{"n":6},"out":8}|}) in
+      refuses
+        (fun () -> upack.runset (upack.set "g") (Some fibsub))
+        {|\[0\]: unexpected error\n\s+actual:\s+contextify boom|};
+      let wpack = run (v1 {|"wait"|} {|{"ctx":{"n":6},"out":8,"wait":{"cause":"hook#1"}}|}) in
+      wpack.runset (wpack.set "g") (Some fibsub);
+      let boom =
+        {
+          empty_provider with
+          subject = Some (fun name -> if name = "boom" then failwith "subject boom" else Some fibsub);
+        }
+      in
+      let fpack = (make_runner_spec (v1 {|"fn"|} {|{"fn":"boom","in":6,"err":"subject boom"}|}) boom) "fib" None in
+      fpack.runset (fpack.set "g") (Some fibsub));
+
+  testcase "a waiting entry holds a hook's error raised before the subject starts" (fun () ->
+      let provider =
+        {
+          empty_provider with
+          subject =
+            Some
+              (fun name ->
+                if name = "boom" then failwith "subject boom" else if name = "fib" then Some fibsub else None);
+        }
+      in
+      let run spec = (make_runner_spec spec provider) "fib" None in
+      let hpack = run (v1 {|"fn","wait"|} {|{"fn":"boom","in":6,"out":8,"wait":{"cause":"hook#2"}}|}) in
+      hpack.runset (hpack.set "g") (Some fibsub);
+      let spack = run (v1 {|"fn","wait"|} {|{"fn":"boom","in":6,"err":"subject boom","wait":{"cause":"hook#3"}}|}) in
+      refuses (fun () -> spack.runset (spack.set "g") (Some fibsub)) {|\[0\]: stale wait: hook#3|});
+
+  testcase "fn needs no default subject, but an entry without fn does" (fun () ->
+      let provider =
+        { empty_provider with subject = Some (fun name -> if name = "fibx" then Some fibsub else None) }
+      in
+      let run spec = (make_runner_spec spec provider) "fib" None in
+      let rpack = run (v1 {|"fn"|} {|{"fn":"fibx","in":6,"out":8}|}) in
+      rpack.runset (rpack.set "g") None;
+      let npack = run (v1 {|"fn"|} {|{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}|}) in
+      refuses (fun () -> npack.runset (npack.set "g") None) {|^omni: no test subject for: fib$|};
+      let lpack = run (v1 "" {|{"in":6,"out":8}|}) in
+      refuses (fun () -> lpack.runset (lpack.set "g") None) {|^omni: no test subject for: fib$|});
+
+  testcase "a wait is found by an id the entry owns, never an inherited one" (fun () ->
+      let pack = extrunner (v1 "" {|{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}|}) in
+      pack.runset (pack.set "g") (Some fibsub);
+      pack.runsetflags ~wait:(JMap []) (pack.set "g") default_flags (Some fibsub));
+
+  testcase "all reports every failure at once" (fun () ->
+      let pack = extrunner (v1 "" {|{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}|}) in
+      refuses
+        (fun () -> pack.runsetflags ~all:true (pack.set "g") default_flags (Some fibsub))
+        {|^omni: fib: 2 of 3 entries failed\n.*fib\[0\]: result mismatch.*fib\[2\]: result mismatch|};
+      refuses (fun () -> pack.runset (pack.set "g") (Some fibsub)) {|^omni: fib\[0\]: result mismatch|})
+
 let () =
   if Array.length Sys.argv > 1 then only := Some Sys.argv.(1);
 
@@ -499,6 +651,8 @@ let () =
   testcase "a legacy spec (no OMNI block) stays lenient" (fun () ->
       let pack = (make_runner_spec legacylenient empty_provider) "fib" None in
       pack.runset (pack.set "g") (Some fibsub));
+
+  extsuite ();
 
   Printf.printf "\n%d passed, %d failed\n" !passcount !failcount;
 

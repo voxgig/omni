@@ -31,14 +31,17 @@ use constant SPECVERSION => 1;
 # Capability strings this runner supports beyond the version baseline. A
 # spec's OMNI.requires list is checked against this: an unknown capability
 # refuses the spec loudly at load time, instead of a lagging port silently
-# mis-running it. (Empty today; future format features mint a string here.)
-use constant CAPABILITIES => [];
+# mis-running it. A spec turns each on only by requiring it.
+use constant CAPABILITIES => [qw(ctxargs fn wait)];
 
 # The complete set of fields an entry may carry. Under version 1 anything
 # else is an error: an unrecognised key is almost always a typo'd
 # assertion, and a typo'd assertion is a test that silently stopped
 # testing.
 use constant ENTRYFIELDS => [qw(in args ctx out err match client id doc)];
+
+# Entry fields a capability adds, permitted only in a spec that requires it.
+use constant CAPFIELDS => { fn => 'fn', wait => 'wait' };
 
 # A test failure (or a malformed spec). Distinct from errors thrown by the
 # subject under test, which are candidates for an `err` expectation.
@@ -119,22 +122,51 @@ sub resolveversion {
     return $version;
 }
 
+# The capabilities a spec requires, which resolveversion has already
+# checked against CAPABILITIES.
+sub resolverequires {
+    my ($alltests) = @_;
+    my $meta = ismap($alltests) ? $alltests->{OMNI} : undef;
+    return ( ismap($meta) && islist( $meta->{requires} ) ) ? $meta->{requires} : [];
+}
+
+sub includes {
+    my ( $list, $val ) = @_;
+    return ( grep { $_ eq $val } @$list ) ? 1 : 0;
+}
+
 # Strict entry validation, applied when the spec declares version 1 or
 # later. The lenient format converts each of these mistakes into a silent
 # pass or a dead field; here they fail with the entry named.
 sub checkentry {
-    my ( $flags, $index, $entry ) = @_;
+    my ( $flags, $index, $entry, $requires ) = @_;
 
     die fail( $flags, $index, $entry, 'entry is not a map' ) if !ismap($entry);
 
     for my $key ( keys %$entry ) {
+        my $capname = CAPFIELDS()->{$key};
         die fail( $flags, $index, $entry, 'unknown entry field: ' . $key )
-          if !grep { $_ eq $key } @{ ENTRYFIELDS() };
+          if !includes( ENTRYFIELDS(), $key )
+          && !( defined $capname && includes( $requires, $capname ) );
     }
 
-    my $argsources = grep { exists $entry->{$_} } qw(in args ctx);
-    die fail( $flags, $index, $entry, 'entry has more than one of in, args, ctx' )
-      if 1 < $argsources;
+    if ( includes( $requires, 'ctxargs' ) ) {
+        die fail( $flags, $index, $entry, 'entry has in beside args or ctx' )
+          if exists $entry->{in} && ( exists $entry->{args} || exists $entry->{ctx} );
+    }
+    else {
+        my $argsources = grep { exists $entry->{$_} } qw(in args ctx);
+        die fail( $flags, $index, $entry, 'entry has more than one of in, args, ctx' )
+          if 1 < $argsources;
+    }
+
+    die fail( $flags, $index, $entry, 'entry fn is not a name' )
+      if exists $entry->{fn}
+      && ( !defined $entry->{fn} || ref( $entry->{fn} ) || isbool( $entry->{fn} )
+        || '' eq $entry->{fn} );
+
+    die fail( $flags, $index, $entry, 'entry wait has no cause' )
+      if exists $entry->{wait} && !iswait( $entry->{wait} );
 
     die fail( $flags, $index, $entry, 'entry has both err and out' )
       if defined $entry->{err} && exists $entry->{out};
@@ -152,7 +184,7 @@ sub checkentry {
 # malformed spec is a spec error, not a test result, so it fails before
 # any subject runs.
 sub checkset {
-    my ( $flags, $testspec, $normalset ) = @_;
+    my ( $flags, $testspec, $normalset, $requires ) = @_;
 
     my $origset =
       ( ismap($testspec) && islist( $testspec->{set} ) ) ? $testspec->{set} : $normalset;
@@ -163,7 +195,7 @@ sub checkset {
       if 0 == scalar(@$origset) && !$isemptyok;
 
     for my $index ( 0 .. $#$origset ) {
-        checkentry( $flags, $index, $origset->[$index] );
+        checkentry( $flags, $index, $origset->[$index], $requires );
     }
 
     return;
@@ -231,7 +263,7 @@ sub resolveentry {
 }
 
 sub resolvetestpack {
-    my ( $name, $entry, $subject, $provider, $clients ) = @_;
+    my ( $name, $entry, $subject, $provider, $clients, $fnon ) = @_;
     my $testpack = { client => $provider, subject => $subject };
 
     if ( defined $entry->{client} ) {
@@ -242,15 +274,27 @@ sub resolvetestpack {
         $testpack->{subject} = resolvesubject( $name, $client ) || $subject;
     }
 
+    if ( $fnon && defined $entry->{fn} ) {
+        my $fnsubject = resolvesubject( $entry->{fn}, $testpack->{client} );
+        die Voxgig::Omni::OmniError->new( 'omni: unknown fn: ' . $entry->{fn}, $entry )
+          if !defined $fnsubject;
+        $testpack->{subject} = $fnsubject;
+    }
+
     return $testpack;
 }
 
-# Build the argument list: `ctx`, `args`, or `in`.
+# Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+# entry with both passes the context first, then each argument.
 sub resolveargs {
-    my ( $entry, $testpack, $provider ) = @_;
+    my ( $entry, $testpack, $provider, $ctxargs ) = @_;
     my $args;
 
-    if ( exists $entry->{ctx} ) {
+    if ( $ctxargs && exists $entry->{ctx} && exists $entry->{args} ) {
+        my $rawargs = $entry->{args};
+        $args = [ $entry->{ctx}, islist($rawargs) ? @$rawargs : $rawargs ];
+    }
+    elsif ( exists $entry->{ctx} ) {
         $args = [ $entry->{ctx} ];
     }
     elsif ( exists $entry->{args} ) {
@@ -568,11 +612,71 @@ sub nullmodifier {
     return;
 }
 
+sub iswait {
+    my ($wait) = @_;
+    return 0 if !ismap($wait);
+    my $cause = $wait->{cause};
+    return ( defined $cause && !ref($cause) && !isbool($cause) && '' ne $cause ) ? 1 : 0;
+}
+
+# The runner-side waits: entry id to its declaration. Each must name an
+# entry of the set, so a declaration cannot outlive the entry it held.
+sub resolvewaits {
+    my ( $flags, $origset ) = @_;
+    my $waits = $flags->{wait};
+    return {} if !defined $waits;
+
+    die Voxgig::Omni::OmniError->new( 'omni: ' . $flags->{name} . ': wait flag is not a map' )
+      if !ismap($waits);
+
+    my @ids = map {
+        ( ismap($_) && defined $_->{id} && !ref( $_->{id} ) && !isbool( $_->{id} ) )
+          ? $_->{id}
+          : ()
+    } @$origset;
+
+    for my $id ( sort keys %$waits ) {
+        die Voxgig::Omni::OmniError->new( 'omni: ' . $flags->{name} . ': wait names no entry: ' . $id )
+          if !includes( \@ids, $id );
+        die Voxgig::Omni::OmniError->new(
+            'omni: ' . $flags->{name} . ': wait for ' . $id . ' has no cause' )
+          if !iswait( $waits->{$id} );
+    }
+
+    return $waits;
+}
+
+sub runentry {
+    my ( $flags, $index, $entry, $testpack, $provider, $ctxargs ) = @_;
+
+    my $ok = eval {
+        my $args = resolveargs( $entry, $testpack, $provider, $ctxargs );
+        my $res  = $testpack->{subject}->(@$args);
+        $res = fixjson( $res, $flags );
+        $entry->{res} = $res;
+
+        checkresult( $flags, $index, $entry, $args, $res );
+        1;
+    };
+
+    if ( !$ok ) {
+        my $err = $@;
+        die $err if is_omni_error($err);
+        handleerror( $flags, $index, $entry, $err, $provider );
+    }
+
+    return;
+}
+
 # Make a runner for a spec file (or spec structure) and a provider.
 sub makeRunner {
     my ( $specref, $provider ) = @_;
     my $alltests    = loadspec($specref);
     my $specversion = resolveversion($alltests);
+    my $requires    = resolverequires($alltests);
+    my $ctxargs     = includes( $requires, 'ctxargs' );
+    my $fnon        = includes( $requires, 'fn' );
+    my $waiton      = includes( $requires, 'wait' );
     my $useprovider = $provider || {};
 
     return sub {
@@ -590,7 +694,7 @@ sub makeRunner {
 
             my $subject = $testsubject || $defsubject;
             die Voxgig::Omni::OmniError->new( 'omni: no test subject for: ' . $useflags->{name} )
-              if !defined $subject;
+              if !defined $subject && !$fnon;
 
             my $testspecmap = fixjson( $testspec, $useflags );
 
@@ -599,31 +703,78 @@ sub makeRunner {
 
             my $testset = $testspecmap->{set};
 
-            checkset( $useflags, $testspec, $testset ) if 1 <= $specversion;
+            checkset( $useflags, $testspec, $testset, $requires ) if 1 <= $specversion;
+
+            my $origset =
+              ( ismap($testspec) && islist( $testspec->{set} ) ) ? $testspec->{set} : $testset;
+            my $waits = resolvewaits( $useflags, $origset );
+            my $all   = ( isbool( $useflags->{all} ) && $useflags->{all} ) ? 1 : 0;
+            my @failures;
 
             for my $index ( 0 .. $#$testset ) {
                 my $entry = $testset->[$index];
 
                 my $ok = eval {
-                    $entry = resolveentry( $entry, $useflags );
+                    my ( $testpack, $prestart );
 
-                    my $testpack = resolvetestpack( $name, $entry, $subject, $useprovider, $clients );
-                    my $args = resolveargs( $entry, $testpack, $useprovider );
+                    # A hook's raw error before the subject starts is still the entry's.
+                    my $resolved = eval {
+                        $entry = resolveentry( $entry, $useflags );
+                        $testpack =
+                          resolvetestpack( $name, $entry, $subject, $useprovider, $clients, $fnon );
+                        1;
+                    };
+                    if ( !$resolved ) {
+                        my $err = $@;
+                        die $err if is_omni_error($err);
+                        $prestart = $err;
+                    }
 
-                    my $res = $testpack->{subject}->(@$args);
-                    $res = fixjson( $res, $useflags );
-                    $entry->{res} = $res;
+                    die Voxgig::Omni::OmniError->new(
+                        'omni: no test subject for: ' . $useflags->{name} )
+                      if !defined $prestart && !defined $testpack->{subject};
 
-                    checkresult( $useflags, $index, $entry, $args, $res );
+                    my $wait =
+                        !ismap($entry)                       ? undef
+                      : ( $waiton && exists $entry->{wait} ) ? $entry->{wait}
+                      : defined $entry->{id}                 ? $waits->{ $entry->{id} }
+                      :                                        undef;
+
+                    my $run = sub {
+                        return defined $prestart
+                          ? handleerror( $useflags, $index, $entry, $prestart, $useprovider )
+                          : runentry( $useflags, $index, $entry, $testpack, $useprovider, $ctxargs );
+                    };
+
+                    if ( !defined $wait ) {
+                        $run->();
+                    }
+                    else {
+                        my $passed = eval { $run->(); 1 };
+                        if ( !$passed ) {
+                            my $err = $@;
+                            die $err if !is_omni_error($err);
+                        }
+                        die fail( $useflags, $index, $entry, 'stale wait: ' . $wait->{cause} )
+                          if $passed;
+                    }
                     1;
                 };
 
-                if ( !$ok ) {
-                    my $err = $@;
-                    die $err if is_omni_error($err);
-                    handleerror( $useflags, $index, $entry, $err, $useprovider );
-                }
+                next if $ok;
+
+                my $err = $@;
+                die $err if !( $all && is_omni_error($err) );
+                push @failures, $err->message;
             }
+
+            die Voxgig::Omni::OmniError->new( 'omni: '
+                  . $useflags->{name} . ': '
+                  . scalar(@failures) . ' of '
+                  . scalar(@$testset)
+                  . " entries failed\n"
+                  . join( "\n", @failures ) )
+              if @failures;
 
             return;
         };

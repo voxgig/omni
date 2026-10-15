@@ -151,8 +151,8 @@ int omni_regex_find(const char *pattern, const char *text);
 /* Capability strings this runner supports beyond the version baseline. A
  * spec's OMNI.requires list is checked against this: an unknown
  * capability refuses the spec loudly at load time, instead of a lagging
- * port silently mis-running it. NULL-terminated; empty today - future
- * format features mint a string here. */
+ * port silently mis-running it. NULL-terminated. A spec turns each on
+ * only by requiring it. */
 extern const char *const OMNI_CAPABILITIES[];
 
 typedef struct omni_result {
@@ -198,6 +198,8 @@ struct omni_provider {
 typedef struct omni_flags {
   int null;         /* Convert JSON nulls to NULLMARK (default 1). */
   const char *name; /* Label used in failure messages. */
+  int all;          /* Run every entry, then fail once listing each failure. */
+  omni_json *wait;  /* Entry id to {cause}, holding those entries. NULL for none. */
 } omni_flags;
 
 omni_flags omni_flags_default(void);

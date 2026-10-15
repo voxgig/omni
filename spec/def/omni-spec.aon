@@ -22,6 +22,8 @@ Entry: hide(close({
   client?: string
   id?: string
   doc?: boolean
+  fn?: string
+  wait?: close({ cause: string })
 }))
 
 

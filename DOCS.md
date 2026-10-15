@@ -104,12 +104,16 @@ compiles them to `test.json`.
 | `client` | string | Resolve the subject from this `DEF.client` entry instead. |
 | `id` | string | Identifier, echoed in failure messages. |
 | `doc` | bool | Marks an entry as documentation-worthy. Ignored by the runner. |
+| `fn` | string | Call the subject the provider names this, not the group's. Needs the `fn` capability. |
+| `wait` | map | Hold the entry to an upstream cause: `{ cause: "<issue>" }`. Needs the `wait` capability. See [3](#3-runner-semantics). |
 
 One of `in`, `args` and `ctx` determines the arguments, resolved in the
 order `ctx`, `args`, `in`. A version-1 spec ([2.7](#27-format-versions))
 rejects an entry carrying more than one of them; a legacy spec silently
 uses the highest-precedence field. An entry with none of them calls the
-subject with a single absent value.
+subject with a single absent value. A spec that requires `ctxargs` may
+give an entry both `ctx` and `args`: the subject then receives the context
+first and each argument after it. `in` never joins them.
 
 Fields outside this table are rejected by a version-1 spec — an
 unrecognised key is almost always a mistyped assertion — and silently
@@ -292,8 +296,17 @@ or a dead field; version 1 makes them loud.
 A runner that does not recognise a listed capability refuses the whole
 spec at load time (`spec requires unsupported capability`), so a port on
 an older omni fails loudly instead of silently mis-running a spec whose
-features it does not know. Future format features mint a string in the
-runner's `CAPABILITIES` registry; the registry is currently empty.
+features it does not know. A capability takes effect only in a spec that
+requires it, so a spec that requires none runs exactly as before.
+
+| Capability | What a requiring spec may do |
+|---|---|
+| `ctxargs` | Give an entry both `ctx` and `args`; the subject receives the context, then each argument. |
+| `fn` | Name the subject of one entry with `fn`, resolved through `provider.subject`. An unknown name is a spec error. |
+| `wait` | Hold an entry to a cause with `wait`. See [3](#3-runner-semantics). |
+
+[`spec/ext.aon`](spec/ext.aon) requires all three, and a port runs it
+once it carries them; `spec/fib.aon` requires none.
 
 A `version` newer than the runner's `SPECVERSION` is refused at load.
 
@@ -334,13 +347,20 @@ Every port does exactly this.
 4. For each entry, in order:
    1. **Default the expectation.** No `out` and `null` set means
       `out = "__NULL__"`.
-   2. **Resolve the subject.** `entry.client` overrides the default.
+   2. **Resolve the subject.** `entry.client` overrides the default, and
+      `entry.fn` overrides both, through the entry's provider's `subject`
+      hook. An `fn` that hook does not know fails as `unknown fn`. In a
+      spec that requires `fn`, a group needs no default subject; an
+      entry that names no `fn` and finds none fails as `no test subject`.
    3. **Resolve the arguments.** `ctx`, else `args`, else `[clone(in)]`.
-      For `ctx`/`args`, a leading map argument is cloned and passed through
+      Under `ctxargs`, an entry with both is `[ctx, ...args]`. For
+      `ctx`/`args`, a leading map argument is cloned and passed through
       `provider.contextify`.
    4. **Call the subject.**
    5. **On failure** - go to `err` handling ([2.4](#24-errors)), then the
-      `match` check against a base carrying `err`.
+      `match` check against a base carrying `err`. An error a provider
+      hook raises in steps 2 and 3, such as a `contextify` that throws, is
+      the entry's failure too, so `err` can expect it.
    6. **On success** - normalise the result the same way as the group,
       record it as `entry.res`, then:
       - if `err` was expected, fail;
@@ -349,8 +369,17 @@ Every port does exactly this.
       - if a match ran and `out` is absent or `"__NULL__"`, pass;
       - otherwise fail with `result mismatch`.
 
+**Waiting entries.** An entry's own `wait`, or the `wait` flag's
+declaration for its `id`, holds the entry to a cause. It runs like any
+other, and its failure is set aside rather than raised. If it passes, the
+group fails with `stale wait: <cause>`, so a cause that has been fixed
+cannot go unnoticed. Any failure of the entry is held, a hook's error
+from steps 2 and 3 included. Errors from the runner itself, such as
+`unknown fn` or `no test subject`, are never set aside.
+
 **Ordering.** Entries run in spec order and the first failure stops the
-group. Map key order is never significant for equality.
+group, unless the `all` flag is set. Map key order is never significant
+for equality.
 
 **Numbers.** Compared by value: `1` and `1.0` are equal. Booleans are never
 equal to numbers.
@@ -413,12 +442,21 @@ languages, a struct of function fields in Go, C, C++, Java, and Rust.
 |---|---|---|
 | `null` | `true` | Convert every JSON null - in the spec and in the result - to `"__NULL__"`. With `false`, nulls stay null and expectations are written literally. |
 | `name` | section name | The label used in failure messages. |
+| `all` | `false` | Run every entry, then fail once, listing every failure. |
+| `wait` | none | A map from entry `id` to `{ cause }`, holding those entries as an entry's own `wait` does. An `id` that names no entry of the group is an error. |
 
 `runset(group, subject)` is `runsetflags(group, {}, subject)`.
 
 Turn `null` off when a group's inputs or outputs contain meaningful nulls
 that the subject must receive as real nulls - as in the `nulls` group of
 the Fibonacci spec.
+
+`wait` is a flag as well as a field because which entries wait is often a
+property of one port, while the spec is shared by all of them.
+
+Three ports spell the new flags differently: Scala names the `wait` flag
+`waits`, OCaml takes `all` and `wait` as optional arguments, and Haskell
+takes them in a record of their own. See [9](#9-per-port-variance).
 
 
 ## 6. Failure messages
@@ -434,7 +472,11 @@ omni: <label>[<index>] (<id>): <reason>
 
 The `(<id>)` part appears only when the entry has an `id`. Reasons are
 `result mismatch`, `error mismatch`, `expected error did not occur`,
-`unexpected error`, and `match failed at <path>`.
+`unexpected error`, `match failed at <path>`, and `stale wait: <cause>`.
+
+Under the `all` flag the group raises one error whose first line is
+`omni: <label>: <n> of <m> entries failed`, followed by each failure in
+the preceding format.
 
 Values are rendered by `stringify`: strings verbatim, everything else as
 compact JSON with map keys sorted. Sorting means the same failure prints
@@ -855,6 +897,11 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 | Lean | Checks are pure: failures are returned as `Except String`, so there is no `OmniError`. The regex matcher is a `partial def`. |
 | Clojure, Elixir, Scala, Lean | Map key order is not preserved (or is sorted). Order is never significant for equality. |
 | OCaml, Haskell | An exception carries no message by default: OCaml registers a printer, Haskell defines `show`. |
+| OCaml | `all` and `wait` are optional arguments of `runsetflags` and `runsetflags_args` (`~all:true`, `~wait:...`), not fields of `flags`, so a `flags` record written as a literal still compiles. |
+| Haskell | `all` and `wait` are the `RunFlags` record (`defaultRunFlags` is both off), passed through `runsetWith` and `runsetWithArgs`, not fields of `Flags`, so a `Flags` record written as a literal still constructs in full. |
+| Scala | The `wait` flag is the `Flags` field `waits`: `wait` is a final method of `java.lang.Object`, which a case-class field cannot shadow. |
+| Go, Rust, C, Zig, Swift, Lean | A provider hook returns a plain value and has no way to fail: a panic or an abort is a crash, not an error. So the case in [3](#3-runner-semantics) step 5, a hook that raises, cannot arise, and these ports carry no test for it. |
+| Go, Perl, Lua, Rust, Elixir | The `wait` flag's keys are checked in sorted order, not insertion order. When several of its ids are wrong, the first one named can differ. |
 | boru | One `none` plays both JSON null and "no value", so under `null: false` an entry with no `out` is satisfied by a null result as well as by no result - canonical `deepequal` holds those apart (*"undefined and null are distinct"*) and reports a mismatch for the first. Under `null: true` the question does not arise: both sides become `__NULL__` first. The regex engine behind `mini re` is RE2, so a `/.../` match leaf using a backreference or lookaround cannot behave as it does in TypeScript; the common subset - literals, classes, groups, alternation, `* + ? {m,n}`, `\d \w \s`, anchors - is what is available, as in Rust and C. |
 
 Everything else - entry semantics, sentinels, match rules, flag behaviour,

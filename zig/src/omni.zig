@@ -433,6 +433,10 @@ pub const Provider = struct {
 pub const Flags = struct {
     null_: bool = true,
     name: ?[]const u8 = null,
+    /// Run every entry, then fail once, listing every failure.
+    all: bool = false,
+    /// Entry id to `{cause}`, holding those entries as an entry's own `wait` does.
+    wait: Maybe = null,
 
     pub fn nonull() Flags {
         return .{ .null_ = false };
@@ -447,9 +451,8 @@ pub const SPECVERSION = 1;
 /// Capability strings this runner supports beyond the version baseline. A
 /// spec's OMNI.requires list is checked against this: an unknown
 /// capability refuses the spec loudly at load time, instead of a lagging
-/// port silently mis-running it. (Empty today; future format features
-/// mint a string here.)
-pub const CAPABILITIES: []const []const u8 = &.{};
+/// port silently mis-running it. A spec turns each on only by requiring it.
+pub const CAPABILITIES: []const []const u8 = &.{ "ctxargs", "fn", "wait" };
 
 /// The complete set of fields an entry may carry. Under version 1 anything
 /// else is an error: an unrecognised key is almost always a typo'd
@@ -460,6 +463,23 @@ const ENTRYFIELDS = [_][]const u8{ "in", "args", "ctx", "out", "err", "match", "
 fn isentryfield(key: []const u8) bool {
     for (ENTRYFIELDS) |field| {
         if (std.mem.eql(u8, field, key)) return true;
+    }
+    return false;
+}
+
+/// Entry fields a capability adds, permitted only in a spec that requires it.
+const CAPFIELDS = [_]struct { []const u8, []const u8 }{ .{ "fn", "fn" }, .{ "wait", "wait" } };
+
+fn iscapfield(key: []const u8, requires: []const []const u8) bool {
+    for (CAPFIELDS) |capfield| {
+        if (std.mem.eql(u8, capfield[0], key)) return includes(requires, capfield[1]);
+    }
+    return false;
+}
+
+fn includes(list: []const []const u8, item: []const u8) bool {
+    for (list) |entry| {
+        if (std.mem.eql(u8, entry, item)) return true;
     }
     return false;
 }
@@ -534,21 +554,39 @@ fn resolveversion(alltests: Json) !i64 {
 
         for (requires.array.items) |cap| {
             const capstr = asstr(cap) orelse return error.UnsupportedCapability;
-
-            var known = false;
-            for (CAPABILITIES) |allowed| {
-                if (std.mem.eql(u8, allowed, capstr)) {
-                    known = true;
-                    break;
-                }
-            }
-            if (!known) {
+            if (!includes(CAPABILITIES, capstr)) {
                 return error.UnsupportedCapability;
             }
         }
     }
 
     return @intFromFloat(vnum);
+}
+
+/// The capabilities a spec requires, which resolveversion has already
+/// checked against CAPABILITIES.
+fn resolverequires(alloc: std.mem.Allocator, alltests: Json) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const requires = jget(jget(alltests, "OMNI"), "requires");
+    if (islist(requires)) {
+        for (requires.?.array.items) |cap| {
+            if (asstr(cap)) |capstr| try out.append(alloc, capstr);
+        }
+    }
+    return out.items;
+}
+
+fn appendargs(alloc: std.mem.Allocator, args: *std.ArrayList(Json), rawargs: Json) !void {
+    if (.array == rawargs) {
+        try args.appendSlice(alloc, rawargs.array.items);
+    } else {
+        try args.append(alloc, rawargs);
+    }
+}
+
+fn iswait(wait: Maybe) bool {
+    const cause = asstr(jget(wait, "cause")) orelse return false;
+    return 0 < cause.len;
 }
 
 /// Nulls (and absent values) become NULLMARK. Always a fresh copy.
@@ -640,6 +678,15 @@ pub fn nullmodifier(alloc: std.mem.Allocator, val: Json) !Json {
     return jstr(replaced);
 }
 
+/// The subject one entry calls, and the provider it resolved through.
+const TestPack = struct {
+    client: *const Provider,
+    subject: union(enum) {
+        plain: ?*const Subject,
+        args: *const SubjectArgs,
+    },
+};
+
 /// What a runner returns for one named spec section.
 pub const RunPack = struct {
     alloc: std.mem.Allocator,
@@ -650,6 +697,10 @@ pub const RunPack = struct {
     clientnames: []const []const u8,
     clients: []const *const Provider,
     specversion: i64,
+    requires: []const []const u8 = &.{},
+    ctxargs: bool = false,
+    fnon: bool = false,
+    waiton: bool = false,
 
     /// A named group of the resolved spec.
     pub fn set(self: *const RunPack, setname: []const u8) Maybe {
@@ -692,11 +743,15 @@ pub const RunPack = struct {
         const alloc = self.alloc;
         const label = flags.name orelse (if (0 == self.name.len) "set" else self.name);
 
-        const usesubject: ?*const Subject = if (null != argsubject)
-            null
-        else
-            subject orelse self.subject orelse
-                return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
+        const defsubject = subject orelse self.subject;
+        if (null == argsubject and null == defsubject and !self.fnon) {
+            return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
+        }
+
+        const usepack: TestPack = .{
+            .client = self.client,
+            .subject = if (argsubject) |call| .{ .args = call } else .{ .plain = defsubject },
+        };
 
         const testspecmap = try fixjson(alloc, testspec, flags.null_);
         const testset = jget(testspecmap, "set") orelse
@@ -715,106 +770,229 @@ pub const RunPack = struct {
             }
         }
 
+        const origset = if (ismap(testspec) and islist(jget(testspec, "set")))
+            jget(testspec, "set").?
+        else
+            testset;
+
+        if (try self.resolvewaits(label, flags.wait, origset)) |failure| {
+            return failure;
+        }
+
+        var failures: std.ArrayList([]const u8) = .empty;
+
         for (testset.array.items, 0..) |rawentry, index| {
-            if (.object != rawentry) {
-                return try std.fmt.allocPrint(
-                    alloc,
-                    "omni: {s}[{d}]: entry is not a map",
-                    .{ label, index },
-                );
-            }
-
-            var entry = rawentry;
-
-            // An entry with no `out` expects a null (or absent) result.
-            if (flags.null_ and isnone(jget(entry, "out"))) {
-                entry = try jset(alloc, entry, "out", jstr(NULLMARK));
-            }
-
-            var entrysubject: ?*const Subject = usesubject;
-
-            if (null != entrysubject) if (asstr(jget(entry, "client"))) |clientname| {
-                var found: ?*const Provider = null;
-                for (self.clientnames, 0..) |candidate, at| {
-                    if (std.mem.eql(u8, candidate, clientname)) {
-                        found = self.clients[at];
-                    }
+            if (try self.driveentry(label, index, rawentry, flags, usepack)) |failure| {
+                if (!flags.all) {
+                    return failure;
                 }
-
-                const client = found orelse
-                    return try std.fmt.allocPrint(alloc, "omni: unknown client: {s}", .{clientname});
-
-                if (client.subject) |resolve| {
-                    if (resolve(client, self.name)) |clientsubject| {
-                        entrysubject = clientsubject;
-                    }
-                }
-            };
-
-            // Build the argument list: `ctx`, `args`, or `in`.
-            var args: std.ArrayList(Json) = .empty;
-            const hasctx = jhas(entry, "ctx");
-            const hasargs = jhas(entry, "args");
-
-            if (hasctx) {
-                try args.append(alloc, jget(entry, "ctx").?);
-            } else if (hasargs) {
-                const rawargs = jget(entry, "args").?;
-                if (.array == rawargs) {
-                    for (rawargs.array.items) |item| {
-                        try args.append(alloc, item);
-                    }
-                } else {
-                    try args.append(alloc, rawargs);
-                }
-            } else {
-                try args.append(alloc, try clone(alloc, jget(entry, "in")));
+                try failures.append(alloc, failure);
             }
+        }
 
-            if ((hasctx or hasargs) and 0 < args.items.len and .object == args.items[0]) {
-                var first = args.items[0];
-                if (self.client.contextify) |contextify| {
-                    first = contextify(self.client, first);
-                }
-                // Canonical attaches the resolved client onto ctx/args[0]
-                // (testpack.client) so a context subject can tell it was
-                // invoked through one. std.json.Value has no case for a
-                // live Provider reference, and the resolved client is
-                // never absent (it defaults to the root provider), so a
-                // boolean marker carries the same observable meaning the
-                // corpus checks for - presence, never identity.
-                first = try jset(alloc, first, "client", jbool(true));
-                args.items[0] = first;
-                entry = try jset(alloc, entry, "ctx", first);
-            }
+        if (0 < failures.items.len) {
+            return try std.fmt.allocPrint(alloc, "omni: {s}: {d} of {d} entries failed\n{s}", .{
+                label,
+                failures.items.len,
+                testset.array.items.len,
+                try std.mem.join(alloc, "\n", failures.items),
+            });
+        }
 
-            // An args-subject returns its arguments alongside the result, so
-            // `match.args` sees what the subject actually did with them.
-            const outcome: SubjectArgsResult = if (argsubject) |call|
-                call.call(call, args.items)
-            else if (entrysubject) |call| switch (call.call(call, args.items)) {
-                .ok => |value| SubjectArgsResult{ .ok = .{ .args = args.items, .res = value } },
-                .err => |message| SubjectArgsResult{ .err = message },
-            } else return try std.fmt.allocPrint(
+        return null;
+    }
+
+    // One entry: resolve its subject and arguments, then run it, or hold it
+    // to its wait. Only the run itself is held; a runner error never is.
+    fn driveentry(
+        self: *const RunPack,
+        label: []const u8,
+        index: usize,
+        rawentry: Json,
+        flags: Flags,
+        usepack: TestPack,
+    ) !?[]const u8 {
+        const alloc = self.alloc;
+
+        if (.object != rawentry) {
+            return try std.fmt.allocPrint(
                 alloc,
-                "omni: no test subject for: {s}",
-                .{label},
+                "omni: {s}[{d}]: entry is not a map",
+                .{ label, index },
             );
+        }
 
-            switch (outcome) {
-                .err => |message| {
-                    if (try self.handleerror(label, index, entry, message)) |failure| {
-                        return failure;
-                    }
-                },
-                .ok => |call| {
-                    const res = try fixjson(alloc, call.res, flags.null_);
-                    entry = try jset(alloc, entry, "res", res);
+        var entry = rawentry;
 
-                    if (try self.checkresult(label, index, entry, call.args, res)) |failure| {
-                        return failure;
+        // An entry with no `out` expects a null (or absent) result.
+        if (flags.null_ and isnone(jget(entry, "out"))) {
+            entry = try jset(alloc, entry, "out", jstr(NULLMARK));
+        }
+
+        var testpack = usepack;
+        if (try self.resolvetestpack(entry, &testpack)) |failure| {
+            return failure;
+        }
+
+        if (.plain == testpack.subject and null == testpack.subject.plain) {
+            return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
+        }
+
+        const wait: Maybe = if (self.waiton and jhas(entry, "wait"))
+            jget(entry, "wait")
+        else if (asstr(jget(entry, "id"))) |id|
+            jget(flags.wait, id)
+        else
+            null;
+
+        const failure = try self.runentry(label, index, &entry, flags, testpack);
+
+        const held = wait orelse return failure;
+        if (null != failure) {
+            return null;
+        }
+
+        const reason = try std.fmt.allocPrint(alloc, "stale wait: {s}", .{
+            try stringify(alloc, jget(held, "cause")),
+        });
+        return try self.fail(label, index, entry, reason, null, null);
+    }
+
+    // `entry.client` overrides the default subject, and `entry.fn`, where the
+    // spec requires it, overrides both through the entry's provider.
+    fn resolvetestpack(self: *const RunPack, entry: Json, testpack: *TestPack) !?[]const u8 {
+        const alloc = self.alloc;
+
+        if (.plain == testpack.subject) if (asstr(jget(entry, "client"))) |clientname| {
+            var found: ?*const Provider = null;
+            for (self.clientnames, 0..) |candidate, at| {
+                if (std.mem.eql(u8, candidate, clientname)) {
+                    found = self.clients[at];
+                }
+            }
+
+            const client = found orelse
+                return try std.fmt.allocPrint(alloc, "omni: unknown client: {s}", .{clientname});
+
+            testpack.client = client;
+            if (client.subject) |resolve| {
+                if (resolve(client, self.name)) |clientsubject| {
+                    testpack.subject = .{ .plain = clientsubject };
+                }
+            }
+        };
+
+        if (self.fnon) if (asstr(jget(entry, "fn"))) |fnname| {
+            const fnsubject = if (testpack.client.subject) |resolve| resolve(testpack.client, fnname) else null;
+            testpack.subject = .{
+                .plain = fnsubject orelse
+                    return try std.fmt.allocPrint(alloc, "omni: unknown fn: {s}", .{fnname}),
+            };
+        };
+
+        return null;
+    }
+
+    // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+    // entry with both passes the context first, then each argument.
+    fn resolveargs(self: *const RunPack, entry: *Json) ![]const Json {
+        const alloc = self.alloc;
+        var args: std.ArrayList(Json) = .empty;
+        const hasctx = jhas(entry.*, "ctx");
+        const hasargs = jhas(entry.*, "args");
+
+        if (self.ctxargs and hasctx and hasargs) {
+            try args.append(alloc, jget(entry.*, "ctx").?);
+            try appendargs(alloc, &args, jget(entry.*, "args").?);
+        } else if (hasctx) {
+            try args.append(alloc, jget(entry.*, "ctx").?);
+        } else if (hasargs) {
+            try appendargs(alloc, &args, jget(entry.*, "args").?);
+        } else {
+            try args.append(alloc, try clone(alloc, jget(entry.*, "in")));
+        }
+
+        if ((hasctx or hasargs) and 0 < args.items.len and .object == args.items[0]) {
+            var first = args.items[0];
+            if (self.client.contextify) |contextify| {
+                first = contextify(self.client, first);
+            }
+            // Canonical attaches the resolved client onto ctx/args[0]
+            // (testpack.client) so a context subject can tell it was
+            // invoked through one. std.json.Value has no case for a
+            // live Provider reference, and the resolved client is
+            // never absent (it defaults to the root provider), so a
+            // boolean marker carries the same observable meaning the
+            // corpus checks for - presence, never identity.
+            first = try jset(alloc, first, "client", jbool(true));
+            args.items[0] = first;
+            entry.* = try jset(alloc, entry.*, "ctx", first);
+        }
+
+        return args.items;
+    }
+
+    fn runentry(
+        self: *const RunPack,
+        label: []const u8,
+        index: usize,
+        entry: *Json,
+        flags: Flags,
+        testpack: TestPack,
+    ) !?[]const u8 {
+        const args = try self.resolveargs(entry);
+
+        // An args-subject returns its arguments alongside the result, so
+        // `match.args` sees what the subject actually did with them.
+        const outcome: SubjectArgsResult = switch (testpack.subject) {
+            .args => |call| call.call(call, args),
+            .plain => |call| switch (call.?.call(call.?, args)) {
+                .ok => |value| SubjectArgsResult{ .ok = .{ .args = args, .res = value } },
+                .err => |message| SubjectArgsResult{ .err = message },
+            },
+        };
+
+        switch (outcome) {
+            .err => |message| return self.handleerror(label, index, entry.*, message),
+            .ok => |call| {
+                const res = try fixjson(self.alloc, call.res, flags.null_);
+                entry.* = try jset(self.alloc, entry.*, "res", res);
+                return self.checkresult(label, index, entry.*, call.args, res);
+            },
+        }
+    }
+
+    // The runner-side waits must each name an entry of the set, so a
+    // declaration cannot outlive the entry it held.
+    fn resolvewaits(self: *const RunPack, label: []const u8, waits: Maybe, origset: Json) !?[]const u8 {
+        const alloc = self.alloc;
+
+        if (isnone(waits)) {
+            return null;
+        }
+        if (!ismap(waits)) {
+            return try std.fmt.allocPrint(alloc, "omni: {s}: wait flag is not a map", .{label});
+        }
+
+        var it = waits.?.object.iterator();
+        while (it.next()) |field| {
+            const id = field.key_ptr.*;
+
+            var found = false;
+            for (origset.array.items) |entry| {
+                if (asstr(jget(entry, "id"))) |entryid| {
+                    if (std.mem.eql(u8, entryid, id)) {
+                        found = true;
+                        break;
                     }
-                },
+                }
+            }
+
+            if (!found) {
+                return try std.fmt.allocPrint(alloc, "omni: {s}: wait names no entry: {s}", .{ label, id });
+            }
+            if (!iswait(field.value_ptr.*)) {
+                return try std.fmt.allocPrint(alloc, "omni: {s}: wait for {s} has no cause", .{ label, id });
             }
         }
 
@@ -862,22 +1040,36 @@ pub const RunPack = struct {
 
         var fields = entry.object.iterator();
         while (fields.next()) |field| {
-            if (!isentryfield(field.key_ptr.*)) {
-                const reason = try std.fmt.allocPrint(
-                    self.alloc,
-                    "unknown entry field: {s}",
-                    .{field.key_ptr.*},
-                );
+            const key = field.key_ptr.*;
+            if (!isentryfield(key) and !iscapfield(key, self.requires)) {
+                const reason = try std.fmt.allocPrint(self.alloc, "unknown entry field: {s}", .{key});
                 return try self.fail(label, index, entry, reason, null, null);
             }
         }
 
-        var argsources: usize = 0;
-        for ([_][]const u8{ "in", "args", "ctx" }) |key| {
-            if (jhas(entry, key)) argsources += 1;
+        if (self.ctxargs) {
+            if (jhas(entry, "in") and (jhas(entry, "args") or jhas(entry, "ctx"))) {
+                return try self.fail(label, index, entry, "entry has in beside args or ctx", null, null);
+            }
+        } else {
+            var argsources: usize = 0;
+            for ([_][]const u8{ "in", "args", "ctx" }) |key| {
+                if (jhas(entry, key)) argsources += 1;
+            }
+            if (1 < argsources) {
+                return try self.fail(label, index, entry, "entry has more than one of in, args, ctx", null, null);
+            }
         }
-        if (1 < argsources) {
-            return try self.fail(label, index, entry, "entry has more than one of in, args, ctx", null, null);
+
+        if (jhas(entry, "fn")) {
+            const fnname = asstr(jget(entry, "fn")) orelse "";
+            if (0 == fnname.len) {
+                return try self.fail(label, index, entry, "entry fn is not a name", null, null);
+            }
+        }
+
+        if (jhas(entry, "wait") and !iswait(jget(entry, "wait"))) {
+            return try self.fail(label, index, entry, "entry wait has no cause", null, null);
         }
 
         if (!isnone(jget(entry, "err")) and jhas(entry, "out")) {
@@ -1235,6 +1427,7 @@ pub const Runner = struct {
     alltests: Json,
     provider: *const Provider,
     specversion: i64,
+    requires: []const []const u8 = &.{},
 
     /// Resolve one named section of the spec.
     pub fn runner(self: *const Runner, name: []const u8, store: Maybe) !RunPack {
@@ -1277,6 +1470,10 @@ pub const Runner = struct {
             .clientnames = clientnames.items,
             .clients = clients.items,
             .specversion = self.specversion,
+            .requires = self.requires,
+            .ctxargs = includes(self.requires, "ctxargs"),
+            .fnon = includes(self.requires, "fn"),
+            .waiton = includes(self.requires, "wait"),
         };
     }
 };
@@ -1291,21 +1488,18 @@ pub fn makeRunner(
     provider: *const Provider,
 ) !Runner {
     const alltests = try loadspec(alloc, io, path);
-    return .{
-        .alloc = alloc,
-        .alltests = alltests,
-        .provider = provider,
-        .specversion = try resolveversion(alltests),
-    };
+    return makeRunnerSpec(alloc, alltests, provider);
 }
 
 /// Make a runner for an in-memory spec and a provider. Same fail-fast
 /// version resolution as makeRunner.
 pub fn makeRunnerSpec(alloc: std.mem.Allocator, spec: Json, provider: *const Provider) !Runner {
+    const specversion = try resolveversion(spec);
     return .{
         .alloc = alloc,
         .alltests = spec,
         .provider = provider,
-        .specversion = try resolveversion(spec),
+        .specversion = specversion,
+        .requires = try resolverequires(alloc, spec),
     };
 }

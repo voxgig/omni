@@ -17,6 +17,9 @@ struct omni_runner {
   omni_json *alltests;
   omni_provider *provider;
   int specversion;
+  int ctxargs;
+  int fnon;
+  int waiton;
 };
 
 struct omni_runpack {
@@ -26,6 +29,9 @@ struct omni_runpack {
   omni_provider *provider;
   omni_subject *subject;
   int specversion;
+  int ctxargs;
+  int fnon;
+  int waiton;
 
   char **clientnames;
   omni_provider **clients;
@@ -36,6 +42,8 @@ omni_flags omni_flags_default(void) {
   omni_flags flags;
   flags.null = 1;
   flags.name = NULL;
+  flags.all = 0;
+  flags.wait = NULL;
   return flags;
 }
 
@@ -43,6 +51,8 @@ omni_flags omni_flags_nonull(void) {
   omni_flags flags;
   flags.null = 0;
   flags.name = NULL;
+  flags.all = 0;
+  flags.wait = NULL;
   return flags;
 }
 
@@ -135,7 +145,7 @@ static char *omni_fail(omni_pool *pool, omni_flags flags, size_t index, const om
 
 /* ---- format version (DOCS.md 2.7) ----------------------------------- */
 
-const char *const OMNI_CAPABILITIES[] = {NULL};
+const char *const OMNI_CAPABILITIES[] = {"ctxargs", "fn", "wait", NULL};
 
 static int omni_capability_known(const char *cap) {
   size_t index;
@@ -208,6 +218,29 @@ static int omni_resolveversion(omni_pool *pool, const omni_json *alltests, char 
   return (int)rawversion;
 }
 
+/* Does the spec require this capability? omni_resolveversion has already
+ * checked every required one against OMNI_CAPABILITIES. */
+static int omni_requires(const omni_json *alltests, const char *cap) {
+  omni_json *requires = omni_map_get(omni_map_get(alltests, "OMNI"), "requires");
+  size_t index;
+
+  if (!omni_islist(requires)) {
+    return 0;
+  }
+  for (index = 0; index < requires->listlen; index++) {
+    const char *capstr = omni_strval(requires->list[index]);
+    if (NULL != capstr && 0 == strcmp(capstr, cap)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int omni_iswait(const omni_json *wait) {
+  const char *cause = omni_strval(omni_map_get(wait, "cause"));
+  return omni_ismap(wait) && NULL != cause && '\0' != cause[0];
+}
+
 /* The complete set of fields an entry may carry. Under version 1 anything
  * else is an error: an unrecognised key is almost always a typo'd
  * assertion, and a typo'd assertion is a test that silently stopped
@@ -228,12 +261,13 @@ static int omni_entryfield_known(const char *key) {
 /* Strict entry validation, applied when the spec declares version 1 or
  * later. The lenient format converts each of these mistakes into a
  * silent pass or a dead field; here they fail with the entry named. */
-static int omni_checkentry(omni_pool *pool, omni_flags flags, size_t index, const omni_json *entry,
-                           char **errout) {
+static int omni_checkentry(omni_pool *pool, const omni_runpack *pack, omni_flags flags,
+                           size_t index, const omni_json *entry, char **errout) {
   size_t at;
   int argsources = 0;
   omni_json *entryerr;
   omni_json *entryid;
+  omni_json *fn;
 
   if (!omni_ismap(entry)) {
     *errout = omni_fail(pool, flags, index, entry, "entry is not a map", NULL, NULL);
@@ -241,26 +275,46 @@ static int omni_checkentry(omni_pool *pool, omni_flags flags, size_t index, cons
   }
 
   for (at = 0; at < entry->maplen; at++) {
-    if (!omni_entryfield_known(entry->keys[at])) {
-      *errout = omni_fail(
-          pool, flags, index, entry,
-          omni_join(pool, "unknown entry field: ", entry->keys[at], NULL, NULL), NULL, NULL);
+    const char *key = entry->keys[at];
+    int capfield = (pack->fnon && 0 == strcmp(key, "fn")) || (pack->waiton && 0 == strcmp(key, "wait"));
+
+    if (!omni_entryfield_known(key) && !capfield) {
+      *errout = omni_fail(pool, flags, index, entry,
+                          omni_join(pool, "unknown entry field: ", key, NULL, NULL), NULL, NULL);
       return 1;
     }
   }
 
-  if (omni_map_has(entry, "in")) {
-    argsources++;
+  if (pack->ctxargs) {
+    if (omni_map_has(entry, "in") && (omni_map_has(entry, "args") || omni_map_has(entry, "ctx"))) {
+      *errout = omni_fail(pool, flags, index, entry, "entry has in beside args or ctx", NULL, NULL);
+      return 1;
+    }
+  } else {
+    if (omni_map_has(entry, "in")) {
+      argsources++;
+    }
+    if (omni_map_has(entry, "args")) {
+      argsources++;
+    }
+    if (omni_map_has(entry, "ctx")) {
+      argsources++;
+    }
+    if (1 < argsources) {
+      *errout = omni_fail(pool, flags, index, entry, "entry has more than one of in, args, ctx",
+                          NULL, NULL);
+      return 1;
+    }
   }
-  if (omni_map_has(entry, "args")) {
-    argsources++;
+
+  fn = omni_map_get(entry, "fn");
+  if (omni_map_has(entry, "fn") && (!omni_isstr(fn) || '\0' == omni_strval(fn)[0])) {
+    *errout = omni_fail(pool, flags, index, entry, "entry fn is not a name", NULL, NULL);
+    return 1;
   }
-  if (omni_map_has(entry, "ctx")) {
-    argsources++;
-  }
-  if (1 < argsources) {
-    *errout = omni_fail(pool, flags, index, entry, "entry has more than one of in, args, ctx",
-                        NULL, NULL);
+
+  if (omni_map_has(entry, "wait") && !omni_iswait(omni_map_get(entry, "wait"))) {
+    *errout = omni_fail(pool, flags, index, entry, "entry wait has no cause", NULL, NULL);
     return 1;
   }
 
@@ -289,8 +343,8 @@ static int omni_checkentry(omni_pool *pool, omni_flags flags, size_t index, cons
  * validation entirely. A malformed spec is a spec error, not a test
  * result, so it is checked in full before any subject runs. Absorbs the
  * empty-set check too, since that also belongs to the authored group. */
-static int omni_checkset(omni_pool *pool, omni_flags flags, const omni_json *testspec,
-                         omni_json *normalset, char **errout) {
+static int omni_checkset(omni_pool *pool, const omni_runpack *pack, omni_flags flags,
+                         const omni_json *testspec, omni_json *normalset, char **errout) {
   omni_json *origsetraw = omni_map_get(testspec, "set");
   omni_json *origset = omni_islist(origsetraw) ? origsetraw : normalset;
   omni_json *emptyflag = omni_map_get(testspec, "empty");
@@ -303,7 +357,7 @@ static int omni_checkset(omni_pool *pool, omni_flags flags, const omni_json *tes
   }
 
   for (index = 0; index < origset->listlen; index++) {
-    if (0 != omni_checkentry(pool, flags, index, origset->list[index], errout)) {
+    if (0 != omni_checkentry(pool, pack, flags, index, origset->list[index], errout)) {
       return 1;
     }
   }
@@ -748,6 +802,9 @@ omni_runner *omni_make_runner(omni_pool *pool, const char *path, omni_json *spec
   runner->alltests = alltests;
   runner->provider = provider;
   runner->specversion = specversion;
+  runner->ctxargs = omni_requires(alltests, "ctxargs");
+  runner->fnon = omni_requires(alltests, "fn");
+  runner->waiton = omni_requires(alltests, "wait");
 
   return runner;
 }
@@ -770,6 +827,9 @@ omni_runpack *omni_runner_run(omni_runner *runner, const char *name, omni_json *
   pack->provider = runner->provider;
   pack->subject = omni_resolvesubject(name, runner->provider);
   pack->specversion = runner->specversion;
+  pack->ctxargs = runner->ctxargs;
+  pack->fnon = runner->fnon;
+  pack->waiton = runner->waiton;
 
   /* Build the named clients declared by the spec's DEF.client block. A
    * spec may define clients that a given test run never references. */
@@ -809,11 +869,200 @@ int omni_runset(omni_runpack *pack, omni_json *testspec, omni_subject *subject, 
   return omni_runsetflags(pack, testspec, omni_flags_default(), subject, errout);
 }
 
+typedef struct {
+  omni_subject *subject;
+  omni_provider *client;
+} omni_entrycall;
+
+/* Resolve one entry's subject and the provider it runs through. A failure
+ * here is a spec error, never one a wait holds. Returns 0, or 1 with
+ * *errout set. */
+static int omni_prepareentry(omni_runpack *pack, omni_flags flags, omni_json *entry,
+                             omni_subject *usesubject, omni_entrycall *call, char **errout) {
+  omni_pool *pool = pack->pool;
+  omni_subject *entrysubject = usesubject;
+  omni_provider *entryprovider = pack->provider;
+  omni_json *clientname;
+  omni_json *fn;
+  size_t at;
+
+  /* An entry with no `out` expects a null (or absent) result. */
+  if (flags.null && omni_isnone(omni_map_get(entry, "out"))) {
+    omni_map_set(entry, "out", omni_str(pool, OMNI_NULLMARK));
+  }
+
+  clientname = omni_map_get(entry, "client");
+  if (omni_isstr(clientname)) {
+    omni_provider *client = NULL;
+    for (at = 0; at < pack->nclients; at++) {
+      if (0 == strcmp(pack->clientnames[at], omni_strval(clientname))) {
+        client = pack->clients[at];
+        break;
+      }
+    }
+
+    if (NULL == client) {
+      *errout = omni_join(pool, "omni: unknown client: ", omni_strval(clientname), NULL, NULL);
+      return 1;
+    }
+
+    entryprovider = client;
+    {
+      omni_subject *clientsubject = omni_resolvesubject(pack->name, client);
+      if (NULL != clientsubject) {
+        entrysubject = clientsubject;
+      }
+    }
+  }
+
+  fn = omni_map_get(entry, "fn");
+  if (pack->fnon && omni_isstr(fn)) {
+    omni_subject *fnsubject = omni_resolvesubject(omni_strval(fn), entryprovider);
+    if (NULL == fnsubject) {
+      *errout = omni_join(pool, "omni: unknown fn: ", omni_strval(fn), NULL, NULL);
+      return 1;
+    }
+    entrysubject = fnsubject;
+  }
+
+  if (NULL == entrysubject) {
+    *errout = omni_join(pool, "omni: no test subject for: ", flags.name, NULL, NULL);
+    return 1;
+  }
+
+  call->subject = entrysubject;
+  call->client = entryprovider;
+  return 0;
+}
+
+/* Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+ * entry with both passes the context first, then each argument. */
+static omni_json *omni_resolveargs(omni_runpack *pack, omni_json *entry, omni_entrycall *call) {
+  omni_pool *pool = pack->pool;
+  omni_json *args = omni_list(pool);
+  omni_json *rawargs = omni_map_get(entry, "args");
+  size_t at;
+
+  if (pack->ctxargs && omni_map_has(entry, "ctx") && omni_map_has(entry, "args")) {
+    omni_list_push(args, omni_map_get(entry, "ctx"));
+    if (omni_islist(rawargs)) {
+      for (at = 0; at < rawargs->listlen; at++) {
+        omni_list_push(args, rawargs->list[at]);
+      }
+    } else {
+      omni_list_push(args, rawargs);
+    }
+  } else if (omni_map_has(entry, "ctx")) {
+    omni_list_push(args, omni_map_get(entry, "ctx"));
+  } else if (omni_islist(rawargs)) {
+    for (at = 0; at < rawargs->listlen; at++) {
+      omni_list_push(args, rawargs->list[at]);
+    }
+  } else {
+    omni_list_push(args, omni_clone(pool, omni_map_get(entry, "in")));
+  }
+
+  if ((omni_map_has(entry, "ctx") || omni_map_has(entry, "args")) && 0 < args->listlen &&
+      omni_ismap(args->list[0])) {
+    omni_json *first = omni_clone(pool, args->list[0]);
+    if (NULL != pack->provider && NULL != pack->provider->contextify) {
+      first = pack->provider->contextify(pack->provider, first);
+    }
+    args->list[0] = first;
+    omni_map_set(entry, "ctx", first);
+
+    /* So a subject can reach the client it was invoked through. */
+    if (omni_ismap(first)) {
+      first->client = call->client;
+    }
+  }
+
+  return args;
+}
+
+/* Build one entry's arguments, call its subject and check the result.
+ * Returns 0 on a pass, or 1 with *errout set. */
+static int omni_callentry(omni_runpack *pack, omni_flags flags, size_t index, omni_json *entry,
+                          omni_entrycall *call, char **errout) {
+  omni_pool *pool = pack->pool;
+  omni_json *args = omni_resolveargs(pack, entry, call);
+  omni_result result = call->subject->call(call->subject, args->list, args->listlen);
+
+  if (NULL != result.err) {
+    return omni_handleerror(pool, flags, index, entry, result.err, pack->provider, errout);
+  }
+
+  {
+    omni_json *res = omni_fixjson(pool, result.val, flags.null);
+    omni_map_set(entry, "res", res);
+    return omni_checkresult(pool, flags, index, entry, args, res, errout);
+  }
+}
+
+/* The runner-side waits must each name an entry of the set, so a
+ * declaration cannot outlive the entry it held. */
+static int omni_checkwaits(omni_pool *pool, omni_flags flags, omni_json *origset, char **errout) {
+  size_t at;
+  size_t index;
+
+  if (NULL == flags.wait) {
+    return 0;
+  }
+  if (!omni_ismap(flags.wait)) {
+    *errout = omni_join(pool, "omni: ", flags.name, ": wait flag is not a map", NULL);
+    return 1;
+  }
+
+  for (at = 0; at < flags.wait->maplen; at++) {
+    const char *id = flags.wait->keys[at];
+    int found = 0;
+
+    for (index = 0; index < origset->listlen; index++) {
+      const char *entryid = omni_strval(omni_map_get(origset->list[index], "id"));
+      if (NULL != entryid && 0 == strcmp(entryid, id)) {
+        found = 1;
+        break;
+      }
+    }
+
+    if (!found) {
+      *errout = omni_join(pool, "omni: ", flags.name, ": wait names no entry: ", id);
+      return 1;
+    }
+    if (!omni_iswait(flags.wait->vals[at])) {
+      *errout = omni_join(pool, omni_join(pool, "omni: ", flags.name, ": wait for ", id),
+                          " has no cause", NULL, NULL);
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+/* The wait holding an entry: its own, under `wait`, or the flag's for its
+ * id. NULL when the entry waits on nothing. */
+static omni_json *omni_entrywait(omni_runpack *pack, omni_flags flags, omni_json *entry) {
+  const char *id;
+
+  if (pack->waiton && omni_map_has(entry, "wait")) {
+    return omni_map_get(entry, "wait");
+  }
+
+  id = omni_strval(omni_map_get(entry, "id"));
+  if (NULL != flags.wait && NULL != id && omni_map_has(flags.wait, id)) {
+    return omni_map_get(flags.wait, id);
+  }
+
+  return NULL;
+}
+
 int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
                      omni_subject *subject, char **errout) {
   omni_pool *pool = pack->pool;
   omni_json *testspecmap;
   omni_json *testset;
+  omni_json *origset;
+  omni_json *failures;
   omni_subject *usesubject = NULL == subject ? pack->subject : subject;
   size_t index;
 
@@ -825,7 +1074,7 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
     flags.name = ('\0' == pack->name[0]) ? "set" : pack->name;
   }
 
-  if (NULL == usesubject) {
+  if (NULL == usesubject && !pack->fnon) {
     *errout = omni_join(pool, "omni: no test subject for: ", flags.name, NULL, NULL);
     return 1;
   }
@@ -843,94 +1092,64 @@ int omni_runsetflags(omni_runpack *pack, omni_json *testspec, omni_flags flags,
    * empty-set check: a vacuously green group proves nothing, so version
    * 1 makes an empty set an error unless the group is marked empty. */
   if (1 <= pack->specversion) {
-    if (0 != omni_checkset(pool, flags, testspec, testset, errout)) {
+    if (0 != omni_checkset(pool, pack, flags, testspec, testset, errout)) {
       return 1;
     }
   }
 
+  origset = omni_map_get(testspec, "set");
+  if (!omni_islist(origset)) {
+    origset = testset;
+  }
+  if (0 != omni_checkwaits(pool, flags, origset, errout)) {
+    return 1;
+  }
+
+  failures = omni_list(pool);
+
   for (index = 0; index < testset->listlen; index++) {
     omni_json *entry = testset->list[index];
-    omni_json *args = omni_list(pool);
-    omni_subject *entrysubject = usesubject;
-    omni_provider *entryprovider = pack->provider;
-    omni_json *clientname;
-    omni_json *rawargs;
-    omni_result result;
-    size_t at;
+    omni_entrycall call;
+    char *msg = NULL;
+    int rc = omni_prepareentry(pack, flags, entry, usesubject, &call, &msg);
 
-    /* An entry with no `out` expects a null (or absent) result. */
-    if (flags.null && omni_isnone(omni_map_get(entry, "out"))) {
-      omni_map_set(entry, "out", omni_str(pool, OMNI_NULLMARK));
-    }
+    if (0 == rc) {
+      omni_json *wait = omni_entrywait(pack, flags, entry);
 
-    clientname = omni_map_get(entry, "client");
-    if (omni_isstr(clientname)) {
-      omni_provider *client = NULL;
-      for (at = 0; at < pack->nclients; at++) {
-        if (0 == strcmp(pack->clientnames[at], omni_strval(clientname))) {
-          client = pack->clients[at];
-          break;
-        }
-      }
-
-      if (NULL == client) {
-        *errout = omni_join(pool, "omni: unknown client: ", omni_strval(clientname), NULL, NULL);
-        return 1;
-      }
-
-      entryprovider = client;
-      {
-        omni_subject *clientsubject = omni_resolvesubject(pack->name, client);
-        if (NULL != clientsubject) {
-          entrysubject = clientsubject;
+      if (NULL == wait) {
+        rc = omni_callentry(pack, flags, index, entry, &call, &msg);
+      } else {
+        char *heldmsg = NULL;
+        if (0 == omni_callentry(pack, flags, index, entry, &call, &heldmsg)) {
+          rc = 1;
+          msg = omni_fail(pool, flags, index, entry,
+                          omni_join(pool, "stale wait: ", omni_strval(omni_map_get(wait, "cause")),
+                                    NULL, NULL),
+                          NULL, NULL);
         }
       }
     }
 
-    /* Build the argument list: `ctx`, `args`, or `in`. */
-    rawargs = omni_map_get(entry, "args");
-    if (omni_map_has(entry, "ctx")) {
-      omni_list_push(args, omni_map_get(entry, "ctx"));
-    } else if (omni_islist(rawargs)) {
-      for (at = 0; at < rawargs->listlen; at++) {
-        omni_list_push(args, rawargs->list[at]);
+    if (0 != rc) {
+      if (flags.all) {
+        omni_list_push(failures, omni_str(pool, msg));
+        continue;
       }
-    } else {
-      omni_list_push(args, omni_clone(pool, omni_map_get(entry, "in")));
+      *errout = msg;
+      return 1;
     }
+  }
 
-    if ((omni_map_has(entry, "ctx") || omni_map_has(entry, "args")) && 0 < args->listlen &&
-        omni_ismap(args->list[0])) {
-      omni_json *first = omni_clone(pool, args->list[0]);
-      if (NULL != pack->provider && NULL != pack->provider->contextify) {
-        first = pack->provider->contextify(pack->provider, first);
-      }
-      args->list[0] = first;
-      omni_map_set(entry, "ctx", first);
-
-      /* So a subject can reach the client it was invoked through. */
-      if (omni_ismap(first)) {
-        first->client = entryprovider;
-      }
+  if (0 < failures->listlen) {
+    char *msg = omni_join(pool, "omni: ", flags.name, ": ",
+                          omni_numstr(pool, (double)failures->listlen));
+    msg = omni_join(pool, msg, " of ", omni_numstr(pool, (double)testset->listlen),
+                    " entries failed");
+    for (index = 0; index < failures->listlen; index++) {
+      msg = omni_join(pool, msg, "\n", omni_strval(failures->list[index]), NULL);
     }
-
-    result = entrysubject->call(entrysubject, args->list, args->listlen);
-
-    if (NULL != result.err) {
-      if (0 != omni_handleerror(pool, flags, index, entry, result.err, pack->provider, errout)) {
-        return 1;
-      }
-      continue;
-    }
-
-    {
-      omni_json *res = omni_fixjson(pool, result.val, flags.null);
-      omni_map_set(entry, "res", res);
-
-      if (0 != omni_checkresult(pool, flags, index, entry, args, res, errout)) {
-        return 1;
-      }
-    }
+    *errout = msg;
+    return 1;
   }
 
   return 0;

@@ -16,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -52,8 +53,10 @@ class OmniError : public std::runtime_error {
 
 // Run-time options for a set of test entries.
 struct Flags {
-  bool null = true;         // Convert JSON nulls to NULLMARK.
-  std::string name;         // Label used in failure messages.
+  bool null = true;            // Convert JSON nulls to NULLMARK.
+  std::string name;            // Label used in failure messages.
+  bool all = false;            // Run every entry, then fail once listing each failure.
+  Json wait = Json::absent();  // Entry id to {cause}, holding those entries.
 
   static Flags nonull() {
     Flags flags;
@@ -90,8 +93,8 @@ inline const int SPECVERSION = 1;
 // Capability strings this runner supports beyond the version baseline. A
 // spec's OMNI.requires list is checked against this: an unknown capability
 // refuses the spec loudly at load time, instead of a lagging port silently
-// mis-running it. (Empty today; future format features mint a string here.)
-inline const std::vector<std::string> CAPABILITIES = {};
+// mis-running it. A spec turns each on only by requiring it.
+inline const std::vector<std::string> CAPABILITIES = {"ctxargs", "fn", "wait"};
 
 // The complete set of fields an entry may carry. Under version 1 anything
 // else is an error: an unrecognised key is almost always a typo'd
@@ -99,6 +102,9 @@ inline const std::vector<std::string> CAPABILITIES = {};
 // testing.
 inline const std::vector<std::string> ENTRYFIELDS = {
     "in", "args", "ctx", "out", "err", "match", "client", "id", "doc"};
+
+// Entry fields a capability adds, permitted only in a spec that requires it.
+inline const std::map<std::string, std::string> CAPFIELDS = {{"fn", "fn"}, {"wait", "wait"}};
 
 // Read the spec's format version from its optional top-level OMNI block,
 // and refuse a spec this runner cannot faithfully run: a version newer
@@ -134,6 +140,21 @@ inline int resolveversion(const Json& alltests) {
   }
 
   return static_cast<int>(version.numval);
+}
+
+// The capabilities a spec requires, which resolveversion has already
+// checked against CAPABILITIES.
+inline std::vector<std::string> resolverequires(const Json& alltests) {
+  Json reqlist = alltests.ismap() ? alltests.get("OMNI").get("requires") : Json::absent();
+  std::vector<std::string> required;
+  if (reqlist.islist()) {
+    for (const auto& cap : reqlist.listval) {
+      if (cap.isstr()) {
+        required.push_back(cap.strval);
+      }
+    }
+  }
+  return required;
 }
 
 // ---- internals -------------------------------------------------------
@@ -216,28 +237,56 @@ inline OmniError fail(const Flags& flags, size_t index, const Json& entry,
   return OmniError(message);
 }
 
+inline bool iswait(const Json& wait) {
+  Json cause = wait.get("cause");
+  return wait.ismap() && cause.isstr() && !cause.strval.empty();
+}
+
 // Strict entry validation, applied when the spec declares version 1 or
 // later. The lenient format converts each of these mistakes into a silent
 // pass or a dead field; here they fail with the entry named.
-inline void checkentry(const Flags& flags, size_t index, const Json& entry) {
+inline void checkentry(const Flags& flags, size_t index, const Json& entry,
+                       const std::vector<std::string>& required = {}) {
+  auto requiring = [&required](const std::string& cap) {
+    return required.end() != std::find(required.begin(), required.end(), cap);
+  };
+
   if (!entry.ismap()) {
     throw fail(flags, index, entry, "entry is not a map");
   }
 
   for (const auto& field : entry.mapval) {
-    if (ENTRYFIELDS.end() == std::find(ENTRYFIELDS.begin(), ENTRYFIELDS.end(), field.first)) {
+    auto capfield = CAPFIELDS.find(field.first);
+    bool capped = CAPFIELDS.end() != capfield && requiring(capfield->second);
+    if (ENTRYFIELDS.end() == std::find(ENTRYFIELDS.begin(), ENTRYFIELDS.end(), field.first) &&
+        !capped) {
       throw fail(flags, index, entry, "unknown entry field: " + field.first);
     }
   }
 
-  int argsources = 0;
-  for (const char* key : {"in", "args", "ctx"}) {
-    if (entry.has(key)) {
-      argsources++;
+  if (requiring("ctxargs")) {
+    if (entry.has("in") && (entry.has("args") || entry.has("ctx"))) {
+      throw fail(flags, index, entry, "entry has in beside args or ctx");
+    }
+  } else {
+    int argsources = 0;
+    for (const char* key : {"in", "args", "ctx"}) {
+      if (entry.has(key)) {
+        argsources++;
+      }
+    }
+    if (1 < argsources) {
+      throw fail(flags, index, entry, "entry has more than one of in, args, ctx");
     }
   }
-  if (1 < argsources) {
-    throw fail(flags, index, entry, "entry has more than one of in, args, ctx");
+
+  Json fn = entry.get("fn");
+  if (!fn.isabsent() && (!fn.isstr() || fn.strval.empty())) {
+    throw fail(flags, index, entry, "entry fn is not a name");
+  }
+
+  if (entry.has("wait") && !iswait(entry.get("wait"))) {
+    throw fail(flags, index, entry, "entry wait has no cause");
   }
 
   if (!entry.get("err").isnone() && entry.has("out")) {
@@ -257,7 +306,8 @@ inline void checkentry(const Flags& flags, size_t index, const Json& entry) {
 // id: null) into a sentinel string and hide it from validation. A
 // malformed spec is a spec error, not a test result, so it fails before
 // any subject runs. Absorbs the empty-set check too.
-inline void checkset(const Flags& flags, const Json& testspec, const Json& normalset) {
+inline void checkset(const Flags& flags, const Json& testspec, const Json& normalset,
+                     const std::vector<std::string>& required = {}) {
   Json rawset = testspec.ismap() ? testspec.get("set") : Json::absent();
   Json origset = rawset.islist() ? rawset : normalset;
 
@@ -269,7 +319,7 @@ inline void checkset(const Flags& flags, const Json& testspec, const Json& norma
   }
 
   for (size_t index = 0; index < origset.listval.size(); index++) {
-    checkentry(flags, index, origset.listval[index]);
+    checkentry(flags, index, origset.listval[index], required);
   }
 }
 
@@ -278,6 +328,42 @@ inline void resolveentry(Json& entry, const Flags& flags) {
   if (flags.null && entry.get("out").isnone()) {
     entry.set("out", Json::str(NULLMARK));
   }
+}
+
+inline Subject resolvesubject(const std::string& name, const std::shared_ptr<Provider>& provider) {
+  if (!provider || !provider->subject) {
+    return nullptr;
+  }
+  return provider->subject(name);
+}
+
+// The runner-side waits: entry id to its declaration. Each must name an
+// entry of the set, so a declaration cannot outlive the entry it held.
+inline Json resolvewaits(const Flags& flags, const Json& origset) {
+  const Json& waits = flags.wait;
+  if (waits.isnone()) {
+    return Json::map();
+  }
+  if (!waits.ismap()) {
+    throw OmniError("omni: " + flags.name + ": wait flag is not a map");
+  }
+
+  for (const auto& wait : waits.mapval) {
+    const std::string& id = wait.first;
+    bool named = std::any_of(origset.listval.begin(), origset.listval.end(),
+                             [&id](const Json& entry) {
+                               Json entryid = entry.get("id");
+                               return entryid.isstr() && id == entryid.strval;
+                             });
+    if (!named) {
+      throw OmniError("omni: " + flags.name + ": wait names no entry: " + id);
+    }
+    if (!iswait(wait.second)) {
+      throw OmniError("omni: " + flags.name + ": wait for " + id + " has no cause");
+    }
+  }
+
+  return waits;
 }
 
 // Match one leaf: /regex/ or case-insensitive substring for strings.
@@ -424,9 +510,11 @@ class RunPack {
 
   RunPack(const Json& spec, const Subject& subject, const std::shared_ptr<Provider>& provider,
           const std::map<std::string, std::shared_ptr<Provider>>& clients,
-          const std::string& name, int specversion)
+          const std::string& name, int specversion,
+          const std::vector<std::string>& required = {})
       : spec(spec), subject(subject), client(provider), provider_(provider), clients_(clients),
-        name_(name), specversion_(specversion) {}
+        name_(name), specversion_(specversion), required_(required),
+        ctxargs_(requiring("ctxargs")), fnon_(requiring("fn")), waiton_(requiring("wait")) {}
 
   // A named group of the resolved spec.
   Json set(const std::string& name) const { return spec.get(name); }
@@ -459,7 +547,7 @@ class RunPack {
       flags.name = name_.empty() ? "set" : name_;
     }
 
-    if (!usesubject) {
+    if (!usesubject && !fnon_) {
       throw OmniError("omni: no test subject for: " + flags.name);
     }
 
@@ -472,46 +560,79 @@ class RunPack {
 
     // Validated against the AUTHORED (pre-fixjson) group - see checkset.
     if (1 <= specversion_) {
-      checkset(flags, testspec, testset);
+      checkset(flags, testspec, testset, required_);
     }
+
+    Json rawset = testspec.ismap() ? testspec.get("set") : Json::absent();
+    Json waits = resolvewaits(flags, rawset.islist() ? rawset : testset);
+    std::vector<std::string> failures;
 
     for (size_t index = 0; index < testset.listval.size(); index++) {
       Json entry = testset.listval[index];
 
-      resolveentry(entry, flags);
+      try {
+        TestPack testpack;
+        std::optional<std::string> prestart;
 
-      SubjectArgs entrysubject = usesubject;
-      Json clientname = entry.get("client");
-
-      if (clientname.isstr()) {
-        auto found = clients_.find(clientname.strval);
-        if (clients_.end() == found) {
-          throw OmniError("omni: unknown client: " + clientname.strval);
+        // A hook's raw error before the subject starts is still the entry's.
+        try {
+          resolveentry(entry, flags);
+          testpack = resolvetestpack(entry, usesubject);
+        } catch (const OmniError&) {
+          throw;
+        } catch (const std::exception& err) {
+          prestart = err.what();
         }
-        if (found->second->subject) {
-          Subject clientsubject = found->second->subject(name_);
-          if (clientsubject) {
-            entrysubject = [clientsubject](std::vector<Json>& args) { return clientsubject(args); };
+
+        if (!prestart && !testpack.subject) {
+          throw OmniError("omni: no test subject for: " + flags.name);
+        }
+
+        Json id = entry.get("id");
+        Json wait = Json::absent();
+        if (waiton_ && entry.has("wait")) {
+          wait = entry.get("wait");
+        } else if (id.isstr() && waits.has(id.strval)) {
+          wait = waits.get(id.strval);
+        }
+
+        auto run = [&]() {
+          if (prestart) {
+            handleerror(flags, index, entry, *prestart);
+          } else {
+            runentry(flags, index, entry, testpack, ctxargs_);
+          }
+        };
+
+        if (wait.isabsent()) {
+          run();
+        } else {
+          bool held = false;
+          try {
+            run();
+          } catch (const OmniError&) {
+            held = true;
+          }
+          if (!held) {
+            throw fail(flags, index, entry, "stale wait: " + stringify(wait.get("cause")));
           }
         }
-      }
-
-      std::vector<Json> args = resolveargs(entry);
-
-      Json res;
-      try {
-        res = entrysubject(args);
-      } catch (const OmniError&) {
+      } catch (const OmniError& err) {
+        if (flags.all) {
+          failures.push_back(err.what());
+          continue;
+        }
         throw;
-      } catch (const std::exception& err) {
-        handleerror(flags, index, entry, err.what());
-        continue;
       }
+    }
 
-      res = fixjson(res, flags.null);
-      entry.set("res", res);
-
-      checkresult(flags, index, entry, args, res);
+    if (!failures.empty()) {
+      std::string message = "omni: " + flags.name + ": " + std::to_string(failures.size()) +
+                            " of " + std::to_string(testset.listval.size()) + " entries failed";
+      for (const auto& failure : failures) {
+        message += "\n" + failure;
+      }
+      throw OmniError(message);
     }
   }
 
@@ -519,23 +640,86 @@ class RunPack {
   std::map<std::string, std::shared_ptr<Provider>> clients_;
   std::string name_;
   int specversion_ = 0;
+  std::vector<std::string> required_;
+  bool ctxargs_ = false;
+  bool fnon_ = false;
+  bool waiton_ = false;
 
-  // Build the argument list: `ctx`, `args`, or `in`.
-  std::vector<Json> resolveargs(Json& entry) const {
+  // The provider an entry resolves through, and the subject it calls.
+  struct TestPack {
+    std::shared_ptr<Provider> client;
+    SubjectArgs subject;
+  };
+
+  bool requiring(const std::string& cap) const {
+    return required_.end() != std::find(required_.begin(), required_.end(), cap);
+  }
+
+  TestPack resolvetestpack(const Json& entry, const SubjectArgs& usesubject) const {
+    TestPack testpack{provider_, usesubject};
+    Json clientname = entry.get("client");
+
+    if (clientname.isstr()) {
+      auto found = clients_.find(clientname.strval);
+      if (clients_.end() == found) {
+        throw OmniError("omni: unknown client: " + clientname.strval);
+      }
+      testpack.client = found->second;
+      Subject clientsubject = resolvesubject(name_, found->second);
+      if (clientsubject) {
+        testpack.subject = [clientsubject](std::vector<Json>& args) { return clientsubject(args); };
+      }
+    }
+
+    Json fn = entry.get("fn");
+    if (fnon_ && !fn.isnone()) {
+      Subject fnsubject = resolvesubject(stringify(fn), testpack.client);
+      if (!fnsubject) {
+        throw OmniError("omni: unknown fn: " + stringify(fn));
+      }
+      testpack.subject = [fnsubject](std::vector<Json>& args) { return fnsubject(args); };
+    }
+
+    return testpack;
+  }
+
+  void runentry(const Flags& flags, size_t index, Json& entry, const TestPack& testpack,
+                bool ctxargs) const {
+    std::vector<Json> args;
+    Json res;
+    try {
+      args = resolveargs(entry, ctxargs);
+      res = testpack.subject(args);
+    } catch (const OmniError&) {
+      throw;
+    } catch (const std::exception& err) {
+      handleerror(flags, index, entry, err.what());
+      return;
+    }
+
+    res = fixjson(res, flags.null);
+    entry.set("res", res);
+
+    checkresult(flags, index, entry, args, res);
+  }
+
+  // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+  // entry with both passes the context first, then each argument.
+  std::vector<Json> resolveargs(Json& entry, bool ctxargs) const {
     std::vector<Json> args;
 
     bool hasctx = entry.has("ctx");
     bool hasargs = entry.has("args");
+    Json rawargs = entry.get("args");
+    std::vector<Json> arglist = rawargs.islist() ? rawargs.listval : std::vector<Json>{rawargs};
 
-    if (hasctx) {
+    if (ctxargs && hasctx && hasargs) {
+      args.push_back(entry.get("ctx"));
+      args.insert(args.end(), arglist.begin(), arglist.end());
+    } else if (hasctx) {
       args.push_back(entry.get("ctx"));
     } else if (hasargs) {
-      Json rawargs = entry.get("args");
-      if (rawargs.islist()) {
-        args = rawargs.listval;
-      } else {
-        args.push_back(rawargs);
-      }
+      args = arglist;
     } else {
       args.push_back(entry.get("in"));
     }
@@ -693,6 +877,7 @@ class Runner {
   Runner(const Json& alltests, const std::shared_ptr<Provider>& provider)
       : alltests_(alltests),
         specversion_(resolveversion(alltests)),
+        required_(resolverequires(alltests)),
         provider_(provider ? provider : std::make_shared<Provider>()) {}
 
   // Resolve one named section of the spec.
@@ -722,12 +907,13 @@ class Runner {
       subject = provider_->subject(name);
     }
 
-    return RunPack(spec, subject, provider_, clients, name, specversion_);
+    return RunPack(spec, subject, provider_, clients, name, specversion_, required_);
   }
 
  private:
   Json alltests_;
   int specversion_;
+  std::vector<std::string> required_;
   std::shared_ptr<Provider> provider_;
 };
 

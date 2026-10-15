@@ -34,9 +34,9 @@ public final class Runner {
   // Capability strings this runner supports beyond the version baseline. A
   // spec's OMNI.requires list is checked against this: an unknown
   // capability refuses the spec loudly at load time, instead of a lagging
-  // port silently mis-running it. (Empty today; future format features
-  // mint a string here.)
-  public static final List<String> CAPABILITIES = Collections.emptyList();
+  // port silently mis-running it. A spec turns each on only by requiring it.
+  public static final List<String> CAPABILITIES =
+      Collections.unmodifiableList(Arrays.asList("ctxargs", "fn", "wait"));
 
   // The complete set of fields an entry may carry. Under version 1
   // anything else is an error: an unrecognised key is almost always a
@@ -45,6 +45,16 @@ public final class Runner {
   private static final List<String> ENTRYFIELDS =
       Collections.unmodifiableList(
           Arrays.asList("in", "args", "ctx", "out", "err", "match", "client", "id", "doc"));
+
+  // Entry fields a capability adds, permitted only in a spec that requires it.
+  private static final Map<String, String> CAPFIELDS = capfields();
+
+  private static Map<String, String> capfields() {
+    Map<String, String> out = new LinkedHashMap<>();
+    out.put("fn", "fn");
+    out.put("wait", "wait");
+    return Collections.unmodifiableMap(out);
+  }
 
   private Runner() {}
 
@@ -111,6 +121,10 @@ public final class Runner {
     private final Provider provider;
     private final Map<String, Provider> clients;
     private final int specversion;
+    private final List<String> requires;
+    private final boolean ctxargs;
+    private final boolean fnon;
+    private final boolean waiton;
 
     RunPack(
         Object spec,
@@ -118,7 +132,8 @@ public final class Runner {
         Provider provider,
         Map<String, Provider> clients,
         String name,
-        int specversion) {
+        int specversion,
+        List<String> requires) {
       this.spec = spec;
       this.subject = subject;
       this.client = provider;
@@ -126,6 +141,10 @@ public final class Runner {
       this.clients = clients;
       this.name = name;
       this.specversion = specversion;
+      this.requires = requires;
+      this.ctxargs = requires.contains("ctxargs");
+      this.fnon = requires.contains("fn");
+      this.waiton = requires.contains("wait");
     }
 
     /** A named group of the resolved spec. */
@@ -151,7 +170,7 @@ public final class Runner {
       }
 
       Subject subject = null != testsubject ? testsubject : this.subject;
-      if (null == subject) {
+      if (null == subject && !fnon) {
         throw new OmniError("omni: no test subject for: " + flags.get("name"));
       }
 
@@ -168,51 +187,99 @@ public final class Runner {
       // vacuously green group proves nothing, so version 1 makes an empty
       // set an error unless the group is deliberately marked empty.
       if (1 <= specversion) {
-        checkset(flags, testspec, testset);
+        checkset(flags, testspec, testset, requires);
       }
+
+      List<Object> origset = testset;
+      if (Util.ismap(testspec) && Util.islist(((Map<String, Object>) testspec).get("set"))) {
+        origset = (List<Object>) ((Map<String, Object>) testspec).get("set");
+      }
+      Map<String, Object> waits = resolvewaits(flags, origset);
+      List<String> failures = new ArrayList<>();
 
       for (int index = 0; index < testset.size(); index++) {
         Object rawentry = testset.get(index);
 
-        if (specversion < 1 && !Util.ismap(rawentry)) {
-          throw new OmniError("omni: " + flags.get("name") + "[" + index + "]: entry is not a map");
-        }
-
-        Map<String, Object> entry = resolveentry((Map<String, Object>) rawentry, flags);
-
-        Subject entrysubject = subject;
-        Provider entryclient = provider;
-
-        Object clientname = entry.get("client");
-        if (null != clientname) {
-          Provider found = clients.get(String.valueOf(clientname));
-          if (null == found) {
-            throw new OmniError("omni: unknown client: " + clientname, entry);
-          }
-          entryclient = found;
-          Subject clientsubject = resolvesubject(name, found);
-          if (null != clientsubject) {
-            entrysubject = clientsubject;
-          }
-        }
-
-        Object[] args = resolveargs(entry, entryclient, provider);
-
-        Object res;
         try {
-          res = entrysubject.call(args);
-        } catch (OmniError omnierr) {
-          throw omnierr;
-        } catch (Throwable err) {
-          handleerror(flags, index, entry, err, provider);
-          continue;
+          if (specversion < 1 && !Util.ismap(rawentry)) {
+            throw new OmniError(
+                "omni: " + flags.get("name") + "[" + index + "]: entry is not a map");
+          }
+
+          Map<String, Object> entry = (Map<String, Object>) rawentry;
+          TestPack testpack = null;
+          Throwable prestart = null;
+
+          // A hook's raw error before the subject starts is still the entry's.
+          try {
+            entry = resolveentry(entry, flags);
+            testpack = resolvetestpack(name, entry, subject, provider, clients, fnon);
+          } catch (OmniError err) {
+            throw err;
+          } catch (Throwable err) {
+            prestart = err;
+          }
+
+          if (null == prestart && null == testpack.subject) {
+            throw new OmniError("omni: no test subject for: " + flags.get("name"));
+          }
+
+          boolean entrywait = waiton && entry.containsKey("wait");
+          Object id = entry.get("id");
+          Object wait = entrywait ? entry.get("wait") : id instanceof String ? waits.get(id) : null;
+
+          if (!entrywait && null == wait) {
+            run(flags, index, entry, testpack, prestart);
+          } else {
+            boolean held = false;
+            try {
+              run(flags, index, entry, testpack, prestart);
+            } catch (OmniError err) {
+              held = true;
+            }
+            if (!held) {
+              Object cause = Util.ismap(wait) ? ((Map<String, Object>) wait).get("cause") : null;
+              throw fail(flags, index, entry, "stale wait: " + cause, null, null);
+            }
+          }
+        } catch (OmniError err) {
+          if (flagbool(flags, "all")) {
+            failures.add(err.getMessage());
+            continue;
+          }
+          throw err;
         }
-
-        res = fixjson(res, flags);
-        entry.put("res", res);
-
-        checkresult(flags, index, entry, args, res);
       }
+
+      if (!failures.isEmpty()) {
+        throw new OmniError(
+            "omni: " + flags.get("name") + ": " + failures.size() + " of " + testset.size()
+                + " entries failed\n" + String.join("\n", failures));
+      }
+    }
+
+    private void run(
+        Map<String, Object> flags,
+        int index,
+        Map<String, Object> entry,
+        TestPack testpack,
+        Throwable prestart) {
+      if (null == prestart) {
+        runentry(flags, index, entry, testpack, provider, ctxargs);
+      } else {
+        handleerror(flags, index, entry, prestart, provider);
+      }
+    }
+  }
+
+  /** The client and subject one entry runs against. */
+  static final class TestPack {
+    Provider client;
+    Subject subject;
+
+    TestPack(Provider client, Subject subject) {
+      this.client = client;
+      this.subject = subject;
     }
   }
 
@@ -221,11 +288,13 @@ public final class Runner {
     private final Object alltests;
     private final Provider provider;
     private final int specversion;
+    private final List<String> requires;
 
-    RunnerPack(Object alltests, Provider provider, int specversion) {
+    RunnerPack(Object alltests, Provider provider, int specversion, List<String> requires) {
       this.alltests = alltests;
       this.provider = provider;
       this.specversion = specversion;
+      this.requires = requires;
     }
 
     public RunPack runner(String name) {
@@ -236,7 +305,7 @@ public final class Runner {
       Object spec = resolvespec(name, alltests);
       Map<String, Provider> clients = resolveclients(provider, spec, store);
       Subject subject = resolvesubject(name, provider);
-      return new RunPack(spec, subject, provider, clients, name, specversion);
+      return new RunPack(spec, subject, provider, clients, name, specversion, requires);
     }
   }
 
@@ -246,7 +315,11 @@ public final class Runner {
     // Fail fast: refuse a spec this runner cannot faithfully run before any
     // entry in it gets a chance to run.
     int specversion = resolveversion(alltests);
-    return new RunnerPack(alltests, null == provider ? new Provider() : provider, specversion);
+    return new RunnerPack(
+        alltests,
+        null == provider ? new Provider() : provider,
+        specversion,
+        resolverequires(alltests));
   }
 
   /** Load a spec: a path to a JSON file, or an already-parsed value. */
@@ -307,12 +380,32 @@ public final class Runner {
   }
 
   /**
+   * The capabilities a spec requires, which resolveversion has already
+   * checked against CAPABILITIES.
+   */
+  @SuppressWarnings("unchecked")
+  static List<String> resolverequires(Object alltests) {
+    List<String> out = new ArrayList<>();
+    Object meta = Util.ismap(alltests) ? ((Map<String, Object>) alltests).get("OMNI") : null;
+    Object requires = Util.ismap(meta) ? ((Map<String, Object>) meta).get("requires") : null;
+    if (Util.islist(requires)) {
+      for (Object cap : (List<Object>) requires) {
+        if (cap instanceof String) {
+          out.add((String) cap);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
    * Strict entry validation, applied when the spec declares version 1 or
    * later. The lenient format converts each of these mistakes into a
    * silent pass or a dead field; here they fail with the entry named.
    */
   @SuppressWarnings("unchecked")
-  static void checkentry(Map<String, Object> flags, int index, Object rawentry) {
+  static void checkentry(
+      Map<String, Object> flags, int index, Object rawentry, List<String> requires) {
     if (!Util.ismap(rawentry)) {
       throw fail(flags, index, rawentry, "entry is not a map", null, null);
     }
@@ -320,19 +413,35 @@ public final class Runner {
     Map<String, Object> entry = (Map<String, Object>) rawentry;
 
     for (String key : entry.keySet()) {
-      if (!ENTRYFIELDS.contains(key)) {
+      if (!ENTRYFIELDS.contains(key)
+          && !(CAPFIELDS.containsKey(key) && requires.contains(CAPFIELDS.get(key)))) {
         throw fail(flags, index, entry, "unknown entry field: " + key, null, null);
       }
     }
 
-    int argsources = 0;
-    for (String key : new String[] {"in", "args", "ctx"}) {
-      if (entry.containsKey(key)) {
-        argsources++;
+    if (requires.contains("ctxargs")) {
+      if (entry.containsKey("in") && (entry.containsKey("args") || entry.containsKey("ctx"))) {
+        throw fail(flags, index, entry, "entry has in beside args or ctx", null, null);
+      }
+    } else {
+      int argsources = 0;
+      for (String key : new String[] {"in", "args", "ctx"}) {
+        if (entry.containsKey(key)) {
+          argsources++;
+        }
+      }
+      if (1 < argsources) {
+        throw fail(flags, index, entry, "entry has more than one of in, args, ctx", null, null);
       }
     }
-    if (1 < argsources) {
-      throw fail(flags, index, entry, "entry has more than one of in, args, ctx", null, null);
+
+    Object fn = entry.get("fn");
+    if (entry.containsKey("fn") && !(fn instanceof String && !((String) fn).isEmpty())) {
+      throw fail(flags, index, entry, "entry fn is not a name", null, null);
+    }
+
+    if (entry.containsKey("wait") && !iswait(entry.get("wait"))) {
+      throw fail(flags, index, entry, "entry wait has no cause", null, null);
     }
 
     if (null != entry.get("err") && entry.containsKey("out")) {
@@ -354,7 +463,8 @@ public final class Runner {
    * any subject runs.
    */
   @SuppressWarnings("unchecked")
-  static void checkset(Map<String, Object> flags, Object testspec, List<Object> normalset) {
+  static void checkset(
+      Map<String, Object> flags, Object testspec, List<Object> normalset, List<String> requires) {
     List<Object> origset = normalset;
     if (Util.ismap(testspec)) {
       Object rawset = ((Map<String, Object>) testspec).get("set");
@@ -369,7 +479,7 @@ public final class Runner {
     }
 
     for (int index = 0; index < origset.size(); index++) {
-      checkentry(flags, index, origset.get(index));
+      checkentry(flags, index, origset.get(index), requires);
     }
   }
 
@@ -478,15 +588,63 @@ public final class Runner {
     return entry;
   }
 
-  /** Build the argument list: `ctx`, `args`, or `in`. */
+  static TestPack resolvetestpack(
+      String name,
+      Map<String, Object> entry,
+      Subject subject,
+      Provider provider,
+      Map<String, Provider> clients,
+      boolean fnon) {
+    TestPack testpack = new TestPack(provider, subject);
+
+    Object clientname = entry.get("client");
+    if (null != clientname) {
+      Provider client = clients.get(String.valueOf(clientname));
+      if (null == client) {
+        throw new OmniError("omni: unknown client: " + clientname, entry);
+      }
+      testpack.client = client;
+      Subject clientsubject = resolvesubject(name, client);
+      if (null != clientsubject) {
+        testpack.subject = clientsubject;
+      }
+    }
+
+    Object fn = entry.get("fn");
+    if (fnon && null != fn) {
+      Subject fnsubject = resolvesubject(Util.stringify(fn), testpack.client);
+      if (null == fnsubject) {
+        throw new OmniError("omni: unknown fn: " + Util.stringify(fn), entry);
+      }
+      testpack.subject = fnsubject;
+    }
+
+    return testpack;
+  }
+
+  /**
+   * Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+   * entry with both passes the context first, then each argument.
+   */
   @SuppressWarnings("unchecked")
-  static Object[] resolveargs(Map<String, Object> entry, Provider client, Provider provider) {
+  static Object[] resolveargs(
+      Map<String, Object> entry, Provider client, Provider provider, boolean ctxargs) {
     Object[] args;
 
     boolean hasctx = entry.containsKey("ctx");
     boolean hasargs = entry.containsKey("args");
 
-    if (hasctx) {
+    if (ctxargs && hasctx && hasargs) {
+      List<Object> joined = new ArrayList<>();
+      joined.add(entry.get("ctx"));
+      Object rawargs = entry.get("args");
+      if (Util.islist(rawargs)) {
+        joined.addAll((List<Object>) rawargs);
+      } else {
+        joined.add(rawargs);
+      }
+      args = joined.toArray();
+    } else if (hasctx) {
       args = new Object[] {entry.get("ctx")};
     } else if (hasargs) {
       Object rawargs = entry.get("args");
@@ -844,5 +1002,66 @@ public final class Runner {
       return text.replace(NULLMARK, "null");
     }
     return val;
+  }
+
+  @SuppressWarnings("unchecked")
+  static boolean iswait(Object wait) {
+    Object cause = Util.ismap(wait) ? ((Map<String, Object>) wait).get("cause") : null;
+    return cause instanceof String && !((String) cause).isEmpty();
+  }
+
+  /**
+   * The runner-side waits: entry id to its declaration. Each must name an
+   * entry of the set, so a declaration cannot outlive the entry it held.
+   */
+  @SuppressWarnings("unchecked")
+  static Map<String, Object> resolvewaits(Map<String, Object> flags, List<Object> origset) {
+    Object waits = flags.get("wait");
+    if (null == waits) {
+      return new LinkedHashMap<>();
+    }
+    if (!Util.ismap(waits)) {
+      throw new OmniError("omni: " + flags.get("name") + ": wait flag is not a map");
+    }
+    List<Object> ids = new ArrayList<>();
+    for (Object entry : origset) {
+      ids.add(Util.ismap(entry) ? ((Map<String, Object>) entry).get("id") : null);
+    }
+    for (Map.Entry<?, ?> wait : ((Map<?, ?>) waits).entrySet()) {
+      String id = String.valueOf(wait.getKey());
+      if (!ids.contains(id)) {
+        throw new OmniError("omni: " + flags.get("name") + ": wait names no entry: " + id);
+      }
+      if (!iswait(wait.getValue())) {
+        throw new OmniError("omni: " + flags.get("name") + ": wait for " + id + " has no cause");
+      }
+    }
+    return (Map<String, Object>) waits;
+  }
+
+  static void runentry(
+      Map<String, Object> flags,
+      int index,
+      Map<String, Object> entry,
+      TestPack testpack,
+      Provider provider,
+      boolean ctxargs) {
+
+    Object[] args;
+    Object res;
+    try {
+      args = resolveargs(entry, testpack.client, provider, ctxargs);
+      res = testpack.subject.call(args);
+    } catch (OmniError omnierr) {
+      throw omnierr;
+    } catch (Throwable err) {
+      handleerror(flags, index, entry, err, provider);
+      return;
+    }
+
+    res = fixjson(res, flags);
+    entry.put("res", res);
+
+    checkresult(flags, index, entry, args, res);
   }
 }

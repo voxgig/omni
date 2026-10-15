@@ -807,6 +807,260 @@ fn speclegacyunknownfield(alloc: std.mem.Allocator) anyerror!Json {
     });
 }
 
+// ---- capabilities (spec/ext.json) --------------------------------------
+
+fn shiftby(val: omni.Maybe, shift: f64) omni.Maybe {
+    const num = omni.asnum(val) orelse return val;
+    return omni.jnum(num + shift);
+}
+
+// The ctxargs subject: the context comes first, and must arrive
+// contextified with its client attached.
+fn callFibShifted(_: *const omni.Subject, args: []const Json) omni.SubjectResult {
+    const ctx: omni.Maybe = if (0 < args.len) args[0] else null;
+    const mark = omni.asstr(omni.jget(ctx, "mark")) orelse "";
+    if (!std.mem.eql(u8, "CTX", mark) or omni.isnone(omni.jget(ctx, "client"))) {
+        return .{ .err = "fib: context not delivered" };
+    }
+
+    const shift = omni.asnum(omni.jget(ctx, "shift")) orelse 0;
+    const result = fib.fibrange(
+        ALLOC,
+        shiftby(if (1 < args.len) args[1] else null, shift),
+        shiftby(if (2 < args.len) args[2] else null, shift),
+    ) catch return .{ .err = "omni: out of memory" };
+    return switch (result) {
+        .ok => |value| .{ .ok = value },
+        .err => |message| .{ .err = message },
+    };
+}
+
+const FIBSHIFTED = omni.Subject{ .call = callFibShifted };
+
+fn jsonof(text: []const u8) !Json {
+    return (try std.json.parseFromSlice(Json, ALLOC, text, .{})).value;
+}
+
+// A version-1 spec requiring `requires`, whose group "g" holds `set`.
+fn v1(requires: []const u8, set: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(
+        ALLOC,
+        "{{\"OMNI\":{{\"version\":1,\"requires\":[{s}]}},\"fib\":{{\"g\":{{\"set\":[{s}]}}}}}}",
+        .{ requires, set },
+    );
+}
+
+// Run group "g" of an inline spec. A null `start` means the group must
+// pass; otherwise its failure must start with `start` and hold each of
+// `wants`, in order.
+fn extexpect(
+    label: []const u8,
+    spectext: []const u8,
+    flags: omni.Flags,
+    subject: *const omni.Subject,
+    start: ?[]const u8,
+    wants: []const []const u8,
+) !void {
+    if (!wanted(label)) {
+        return;
+    }
+
+    const runner = try omni.makeRunnerSpec(ALLOC, try jsonof(spectext), fibprovider(0));
+    const pack = try runner.runner("fib", null);
+    const failure = try pack.runsetflags(pack.set("g"), flags, subject);
+
+    const prefix = start orelse {
+        report(label, failure);
+        return;
+    };
+
+    const message = failure orelse {
+        report(label, "omni: expected a failure, got none");
+        return;
+    };
+
+    if (!std.mem.startsWith(u8, message, prefix)) {
+        report(label, message);
+        return;
+    }
+
+    var from: usize = 0;
+    for (wants) |want| {
+        const at = std.mem.indexOfPos(u8, message, from, want) orelse {
+            report(label, message);
+            return;
+        };
+        from = at + want.len;
+    }
+
+    report(label, null);
+}
+
+fn fibxOnly(_: *const omni.Provider, name: []const u8) ?*const omni.Subject {
+    return if (std.mem.eql(u8, "fibx", name)) &FIB else null;
+}
+
+// Group "g" of an inline spec, run with no subject argument.
+fn runnosubject(spectext: []const u8, provider: *const omni.Provider) !?[]const u8 {
+    const runner = try omni.makeRunnerSpec(ALLOC, try jsonof(spectext), provider);
+    const pack = try runner.runner("fib", null);
+    return pack.runset(pack.set("g"), null);
+}
+
+fn checkfnnodefault() !void {
+    const label = "fn needs no default subject, but an entry without fn does";
+    if (!wanted(label)) {
+        return;
+    }
+
+    const fibx = omni.Provider{ .subject = fibxOnly };
+    const want = "omni: no test subject for: fib";
+
+    if (try runnosubject(try v1("\"fn\"",
+        \\{"fn":"fibx","in":6,"out":8}
+    ), &fibx)) |failure| {
+        return report(label, failure);
+    }
+
+    for ([_][]const u8{
+        try v1("\"fn\"",
+            \\{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}
+        ),
+        try v1("",
+            \\{"in":6,"out":8}
+        ),
+    }) |spectext| {
+        const failure = try runnosubject(spectext, &fibx) orelse
+            return report(label, "omni: expected a failure, got none");
+        if (!std.mem.eql(u8, want, failure)) {
+            return report(label, failure);
+        }
+    }
+
+    report(label, null);
+}
+
+fn checkownwait() !void {
+    const label = "a wait is found by an id the entry owns, never an inherited one";
+    if (!wanted(label)) {
+        return;
+    }
+
+    const spectext = try v1("",
+        \\{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}
+    );
+    const runner = try omni.makeRunnerSpec(ALLOC, try jsonof(spectext), fibprovider(0));
+    const pack = try runner.runner("fib", null);
+
+    if (try pack.runset(pack.set("g"), &FIB)) |failure| {
+        return report(label, failure);
+    }
+    report(label, try pack.runsetflags(pack.set("g"), .{ .wait = try jsonof("{}") }, &FIB));
+}
+
+fn extsuite(io: std.Io) !void {
+    if (wanted("ext capabilities")) {
+        var missing: ?[]const u8 = null;
+        for ([_][]const u8{ "ctxargs", "fn", "wait" }) |cap| {
+            var found = false;
+            for (omni.CAPABILITIES) |known| {
+                found = found or std.mem.eql(u8, known, cap);
+            }
+            if (!found) {
+                missing = try std.fmt.allocPrint(ALLOC, "omni: capability not listed: {s}", .{cap});
+            }
+        }
+        report("ext capabilities", missing);
+    }
+
+    const runner = try omni.makeRunner(ALLOC, io, try specfile(ALLOC, io, "ext.json"), fibprovider(0));
+    const pack = try runner.runner("fib", null);
+
+    for ([_]struct { []const u8, *const omni.Subject }{
+        .{ "ctxargs", &FIBSHIFTED },
+        .{ "fn", &FIB },
+        .{ "wait", &FIB },
+    }) |group| {
+        const label = try std.fmt.allocPrint(ALLOC, "ext {s}", .{group[0]});
+        if (wanted(label)) {
+            report(label, try pack.runset(pack.set(group[0]), group[1]));
+        }
+    }
+
+    const holdflag: omni.Flags = .{ .wait = try jsonof(
+        \\{"a":{"cause":"flag#1"}}
+    ) };
+
+    try extexpect("a waiting entry that passes fails the set", try v1("\"wait\"",
+        \\{"in":5,"out":5,"wait":{"cause":"gone#1"}}
+    ), .{}, &FIB, "", &.{"[0]: stale wait: gone#1"});
+
+    try extexpect("the wait flag holds an entry by id", try v1("",
+        \\{"id":"a","in":6,"out":9},{"in":7,"out":13}
+    ), holdflag, &FIB, null, &.{});
+
+    try extexpect("the wait flag fails when its entry passes", try v1("",
+        \\{"id":"a","in":6,"out":8}
+    ), holdflag, &FIB, "", &.{"stale wait: flag#1"});
+
+    try extexpect("the wait flag must name an entry", try v1("",
+        \\{"id":"a","in":6,"out":8}
+    ), .{ .wait = try jsonof(
+        \\{"zz":{"cause":"c"}}
+    ) }, &FIB, "", &.{"wait names no entry: zz"});
+
+    try extexpect("a wait needs a cause", try v1("\"wait\"",
+        \\{"in":6,"out":9,"wait":{}}
+    ), .{}, &FIB, "", &.{"entry wait has no cause"});
+
+    try extexpect("wait is an unknown field unless required", try v1("",
+        \\{"in":6,"out":9,"wait":{"cause":"c"}}
+    ), .{}, &FIB, "", &.{"unknown entry field: wait"});
+
+    try extexpect("fn is an unknown field unless required", try v1("",
+        \\{"fn":"fib","in":6,"out":8}
+    ), .{}, &FIB, "", &.{"unknown entry field: fn"});
+
+    try extexpect("an unknown fn is a spec error", try v1("\"fn\"",
+        \\{"fn":"nope","in":6,"out":8}
+    ), .{}, &FIB, "", &.{"unknown fn: nope"});
+
+    try extexpect("ctx with args needs ctxargs", try v1("",
+        \\{"ctx":{"shift":0},"args":[0,1],"out":[0,1]}
+    ), .{}, &FIBSHIFTED, "", &.{"more than one of in, args, ctx"});
+
+    try extexpect("ctxargs never takes in", try v1("\"ctxargs\"",
+        \\{"in":1,"ctx":{"shift":0},"out":[0]}
+    ), .{}, &FIBSHIFTED, "", &.{"entry has in beside args or ctx"});
+
+    try extexpect("a legacy spec ignores fn and wait",
+        \\{"fib":{"g":{"set":[{"in":6,"out":8,"fn":"nope","wait":{"cause":"c"}}]}}}
+    , .{}, &FIB, null, &.{});
+
+    try checkfnnodefault();
+    try checkownwait();
+
+    const threefail = try v1("",
+        \\{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}
+    );
+    try extexpect(
+        "all reports every failure at once",
+        threefail,
+        .{ .all = true },
+        &FIB,
+        "omni: fib: 2 of 3 entries failed\n",
+        &.{ "fib[0]: result mismatch", "fib[2]: result mismatch" },
+    );
+    try extexpect(
+        "without all the first failure is raised alone",
+        threefail,
+        .{},
+        &FIB,
+        "omni: fib[0]: result mismatch\n",
+        &.{},
+    );
+}
+
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -883,6 +1137,7 @@ pub fn main(init: std.process.Init) !void {
 
     try checkmessage();
     try checknan();
+    try extsuite(init.io);
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ PASSCOUNT, FAILCOUNT });
 

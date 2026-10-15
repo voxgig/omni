@@ -30,7 +30,14 @@ class Flags {
   final bool nulls;
   final String? name;
 
-  const Flags({this.nulls = true, this.name});
+  /// Run every entry, then fail once, listing every failure.
+  final bool all;
+
+  /// Entry id to `{cause}`, holding those entries as an entry's own `wait`
+  /// does.
+  final dynamic wait;
+
+  const Flags({this.nulls = true, this.name, this.all = false, this.wait});
 
   static const Flags nonull = Flags(nulls: false);
 }
@@ -64,8 +71,8 @@ const int SPECVERSION = 1;
 /// Capability strings this runner supports beyond the version baseline. A
 /// spec's OMNI.requires list is checked against this: an unknown capability
 /// refuses the spec loudly at load time, instead of a lagging port silently
-/// mis-running it. (Empty today; future format features mint a string here.)
-const List<String> CAPABILITIES = [];
+/// mis-running it. A spec turns each on only by requiring it.
+const List<String> CAPABILITIES = ['ctxargs', 'fn', 'wait'];
 
 /// The complete set of fields an entry may carry. Under version 1 anything
 /// else is an error: an unrecognised key is almost always a typo'd
@@ -74,6 +81,9 @@ const List<String> CAPABILITIES = [];
 const List<String> _entryfields = [
   'in', 'args', 'ctx', 'out', 'err', 'match', 'client', 'id', 'doc',
 ];
+
+/// Entry fields a capability adds, permitted only in a spec that requires it.
+const Map<String, String> _capfields = {'fn': 'fn', 'wait': 'wait'};
 
 /// Load a spec: a path to a JSON file.
 dynamic loadspec(String path) {
@@ -127,6 +137,19 @@ int _resolveversion(dynamic alltests) {
   }
 
   return versionval;
+}
+
+/// The capabilities a spec requires, which _resolveversion has already
+/// checked against CAPABILITIES.
+List<String> _resolverequires(dynamic alltests) {
+  final meta = alltests is Map ? alltests['OMNI'] : null;
+  final requires = meta is Map ? meta['requires'] : null;
+  return requires is List ? requires.whereType<String>().toList() : const <String>[];
+}
+
+bool _iswait(dynamic wait) {
+  final cause = wait is Map ? wait['cause'] : null;
+  return cause is String && cause.isNotEmpty;
 }
 
 /// Find `primary.<name>`, then `<name>`, then the whole spec.
@@ -240,6 +263,8 @@ bool matchval(dynamic check, dynamic base) {
   return deepequal(want, base);
 }
 
+typedef _TestPack = ({Provider client, Subject subject});
+
 /// What a runner returns for one named spec section.
 class RunPack {
   final dynamic spec;
@@ -250,10 +275,17 @@ class RunPack {
   final Map<String, Provider> _clients;
   final String _name;
   final int _specversion;
+  final List<String> _requires;
+  final bool _ctxargs;
+  final bool _fnon;
+  final bool _waiton;
 
   RunPack(this.spec, this.subject, this._provider, this._clients, this._name,
-      this._specversion)
-      : client = _provider;
+      this._specversion, [this._requires = const <String>[]])
+      : client = _provider,
+        _ctxargs = _requires.contains('ctxargs'),
+        _fnon = _requires.contains('fn'),
+        _waiton = _requires.contains('wait');
 
   /// A named group of the resolved spec.
   dynamic set(String name) => spec is Map ? spec[name] : null;
@@ -268,7 +300,7 @@ class RunPack {
     final label = flags.name ?? (_name.isEmpty ? 'set' : _name);
 
     final usesubject = testsubject ?? subject;
-    if (null == usesubject) {
+    if (null == usesubject && !_fnon) {
       throw OmniError('omni: no test subject for: $label');
     }
 
@@ -288,51 +320,156 @@ class RunPack {
       _checkset(label, testspec, testset);
     }
 
+    final origset = (testspec is Map && testspec['set'] is List)
+        ? testspec['set'] as List
+        : testset;
+    final waits = _resolvewaits(label, flags, origset);
+    final failures = <String>[];
+
     for (var index = 0; index < testset.length; index++) {
       final entry = testset[index];
 
-      if (entry is! Map) {
-        throw OmniError('omni: $label[$index]: entry is not a map');
-      }
-
-      // An entry with no `out` expects a null (or absent) result.
-      if (flags.nulls && null == entry['out']) {
-        entry['out'] = NULLMARK;
-      }
-
-      var entrysubject = usesubject;
-      var entryclient = _provider;
-
-      final clientname = entry['client'];
-      if (clientname is String) {
-        final found = _clients[clientname];
-        if (null == found) {
-          throw OmniError('omni: unknown client: $clientname', entry);
-        }
-        entryclient = found;
-        final clientsubject = found.subject?.call(_name);
-        if (null != clientsubject) {
-          entrysubject = clientsubject;
-        }
-      }
-
-      final args = _resolveargs(entry, entryclient);
-
-      dynamic res;
       try {
-        res = entrysubject(args);
-      } on OmniError {
+        if (entry is! Map) {
+          throw OmniError('omni: $label[$index]: entry is not a map');
+        }
+
+        ({Provider client, Subject? subject})? testpack;
+        Object? prestart;
+
+        // A hook's raw error before the subject starts is still the entry's.
+        try {
+          // An entry with no `out` expects a null (or absent) result.
+          if (flags.nulls && null == entry['out']) {
+            entry['out'] = NULLMARK;
+          }
+
+          testpack = _resolvetestpack(entry, usesubject);
+        } on OmniError {
+          rethrow;
+        } catch (err) {
+          prestart = err;
+        }
+
+        final client = testpack?.client ?? _provider;
+        final entrysubject = testpack?.subject;
+        if (null == prestart && null == entrysubject) {
+          throw OmniError('omni: no test subject for: $label');
+        }
+
+        final id = entry['id'];
+        final wait = _waiton && entry.containsKey('wait')
+            ? entry['wait']
+            : null != id && waits.containsKey(id)
+                ? waits[id]
+                : ABSENT;
+
+        void run() {
+          if (null != prestart) {
+            _handleerror(label, index, entry, prestart);
+          } else {
+            _runentry(label, flags, index, entry, (client: client, subject: entrysubject!));
+          }
+        }
+
+        if (isabsent(wait)) {
+          run();
+        } else {
+          var held = false;
+          try {
+            run();
+          } on OmniError {
+            held = true;
+          }
+          if (!held) {
+            final cause = stringify(getpath(wait, ['cause']));
+            throw _fail(label, index, entry, 'stale wait: $cause');
+          }
+        }
+      } on OmniError catch (err) {
+        if (flags.all) {
+          failures.add(err.message);
+          continue;
+        }
         rethrow;
-      } catch (err) {
-        _handleerror(label, index, entry, err);
-        continue;
       }
-
-      res = fixjson(res, flags.nulls);
-      entry['res'] = res;
-
-      _checkresult(label, index, entry, args, res);
     }
+
+    if (failures.isNotEmpty) {
+      throw OmniError('omni: $label: ${failures.length} of ${testset.length} '
+          'entries failed\n${failures.join('\n')}');
+    }
+  }
+
+  void _runentry(String label, Flags flags, int index, Map entry, _TestPack testpack) {
+    List<dynamic> args;
+    dynamic res;
+    try {
+      args = _resolveargs(entry, testpack.client);
+      res = testpack.subject(args);
+    } on OmniError {
+      rethrow;
+    } catch (err) {
+      _handleerror(label, index, entry, err);
+      return;
+    }
+
+    res = fixjson(res, flags.nulls);
+    entry['res'] = res;
+
+    _checkresult(label, index, entry, args, res);
+  }
+
+  // The runner-side waits: entry id to its declaration. Each must name an
+  // entry of the set, so a declaration cannot outlive the entry it held.
+  Map _resolvewaits(String label, Flags flags, List origset) {
+    final waits = flags.wait;
+    if (null == waits) {
+      return const {};
+    }
+    if (waits is! Map) {
+      throw OmniError('omni: $label: wait flag is not a map');
+    }
+    final ids =
+        origset.map((entry) => entry is Map ? entry['id'] : null).whereType<String>().toSet();
+    for (final id in waits.keys) {
+      if (!ids.contains(id)) {
+        throw OmniError('omni: $label: wait names no entry: $id');
+      }
+      if (!_iswait(waits[id])) {
+        throw OmniError('omni: $label: wait for $id has no cause');
+      }
+    }
+    return waits;
+  }
+
+  ({Provider client, Subject? subject}) _resolvetestpack(Map entry, Subject? subject) {
+    var client = _provider;
+    var usesubject = subject;
+
+    final clientname = entry['client'];
+    if (clientname is String) {
+      final found = _clients[clientname];
+      if (null == found) {
+        throw OmniError('omni: unknown client: $clientname', entry);
+      }
+      client = found;
+      final clientsubject = found.subject?.call(_name);
+      if (null != clientsubject) {
+        usesubject = clientsubject;
+      }
+    }
+
+    final fn = entry['fn'];
+    if (_fnon && null != fn) {
+      final fnsubject = fn is String ? client.subject?.call(fn) : null;
+      if (null == fnsubject) {
+        throw OmniError('omni: unknown fn: ${stringify(fn)}', entry);
+      }
+      usesubject = fnsubject;
+    }
+
+    return (client: client, subject: usesubject);
   }
 
   // Validate a version-1 group up front, against the AUTHORED entries -
@@ -363,19 +500,36 @@ class RunPack {
 
     for (final key in entry.keys) {
       final keystr = '$key';
-      if (!_entryfields.contains(keystr)) {
+      final capname = _capfields[keystr];
+      if (!_entryfields.contains(keystr) &&
+          !(null != capname && _requires.contains(capname))) {
         throw _fail(label, index, entry, 'unknown entry field: $keystr');
       }
     }
 
-    var argsources = 0;
-    for (final key in ['in', 'args', 'ctx']) {
-      if (entry.containsKey(key)) {
-        argsources++;
+    if (_ctxargs) {
+      if (entry.containsKey('in') && (entry.containsKey('args') || entry.containsKey('ctx'))) {
+        throw _fail(label, index, entry, 'entry has in beside args or ctx');
+      }
+    } else {
+      var argsources = 0;
+      for (final key in ['in', 'args', 'ctx']) {
+        if (entry.containsKey(key)) {
+          argsources++;
+        }
+      }
+      if (1 < argsources) {
+        throw _fail(label, index, entry, 'entry has more than one of in, args, ctx');
       }
     }
-    if (1 < argsources) {
-      throw _fail(label, index, entry, 'entry has more than one of in, args, ctx');
+
+    final fn = entry['fn'];
+    if (entry.containsKey('fn') && (fn is! String || fn.isEmpty)) {
+      throw _fail(label, index, entry, 'entry fn is not a name');
+    }
+
+    if (entry.containsKey('wait') && !_iswait(entry['wait'])) {
+      throw _fail(label, index, entry, 'entry wait has no cause');
     }
 
     if (null != entry['err'] && entry.containsKey('out')) {
@@ -389,14 +543,18 @@ class RunPack {
     }
   }
 
-  // Build the argument list: `ctx`, `args`, or `in`.
+  // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+  // entry with both passes the context first, then each argument.
   List<dynamic> _resolveargs(Map entry, Provider client) {
     List<dynamic> args;
 
     final hasctx = entry.containsKey('ctx');
     final hasargs = entry.containsKey('args');
 
-    if (hasctx) {
+    if (_ctxargs && hasctx && hasargs) {
+      final rawargs = entry['args'];
+      args = [entry['ctx'], ...(rawargs is List ? rawargs : [rawargs])];
+    } else if (hasctx) {
       args = [entry['ctx']];
     } else if (hasargs) {
       final rawargs = entry['args'];
@@ -609,8 +767,10 @@ class Runner {
   final dynamic _alltests;
   final Provider _provider;
   final int _specversion;
+  final List<String> _requires;
 
-  Runner(this._alltests, this._provider, this._specversion);
+  Runner(this._alltests, this._provider, this._specversion)
+      : _requires = _resolverequires(_alltests);
 
   /// Resolve one named section of the spec.
   RunPack runner(String name, [dynamic store]) {
@@ -635,7 +795,7 @@ class Runner {
 
     final subject = _provider.subject?.call(name);
 
-    return RunPack(spec, subject, _provider, clients, name, _specversion);
+    return RunPack(spec, subject, _provider, clients, name, _specversion, _requires);
   }
 }
 

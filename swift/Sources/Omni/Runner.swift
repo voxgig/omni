@@ -46,9 +46,8 @@ public let SPECVERSION = 1
 /// Capability strings this runner supports beyond the version baseline. A
 /// spec's OMNI.requires list is checked against this: an unknown
 /// capability refuses the spec loudly at load time, instead of a lagging
-/// port silently mis-running it. (Empty today; future format features
-/// mint a string here.)
-public let CAPABILITIES: [String] = []
+/// port silently mis-running it. A spec turns each on only by requiring it.
+public let CAPABILITIES: [String] = ["ctxargs", "fn", "wait"]
 
 /// The complete set of fields an entry may carry. Under version 1 anything
 /// else is an error: an unrecognised key is almost always a typo'd
@@ -56,14 +55,23 @@ public let CAPABILITIES: [String] = []
 /// testing.
 private let ENTRYFIELDS = ["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"]
 
+/// Entry fields a capability adds, permitted only in a spec that requires it.
+private let CAPFIELDS = ["fn": "fn", "wait": "wait"]
+
 /// Run-time options for a set of test entries.
 public struct Flags {
   public var null: Bool
   public var name: String?
+  /// Run every entry, then fail once listing each failure.
+  public var all: Bool
+  /// Entry id to `{cause}`, holding those entries.
+  public var wait: Json
 
-  public init(null: Bool = true, name: String? = nil) {
+  public init(null: Bool = true, name: String? = nil, all: Bool = false, wait: Json = .absent) {
     self.null = null
     self.name = name
+    self.all = all
+    self.wait = wait
   }
 
   public static func nonull() -> Flags { return Flags(null: false) }
@@ -134,6 +142,16 @@ public func resolveversion(_ alltests: Json) throws -> Int {
   }
 
   return Int(version)
+}
+
+// The capabilities a spec requires, which resolveversion has already
+// checked against CAPABILITIES.
+private func resolverequires(_ alltests: Json) -> [String] {
+  return (alltests.get("OMNI").get("requires").aslist ?? []).compactMap { $0.asstr }
+}
+
+private func iswait(_ wait: Json) -> Bool {
+  return !(wait.get("cause").asstr ?? "").isEmpty
 }
 
 /// Find `primary.<name>`, then `<name>`, then the whole spec.
@@ -251,6 +269,14 @@ public func nullmodifier(_ val: Json) -> Json {
   return .str(text.replacingOccurrences(of: NULLMARK, with: "null"))
 }
 
+// The provider and subject one entry runs against. `argsubject` is the
+// caller's args-taking subject, kept only while no `fn` chose another.
+private struct TestPack {
+  var client: Provider
+  var subject: Subject?
+  var argsubject: SubjectArgs?
+}
+
 /// What a runner returns for one named spec section.
 public final class RunPack {
   public let spec: Json
@@ -261,10 +287,14 @@ public final class RunPack {
   private let clients: [String: Provider]
   private let name: String
   private let specversion: Int
+  private let requires: [String]
+  private let ctxargs: Bool
+  private let fnon: Bool
+  private let waiton: Bool
 
   init(
     spec: Json, subject: Subject?, provider: Provider, clients: [String: Provider], name: String,
-    specversion: Int
+    specversion: Int, requires: [String]
   ) {
     self.spec = spec
     self.subject = subject
@@ -273,6 +303,10 @@ public final class RunPack {
     self.clients = clients
     self.name = name
     self.specversion = specversion
+    self.requires = requires
+    self.ctxargs = requires.contains("ctxargs")
+    self.fnon = requires.contains("fn")
+    self.waiton = requires.contains("wait")
   }
 
   /// A named group of the resolved spec.
@@ -307,12 +341,9 @@ public final class RunPack {
     }
     let label = useflags.name ?? "set"
 
-    var usesubject: Subject? = nil
-    if nil == argsubject {
-      guard let found = testsubject ?? subject else {
-        throw OmniError("omni: no test subject for: \(label)")
-      }
-      usesubject = found
+    let usesubject = nil == argsubject ? testsubject ?? subject : nil
+    if nil == argsubject && nil == usesubject && !fnon {
+      throw OmniError("omni: no test subject for: \(label)")
     }
 
     let testspecmap = fixjson(testspec, useflags.null)
@@ -324,73 +355,159 @@ public final class RunPack {
     // normalisation above would otherwise rewrite an authored null (e.g.
     // id: null) into a sentinel string and hide it from checkentry.
     if 1 <= specversion {
-      try checkset(useflags, testspec, testset)
+      try checkset(useflags, testspec, testset, requires)
     }
 
+    let origset = testspec.get("set").aslist ?? testset
+    let waits = try resolvewaits(useflags, origset)
+    var failures: [String] = []
+
     for (index, rawentry) in testset.enumerated() {
-      var entry = rawentry
-
-      guard entry.ismap else {
-        throw OmniError("omni: \(label)[\(index)]: entry is not a map")
-      }
-
-      // An entry with no `out` expects a null (or absent) result.
-      if useflags.null && entry.get("out").isnone {
-        entry.set("out", .str(NULLMARK))
-      }
-
-      var entrysubject = usesubject
-      var entryclient = provider
-
-      if let clientname = entry.get("client").asstr {
-        guard let found = clients[clientname] else {
-          throw OmniError("omni: unknown client: \(clientname)", entry)
-        }
-        entryclient = found
-        if nil != entrysubject, let clientsubject = found.subject?(name) {
-          entrysubject = clientsubject
-        }
-      }
-
-      let args = resolveargs(&entry, entryclient)
-
-      // An args-subject returns its arguments alongside the result, so
-      // `match.args` sees what the subject actually did with them.
-      var callargs = args
-      var res: Json
       do {
-        if let call = argsubject {
-          (callargs, res) = try call(args)
-        } else if let call = entrysubject {
-          res = try call(args)
-        } else {
+        var entry = rawentry
+
+        guard entry.ismap else {
+          throw OmniError("omni: \(label)[\(index)]: entry is not a map")
+        }
+
+        // An entry with no `out` expects a null (or absent) result.
+        if useflags.null && entry.get("out").isnone {
+          entry.set("out", .str(NULLMARK))
+        }
+
+        let testpack = try resolvetestpack(entry, usesubject, argsubject)
+        if nil == testpack.subject && nil == testpack.argsubject {
           throw OmniError("omni: no test subject for: \(label)")
         }
-      } catch let omnierr as OmniError {
-        throw omnierr
-      } catch {
-        try handleerror(useflags, index, entry, error)
-        continue
+
+        var wait = Json.absent
+        if waiton && !entry.get("wait").isabsent {
+          wait = entry.get("wait")
+        } else if let id = entry.get("id").asstr {
+          wait = waits.get(id)
+        }
+
+        if wait.isabsent {
+          try runentry(useflags, index, &entry, testpack)
+        } else {
+          var held = false
+          do {
+            try runentry(useflags, index, &entry, testpack)
+          } catch is OmniError {
+            held = true
+          }
+          if !held {
+            throw fail(useflags, index, entry, "stale wait: " + stringify(wait.get("cause")))
+          }
+        }
+      } catch let omnierr as OmniError where useflags.all {
+        failures.append(omnierr.message)
       }
+    }
 
-      res = fixjson(res, useflags.null)
-      entry.set("res", res)
-
-      try checkresult(useflags, index, entry, callargs, res)
+    if !failures.isEmpty {
+      throw OmniError(
+        "omni: \(label): \(failures.count) of \(testset.count) entries failed\n"
+          + failures.joined(separator: "\n"))
     }
   }
 
-  // Build the argument list: `ctx`, `args`, or `in`.
+  private func resolvetestpack(_ entry: Json, _ subject: Subject?, _ argsubject: SubjectArgs?)
+    throws -> TestPack
+  {
+    var testpack = TestPack(client: provider, subject: subject, argsubject: argsubject)
+
+    if let clientname = entry.get("client").asstr {
+      guard let found = clients[clientname] else {
+        throw OmniError("omni: unknown client: \(clientname)", entry)
+      }
+      testpack.client = found
+      if nil == testpack.argsubject, let clientsubject = found.subject?(name) {
+        testpack.subject = clientsubject
+      }
+    }
+
+    if fnon, let fn = entry.get("fn").asstr {
+      guard let fnsubject = testpack.client.subject?(fn) else {
+        throw OmniError("omni: unknown fn: \(fn)", entry)
+      }
+      testpack.subject = fnsubject
+      testpack.argsubject = nil
+    }
+
+    return testpack
+  }
+
+  private func runentry(_ flags: Flags, _ index: Int, _ entry: inout Json, _ testpack: TestPack)
+    throws
+  {
+    // An args-subject returns its arguments alongside the result, so
+    // `match.args` sees what the subject actually did with them.
+    var callargs: [Json] = []
+    var res: Json
+    do {
+      let args = resolveargs(&entry, testpack.client)
+      callargs = args
+      if let call = testpack.argsubject {
+        (callargs, res) = try call(args)
+      } else if let call = testpack.subject {
+        res = try call(args)
+      } else {
+        throw OmniError("omni: no test subject for: \(flags.name ?? "set")")
+      }
+    } catch let omnierr as OmniError {
+      throw omnierr
+    } catch {
+      try handleerror(flags, index, entry, error)
+      return
+    }
+
+    res = fixjson(res, flags.null)
+    entry.set("res", res)
+
+    try checkresult(flags, index, entry, callargs, res)
+  }
+
+  // The runner-side waits: entry id to its declaration. Each must name an
+  // entry of the set, so a declaration cannot outlive the entry it held.
+  private func resolvewaits(_ flags: Flags, _ origset: [Json]) throws -> Json {
+    let label = flags.name ?? "set"
+
+    if flags.wait.isnone {
+      return .map([])
+    }
+    guard let waits = flags.wait.asmap else {
+      throw OmniError("omni: \(label): wait flag is not a map")
+    }
+
+    let ids = origset.compactMap { $0.get("id").asstr }
+    for (id, wait) in waits {
+      if !ids.contains(id) {
+        throw OmniError("omni: \(label): wait names no entry: \(id)")
+      }
+      if !iswait(wait) {
+        throw OmniError("omni: \(label): wait for \(id) has no cause")
+      }
+    }
+
+    return flags.wait
+  }
+
+  // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+  // entry with both passes the context first, then each argument.
   private func resolveargs(_ entry: inout Json, _ client: Provider) -> [Json] {
     var args: [Json]
 
     let hasctx = entry.has("ctx")
     let hasargs = entry.has("args")
+    let listargs = entry.get("args").aslist ?? [entry.get("args")]
 
-    if hasctx {
+    if ctxargs && hasctx && hasargs {
+      args = [entry.get("ctx")] + listargs
+    } else if hasctx {
       args = [entry.get("ctx")]
     } else if hasargs {
-      args = entry.get("args").aslist ?? [entry.get("args")]
+      args = listargs
     } else {
       args = [entry.get("in")]
     }
@@ -420,7 +537,9 @@ public final class RunPack {
   // runsetflags. Absorbs the empty-set check: a group with no entries
   // must say so explicitly (`empty: true`), or it is a mistake, not a
   // deliberate no-op.
-  private func checkset(_ flags: Flags, _ testspec: Json, _ normalset: [Json]) throws {
+  private func checkset(
+    _ flags: Flags, _ testspec: Json, _ normalset: [Json], _ requires: [String]
+  ) throws {
     let origset: [Json]
     if testspec.ismap, let set = testspec.get("set").aslist {
       origset = set
@@ -438,30 +557,47 @@ public final class RunPack {
     }
 
     for (index, entry) in origset.enumerated() {
-      try checkentry(flags, index, entry)
+      try checkentry(flags, index, entry, requires)
     }
   }
 
   // Strict entry validation, applied when the spec declares version 1 or
   // later. The lenient format converts each of these mistakes into a
   // silent pass or a dead field; here they fail with the entry named.
-  private func checkentry(_ flags: Flags, _ index: Int, _ entry: Json) throws {
+  private func checkentry(_ flags: Flags, _ index: Int, _ entry: Json, _ requires: [String])
+    throws
+  {
     guard case .map(let fields) = entry else {
       throw fail(flags, index, entry, "entry is not a map")
     }
 
     for key in fields.map({ $0.0 }).sorted() {
-      if !ENTRYFIELDS.contains(key) {
+      let capfield = CAPFIELDS[key].map { requires.contains($0) } ?? false
+      if !ENTRYFIELDS.contains(key) && !capfield {
         throw fail(flags, index, entry, "unknown entry field: " + key)
       }
     }
 
-    var argsources = 0
-    for key in ["in", "args", "ctx"] where entry.has(key) {
-      argsources += 1
+    if requires.contains("ctxargs") {
+      if entry.has("in") && (entry.has("args") || entry.has("ctx")) {
+        throw fail(flags, index, entry, "entry has in beside args or ctx")
+      }
+    } else {
+      var argsources = 0
+      for key in ["in", "args", "ctx"] where entry.has(key) {
+        argsources += 1
+      }
+      if 1 < argsources {
+        throw fail(flags, index, entry, "entry has more than one of in, args, ctx")
+      }
     }
-    if 1 < argsources {
-      throw fail(flags, index, entry, "entry has more than one of in, args, ctx")
+
+    if entry.has("fn") && (entry.get("fn").asstr ?? "").isEmpty {
+      throw fail(flags, index, entry, "entry fn is not a name")
+    }
+
+    if entry.has("wait") && !iswait(entry.get("wait")) {
+      throw fail(flags, index, entry, "entry wait has no cause")
     }
 
     if !entry.get("err").isnone && entry.has("out") {
@@ -678,6 +814,7 @@ public final class Runner {
   private let alltests: Json
   private let provider: Provider
   private let specversion: Int
+  private let requires: [String]
 
   /// Resolves the spec's format version immediately - fail fast, before
   /// any group runs, on a version this runner cannot faithfully run.
@@ -685,6 +822,7 @@ public final class Runner {
     self.alltests = alltests
     self.provider = provider
     self.specversion = try resolveversion(alltests)
+    self.requires = resolverequires(alltests)
   }
 
   /// Resolve one named section of the spec.
@@ -712,7 +850,7 @@ public final class Runner {
 
     return RunPack(
       spec: spec, subject: subject, provider: provider, clients: clients, name: name,
-      specversion: specversion)
+      specversion: specversion, requires: requires)
   }
 }
 

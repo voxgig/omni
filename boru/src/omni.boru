@@ -48,13 +48,17 @@ def om-existsmark "__EXISTS__"
 # OMNI block is version 0: the original, lenient format, frozen forever.
 def om-specversion 1
 
-# Capability strings supported beyond the version baseline. Empty today.
-def om-capabilities []
+# Capability strings supported beyond the version baseline. A spec turns
+# each on only by requiring it.
+def om-capabilities ["ctxargs" "fn" "wait"]
 
 # The complete set of fields an entry may carry. Under version 1 anything
 # else is an error: an unrecognised key is almost always a typo'd
 # assertion, and a typo'd assertion is a test that silently stopped testing.
 def om-entryfields ["in" "args" "ctx" "out" "err" "match" "client" "id" "doc"]
+
+# Entry fields a capability adds, permitted only in a spec that requires it.
+def om-capfields {fn: "fn" wait: "wait"}
 
 # boru has ONE `none`, which plays JSON null. ABSENT therefore needs a value
 # of its own, or "no such key" and "key holding null" collapse — and the
@@ -534,12 +538,32 @@ def om-resolvespec fn [[name:Any alltests:Any] [Any] [
   r
 ]]
 
+def oml-inlist fn [[i:Integer xs:Any v:Any] [Boolean] [
+  def r (
+    if (i gte (size xs)) [false] [
+      if ((xs get i) eq v) [true] [
+        def i1 (i add 1)
+        def rr (oml-inlist i1 xs v)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+def om-inlist fn [[xs:Any v:Any] [Boolean] [
+  def r (
+    if (xs is List) [oml-inlist 0 xs v] [false]
+  )
+  r
+]]
+
 def oml-caps fn [[i:Integer reqs:Any] [Any] [
   def r (
     if (i gte (size reqs)) [none] [
       def cap (reqs get i)
       def ok (
-        if (cap is String) [StringUtil.contains (cap) (StringUtil.join (make List om-capabilities) ",")] [false]
+        if (cap is String) [om-inlist om-capabilities cap] [false]
       )
       if (ok eq true) [
         def i1 (i add 1)
@@ -594,6 +618,21 @@ def om-resolveversion fn [[alltests:Any] [Any] [
         ]
       ]
     ]
+  )
+  r
+]]
+
+# The capabilities a spec requires, which om-resolveversion has already
+# checked against CAPABILITIES.
+def om-resolverequires fn [[alltests:Any] [Any] [
+  def meta (
+    if (alltests is Map) [om-get alltests "OMNI"] [om-absent]
+  )
+  def reqs (
+    if (meta is Map) [om-get meta "requires"] [om-absent]
+  )
+  def r (
+    if (reqs is List) [reqs] [flex []]
   )
   r
 ]]
@@ -792,16 +831,26 @@ def oml-fieldok fn [[i:Integer k:Any] [Boolean] [
   r
 ]]
 
-def oml-checkfields fn [[i:Integer ks:Any label:Any index:Integer entry:Any] [Any] [
+def om-capfieldok fn [[k:Any requires:Any] [Boolean] [
+  def r (
+    if (om-capfields has (k)) [om-inlist requires (om-capfields get (k))] [false]
+  )
+  r
+]]
+
+def oml-checkfields fn [[i:Integer ks:Any label:Any index:Integer entry:Any requires:Any] [Any] [
   def r (
     if (i gte (size ks)) [none] [
       def k (ks get i)
       if (oml-fieldok 0 k) [none] [
-        (om-fail label index entry (StringUtil.concat ["unknown entry field: " k]) om-absent om-absent) drop
+        if (om-capfieldok k requires) [none] [
+          (om-fail label index entry (StringUtil.concat ["unknown entry field: " k]) om-absent om-absent) drop
+          none
+        ] drop
         none
       ] drop
       def i1 (i add 1)
-      def rr (oml-checkfields i1 ks label index entry)
+      def rr (oml-checkfields i1 ks label index entry requires)
       rr
     ]
   )
@@ -811,20 +860,50 @@ def oml-checkfields fn [[i:Integer ks:Any label:Any index:Integer entry:Any] [An
 # Applied when the spec declares version 1 or later. The lenient format
 # turns each of these mistakes into a silent pass or a dead field; here they
 # fail with the entry named.
-def om-checkentry fn [[label:Any index:Integer entry:Any] [Any] [
+def om-checkentry fn [[label:Any index:Integer entry:Any requires:Any] [Any] [
   if ((entry is Map) not) [
     (om-fail label index entry "entry is not a map" om-absent om-absent) drop
     none
   ] [none] drop
 
-  (oml-checkfields 0 (keys entry) label index entry) drop
+  (oml-checkfields 0 (keys entry) label index entry requires) drop
 
-  def nin (if (om-has entry "in") [1] [0])
-  def nargs (if (om-has entry "args") [1] [0])
-  def nctx (if (om-has entry "ctx") [1] [0])
-  def argsources ((nin add nargs) add nctx)
-  if (argsources gt 1) [
-    (om-fail label index entry "entry has more than one of in, args, ctx" om-absent om-absent) drop
+  def hasin (om-has entry "in")
+  def hasargs (om-has entry "args")
+  def hasctx (om-has entry "ctx")
+  if (om-inlist requires "ctxargs") [
+    if (hasin and (hasargs or hasctx)) [
+      (om-fail label index entry "entry has in beside args or ctx" om-absent om-absent) drop
+      none
+    ] [none] drop
+    none
+  ] [
+    def nin (if (hasin eq true) [1] [0])
+    def nargs (if (hasargs eq true) [1] [0])
+    def nctx (if (hasctx eq true) [1] [0])
+    def argsources ((nin add nargs) add nctx)
+    if (argsources gt 1) [
+      (om-fail label index entry "entry has more than one of in, args, ctx" om-absent om-absent) drop
+      none
+    ] [none] drop
+    none
+  ] drop
+
+  if (om-has entry "fn") [
+    def fnv (om-get entry "fn")
+    def named (if (fnv is String) [(fnv eq "") not] [false])
+    if (named not) [
+      (om-fail label index entry "entry fn is not a name" om-absent om-absent) drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+
+  if (om-has entry "wait") [
+    if ((om-iswait (om-get entry "wait")) not) [
+      (om-fail label index entry "entry wait has no cause" om-absent om-absent) drop
+      none
+    ] [none] drop
     none
   ] [none] drop
 
@@ -849,12 +928,12 @@ def om-checkentry fn [[label:Any index:Integer entry:Any] [Any] [
   r
 ]]
 
-def oml-checkset fn [[i:Integer origset:Any label:Any] [Any] [
+def oml-checkset fn [[i:Integer origset:Any label:Any requires:Any] [Any] [
   def r (
     if (i gte (size origset)) [none] [
-      (om-checkentry label i (origset get i)) drop
+      (om-checkentry label i (origset get i) requires) drop
       def i1 (i add 1)
-      def rr (oml-checkset i1 origset label)
+      def rr (oml-checkset i1 origset label requires)
       rr
     ]
   )
@@ -864,7 +943,7 @@ def oml-checkset fn [[i:Integer origset:Any label:Any] [Any] [
 # Validate a version-1 group against the AUTHORED entries: null-normalisation
 # would otherwise rewrite an authored `id: null` into a sentinel string and
 # hide it from validation.
-def om-checkset fn [[label:Any testspec:Any normalset:Any] [Any] [
+def om-checkset fn [[label:Any testspec:Any normalset:Any requires:Any] [Any] [
   def origset (
     if (testspec is Map) [
       def s (om-get testspec "set")
@@ -881,7 +960,7 @@ def om-checkset fn [[label:Any testspec:Any normalset:Any] [Any] [
     ] [none] drop
     none
   ] [none] drop
-  def r (oml-checkset 0 origset label)
+  def r (oml-checkset 0 origset label requires)
   r
 ]]
 
@@ -1076,26 +1155,36 @@ def om-unbox fn [[fw:Any] [Any] [
   ] [fw]
 ]]
 
-# Build the argument list: `ctx`, `args`, or `in`. `client` is the provider
-# that owns this entry's subject — the runner attaches it to a contextified
-# map argument, so a subject can reach the provider that owns it.
-def om-resolveargs fn [[entry:Any client:Any provider:Any] [Any] [
+# Build the argument list: `ctx`, `args`, or `in`; under `ctxargs` an entry
+# with both passes the context first, then each argument. `client` is the
+# provider that owns this entry's subject — the runner attaches it to a
+# contextified map argument, so a subject can reach the provider that owns it.
+def om-resolveargs fn [[entry:Any client:Any provider:Any ctxargs:Boolean] [Any] [
   def hasctx (om-has entry "ctx")
   def hasargs (om-has entry "args")
+  def lead (
+    if (((ctxargs and hasctx) and hasargs) eq true) [flex [(om-get entry "ctx")]] [flex []]
+  )
   def alist (
-    if (hasctx eq true) [flex [(om-get entry "ctx")]] [
-      if (hasargs eq true) [
-        def raw (om-get entry "args")
-        if (raw is List) [oml-copyargs 0 raw (flex [])] [
-          # Canonical spreads `entry.args` into the subject call, so a
-          # non-list dies at invocation and the entry's `err` can expect that.
-          # Erasing it to [] instead let a malformed entry pass here and
-          # nowhere else. Not an omni verdict: it belongs to the entry, the
-          # same as the TypeError canonical raises.
-          raise {code: args_type/q message: "omni: entry args is not a list"}
+    if ((size lead) gt 0) [
+      def raw (om-get entry "args")
+      if (raw is List) [oml-copyargs 0 raw lead] [
+        raise {code: args_type/q message: "omni: entry args is not a list"}
+      ]
+    ] [
+      if (hasctx eq true) [flex [(om-get entry "ctx")]] [
+        if (hasargs eq true) [
+          def raw (om-get entry "args")
+          if (raw is List) [oml-copyargs 0 raw (flex [])] [
+            # Canonical spreads `entry.args` into the subject call, so a
+            # non-list dies inside the entry's handler and its `err` can
+            # expect that. Not an omni verdict: it belongs to the entry, the
+            # same as the TypeError canonical raises.
+            raise {code: args_type/q message: "omni: entry args is not a list"}
+          ]
+        ] [
+          flex [(om-clone (om-get entry "in"))]
         ]
-      ] [
-        flex [(om-clone (om-get entry "in"))]
       ]
     ]
   )
@@ -1131,8 +1220,17 @@ def om-resolveargs fn [[entry:Any client:Any provider:Any] [Any] [
 def om-makerunner fn [[specref:Any provider:Any] [Any] [
   def alltests (om-loadspec specref)
   def sv (om-resolveversion alltests)
+  def requires (om-resolverequires alltests)
   def p (if (provider is Map) [provider] [flex {}])
-  def r (flex {alltests: (alltests) provider: (p) specversion: (sv)})
+  def r (flex {
+    alltests: (alltests)
+    provider: (p)
+    specversion: (sv)
+    requires: (requires)
+    ctxargs: (om-inlist requires "ctxargs")
+    fnon: (om-inlist requires "fn")
+    waiton: (om-inlist requires "wait")
+  })
   r
 ]]
 
@@ -1200,6 +1298,10 @@ def om-runner fn [[rn:Any name:Any store:Any] [Any] [
     clients: (clients)
     name: (name)
     specversion: (rn get "specversion")
+    requires: (om-get rn "requires")
+    ctxargs: ((om-get rn "ctxargs") eq true)
+    fnon: ((om-get rn "fnon") eq true)
+    waiton: ((om-get rn "waiton") eq true)
   })
   r
 ]]
@@ -1210,7 +1312,242 @@ def om-set fn [[pack:Any setname:Any] [Any] [
   r
 ]]
 
-def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean usesubject:Any] [Any] [
+def om-iswait fn [[w:Any] [Boolean] [
+  def r (
+    if (w is Map) [
+      def c (om-get w "cause")
+      if (c is String) [(c eq "") not] [false]
+    ] [false]
+  )
+  r
+]]
+
+def oml-hasid fn [[i:Integer origset:Any id:Any] [Boolean] [
+  def r (
+    if (i gte (size origset)) [false] [
+      def e (origset get i)
+      def eid (if (e is Map) [om-get e "id"] [om-absent])
+      if (eid eq id) [true] [
+        def i1 (i add 1)
+        def rr (oml-hasid i1 origset id)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+def oml-waits fn [[i:Integer ks:Any waits:Any label:Any origset:Any] [Any] [
+  def r (
+    if (i gte (size ks)) [none] [
+      def id (ks get i)
+      if (oml-hasid 0 origset id) [none] [
+        (om-fail-raise (StringUtil.concat ["omni: " label ": wait names no entry: " id])) drop
+        none
+      ] drop
+      if (om-iswait (waits get (id))) [none] [
+        (om-fail-raise (StringUtil.concat ["omni: " label ": wait for " id " has no cause"])) drop
+        none
+      ] drop
+      def i1 (i add 1)
+      def rr (oml-waits i1 ks waits label origset)
+      rr
+    ]
+  )
+  r
+]]
+
+# The runner-side waits: entry id to its declaration. Each must name an
+# entry of the set, so a declaration cannot outlive the entry it held.
+def om-resolvewaits fn [[label:Any flags:Any origset:Any] [Any] [
+  def waits (om-get flags "wait")
+  def r (
+    if (om-isunset waits) [flex {}] [
+      if ((waits is Map) not) [
+        (om-fail-raise (StringUtil.concat ["omni: " label ": wait flag is not a map"])) drop
+        none
+      ] [
+        (oml-waits 0 (keys waits) waits label origset) drop
+        waits
+      ]
+    ]
+  )
+  r
+]]
+
+# The subject and the provider for one entry: `client` picks a client
+# provider, then `fn`, where the spec requires it, names the subject.
+def om-resolvetestpack fn [[pack:Any entry:Any usesubject:Any] [Any] [
+  def prov (pack get "client")
+  def clients (pack get "clients")
+
+  # Canonical selects a client for ANY non-null `client`, and raises when it
+  # names no client it has.
+  def cname (om-get entry "client")
+  def named ((om-isunset cname) not)
+  def entryclient (
+    if (named eq true) [
+      def ckey (if (cname is String) [cname] [om-stringify cname])
+      if (clients has (ckey)) [clients get (ckey)] [
+        (om-fail-raise `omni: unknown client: ${ckey}`) drop
+        none
+      ]
+    ] [prov]
+  )
+  def entrysubject (
+    if (named eq true) [
+      def csf (om-get entryclient "subject")
+      if (om-isunset csf) [usesubject] [
+        def sf2 (om-unbox csf)
+        def cs ([(pack get "name")] sf2/v apply)
+        if (om-isnone cs) [usesubject] [cs]
+      ]
+    ] [usesubject]
+  )
+
+  def fnv (
+    if ((om-get pack "fnon") eq true) [om-get entry "fn"] [om-absent]
+  )
+  def subject (
+    if (om-isunset fnv) [entrysubject] [
+      def fsf (om-get entryclient "subject")
+      def fs (
+        if (om-isunset fsf) [om-absent] [
+          def sf3 (om-unbox fsf)
+          [fnv] sf3/v apply
+        ]
+      )
+      if (om-isnone fs) [
+        def fkey (if (fnv is String) [fnv] [om-stringify fnv])
+        (om-fail-raise `omni: unknown fn: ${fkey}`) drop
+        none
+      ] [fs]
+    ]
+  )
+
+  def r (flex {client: (entryclient) subject: (subject)})
+  r
+]]
+
+# Resolve the arguments, call the subject and check its result. A hook's or
+# a subject's own error is a candidate for the entry's `err`; an omni failure
+# is already a verdict, and `raise` takes a fresh map, never a caught Error
+# value, so it is rebuilt.
+def om-runentry fn [[label:Any index:Integer entry:Any testpack:Any provider:Any donull:Boolean ctxargs:Boolean] [Any] [
+  def outcome (do [
+    def av (om-resolveargs entry (testpack get "client") provider ctxargs)
+    def f (om-unbox (testpack get "subject"))
+    def res0 (av f/v apply)
+    def res (om-fixjson res0 donull)
+    (entry set "res" res) drop
+    (om-checkresult label index entry av res) drop
+    {ok: true}
+  ] error [var [[e]
+    def o (flex {})
+    (o set "ok" false) drop
+    (o set "err" e) drop
+    o
+  ]])
+
+  if ((outcome get "ok") eq true) [none] [
+    def e (outcome get "err")
+    if ((e get "code") eq omni_fail/q) [
+      (om-fail-raise (om-errmessage e)) drop
+      none
+    ] [
+      (om-handleerror label index entry e provider) drop
+      none
+    ] drop
+    none
+  ] drop
+  def r none
+  r
+]]
+
+# Resolve the entry and its testpack. A runner failure propagates; a hook's
+# raw error is kept as `prestart`, and is still the entry's.
+def om-prestart fn [[pack:Any entry:Any usesubject:Any donull:Boolean] [Any] [
+  def outcome (do [
+    # An entry with no `out` expects a null (or absent) result.
+    if (donull eq true) [
+      if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
+      none
+    ] [none] drop
+    def tp (om-resolvetestpack pack entry usesubject)
+    def o (flex {})
+    (o set "testpack" tp) drop
+    o
+  ] error [var [[e]
+    def o (flex {})
+    (o set "prestart" e) drop
+    o
+  ]])
+  if (outcome has "prestart") [
+    def e (outcome get "prestart")
+    if ((e get "code") eq omni_fail/q) [
+      (om-fail-raise (om-errmessage e)) drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+  def r outcome
+  r
+]]
+
+# The entry's run: its subject, or the handling of its prestart error.
+def om-run fn [[label:Any index:Integer entry:Any testpack:Any provider:Any donull:Boolean ctxargs:Boolean prestart:Any] [Any] [
+  if (om-isabsent prestart) [
+    (om-runentry label index entry testpack provider donull ctxargs) drop
+    none
+  ] [
+    (om-handleerror label index entry prestart provider) drop
+    none
+  ] drop
+  def r none
+  r
+]]
+
+# A held entry's failure is set aside; if it passes, its cause is stale.
+def om-runheld fn [[label:Any index:Integer entry:Any testpack:Any provider:Any donull:Boolean ctxargs:Boolean prestart:Any wait:Any] [Any] [
+  def outcome (do [
+    (om-run label index entry testpack provider donull ctxargs prestart) drop
+    {held: false}
+  ] error [var [[e]
+    def o (flex {})
+    (o set "held" true) drop
+    (o set "err" e) drop
+    o
+  ]])
+
+  if ((outcome get "held") eq true) [
+    def e (outcome get "err")
+    if ((e get "code") eq omni_fail/q) [none] [
+      raise (convert Map e)
+    ] drop
+    none
+  ] [
+    def cause (om-stringify (om-get wait "cause"))
+    (om-fail label index entry (StringUtil.concat ["stale wait: " cause]) om-absent om-absent) drop
+    none
+  ] drop
+  def r none
+  r
+]]
+
+# The entry's own `wait`, where the spec requires it, else the flag's
+# declaration for its id, else ABSENT.
+def om-entrywait fn [[entry:Any waits:Any waiton:Boolean] [Any] [
+  def own (if (waiton eq true) [om-get entry "wait"] [om-absent])
+  def id (om-get entry "id")
+  def r (
+    if ((om-isabsent own) not) [own] [
+      if (id is String) [om-get waits id] [om-absent]
+    ]
+  )
+  r
+]]
+
+def oml-runset fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean usesubject:Any flags:Any waits:Any failures:Any] [Any] [
   def r (
     if (i gte (size testset)) [none] [
       def entry (testset get i)
@@ -1220,51 +1557,29 @@ def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean us
       ] [none] drop
 
       def prov (pack get "client")
-      def clients (pack get "clients")
+      def ctxargs ((om-get pack "ctxargs") eq true)
 
-      # Everything from here to the check runs INSIDE the protected block,
-      # as canonical's entry `try` does. A provider hook that raises - a
-      # contextify, a client factory - is then a candidate for the entry's
-      # `err` expectation, rather than an exception that aborts the whole
-      # set from outside any handler.
+      # Under `all` an omni failure is gathered and the set runs on; any other
+      # error leaves the set, rebuilt with its code and payload.
       def outcome (do [
-        # An entry with no `out` expects a null (or absent) result.
-        if (donull eq true) [
-          if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
+        def pre (om-prestart pack entry usesubject donull)
+        def prestart (om-get pre "prestart")
+        def testpack (om-get pre "testpack")
+        if (om-isabsent prestart) [
+          if (om-isnone (testpack get "subject")) [
+            (om-fail-raise `omni: no test subject for: ${label}`) drop
+            none
+          ] [none] drop
           none
         ] [none] drop
-
-        # Canonical selects a client for ANY non-null `client`, and raises
-        # when it names no client it has. Accepting only a String let a spec
-        # with `client: 7` run silently against the root provider.
-        def cname (om-get entry "client")
-        def named ((om-isunset cname) not)
-        def entryclient (
-          if (named eq true) [
-            def ckey (if (cname is String) [cname] [om-stringify cname])
-            if (clients has (ckey)) [clients get (ckey)] [
-              (om-fail-raise `omni: unknown client: ${ckey}`) drop
-              none
-            ]
-          ] [prov]
-        )
-        def entrysubject (
-          if (named eq true) [
-            def csf (om-get entryclient "subject")
-            if (om-isunset csf) [usesubject] [
-              def sf2 (om-unbox csf)
-              def cs ([(pack get "name")] sf2/v apply)
-              if (om-isnone cs) [usesubject] [cs]
-            ]
-          ] [usesubject]
-        )
-
-        def av (om-resolveargs entry entryclient prov)
-        def f (om-unbox entrysubject)
-        def res0 (av f/v apply)
-        def res (om-fixjson res0 donull)
-        (entry set "res" res) drop
-        (om-checkresult label i entry av res) drop
+        def wait (om-entrywait entry waits ((om-get pack "waiton") eq true))
+        if (om-isabsent wait) [
+          (om-run label i entry testpack prov donull ctxargs prestart) drop
+          none
+        ] [
+          (om-runheld label i entry testpack prov donull ctxargs prestart wait) drop
+          none
+        ] drop
         {ok: true}
       ] error [var [[e]
         def o (flex {})
@@ -1275,23 +1590,24 @@ def oml-runentry fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean us
 
       if ((outcome get "ok") eq true) [none] [
         def e (outcome get "err")
-        # An omni failure is already a verdict; only a subject's own error
-        # is a candidate for the entry's `err` expectation.
-        # `raise` takes a fresh map, never a caught Error value: re-raising
-        # the value itself dies with "cannot call `raise`" and buries the
-        # verdict it was carrying. Rebuild it.
         if ((e get "code") eq omni_fail/q) [
-          (om-fail-raise (om-errmessage e)) drop
+          def msg (om-errmessage e)
+          if ((om-get flags "all") eq true) [
+            (append [msg] failures) drop
+            none
+          ] [
+            (om-fail-raise msg) drop
+            none
+          ] drop
           none
         ] [
-          (om-handleerror label i entry e (om-get pack "client")) drop
-          none
+          raise (convert Map e)
         ] drop
         none
       ] drop
 
       def i1 (i add 1)
-      def rr (oml-runentry i1 testset pack label donull usesubject)
+      def rr (oml-runset i1 testset pack label donull usesubject flags waits failures)
       rr
     ]
   )
@@ -1316,7 +1632,10 @@ def om-runsetflags fn [[pack:Any testspec:Any flags:Any subject:Any] [Any] [
     if (om-isnone subject) [pack get "subject"] [subject]
   )
   if (om-isnone usesubject) [
-    (om-fail-raise `omni: no test subject for: ${label}`) drop
+    if (((om-get pack "fnon") eq true) not) [
+      (om-fail-raise `omni: no test subject for: ${label}`) drop
+      none
+    ] [none] drop
     none
   ] [none] drop
 
@@ -1327,12 +1646,30 @@ def om-runsetflags fn [[pack:Any testspec:Any flags:Any subject:Any] [Any] [
     none
   ] [none] drop
 
+  def req (om-get pack "requires")
+  def requires (if (req is List) [req] [flex []])
   if ((pack get "specversion") gte 1) [
-    (om-checkset label testspec testset) drop
+    (om-checkset label testspec testset requires) drop
     none
   ] [none] drop
 
-  def r (oml-runentry 0 testset pack label donull usesubject)
+  def origset (
+    if (testspec is Map) [
+      def s (om-get testspec "set")
+      if (s is List) [s] [testset]
+    ] [testset]
+  )
+  def waits (om-resolvewaits label fl origset)
+  def failures (flex [])
+  (oml-runset 0 testset pack label donull usesubject fl waits failures) drop
+
+  def nfail (size failures)
+  if (nfail gt 0) [
+    def head (StringUtil.concat ["omni: " label ": " (convert String nfail) " of " (convert String (size testset)) " entries failed\n"])
+    (om-fail-raise (StringUtil.concat [head (om-join failures "\n")])) drop
+    none
+  ] [none] drop
+  def r none
   r
 ]]
 

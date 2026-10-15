@@ -5,7 +5,7 @@ build:
 	elixirc -o build lib/*.ex
 
 test: build
-	elixir -pa build test/run.exs
+	elixir -pa build test/run.exs && elixir -pa build test/ext.exs
 
 clean:
 	rm -rf build

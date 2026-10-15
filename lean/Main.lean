@@ -65,8 +65,7 @@ partial def fibprovider (shift : Float) : Provider :=
       match name with
       | "fib" => some (fun args =>
           match asnum (args.getD 0 none) with
-          | some num =>
-            (Fib.fib (some (jnum (Int.ofNat (num + shift).toUInt64.toNat)))).map some
+          | some num => (Fib.fib (some (toJson (num + shift)))).map some
           | none => (Fib.fib (args.getD 0 none)).map some)
       | "fibseq" => some FIBSEQ
       | "fibrange" => some FIBRANGE
@@ -349,6 +348,131 @@ def testDeepEqualNumbers : Except String Unit := do
   expectequal (some (jbool true)) (some one) false "true, 1"
   expectequal (some one) (some (jnum 2)) false "1, 2"
 
+/- ---- the capability suite: spec/ext.json requires ctxargs, fn and wait,
+beside the runner flag `all` ---- -/
+
+/-- The ctxargs subject: the context comes first, and must arrive
+contextified with its client attached. -/
+def FIBSHIFTED : Subject := fun args => do
+  let ctx := args.getD 0 none
+  if asstr (jget ctx "mark") != some "CTX" || isnone (jget ctx "client") then
+    throw "fib: context not delivered"
+  let shift := (asnum (jget ctx "shift")).getD 0.0
+  let shifted (val : Val) : Val :=
+    match asnum val with
+    | some num => some (toJson (num + shift))
+    | none => val
+  (Fib.fibrange (shifted (args.getD 1 none)) (shifted (args.getD 2 none))).map some
+
+def extrunner (spec : Json) : Except String RunPack :=
+  makeRunnerSpec spec (fibprovider 0.0) "fib"
+
+def extv1 (requires : List String) (set : List Json) : Json :=
+  jmap [
+    ("OMNI", jmap [("version", jnum 1), ("requires", jlist (requires.map jstr))]),
+    ("fib", jmap [("g", jmap [("set", jlist set)])])]
+
+def refuses (result : Except String Unit) (pattern : String) : Except String Unit :=
+  match result with
+  | .ok () => throw s!"omni: expected a failure matching: {pattern}"
+  | .error message =>
+    if regexFind pattern message then pure ()
+    else throw s!"omni: expected a failure matching: {pattern}\ngot: {message}"
+
+def waitflag (id cause : String) : Flags :=
+  { wait := some (jmap [(id, jmap [("cause", jstr cause)])]) }
+
+def testExtCapabilities : Except String Unit :=
+  match ["ctxargs", "fn", "wait"].find? (fun cap => !CAPABILITIES.contains cap) with
+  | some cap => throw s!"omni: capability not listed: {cap}"
+  | none => pure ()
+
+def testExtStaleWait : Except String Unit := do
+  let pack ← extrunner (extv1 ["wait"] [
+    jmap [("in", jnum 5), ("out", jnum 5), ("wait", jmap [("cause", jstr "gone#1")])]])
+  refuses (pack.runset (pack.set "g") (some FIB)) "\\[0\\]: stale wait: gone#1"
+
+def testExtWaitFlagHolds : Except String Unit := do
+  let pack ← extrunner (extv1 [] [
+    jmap [("id", jstr "a"), ("in", jnum 6), ("out", jnum 9)],
+    jmap [("in", jnum 7), ("out", jnum 13)]])
+  pack.runsetflags (pack.set "g") (waitflag "a" "flag#1") (some FIB)
+
+def testExtWaitFlagStale : Except String Unit := do
+  let pack ← extrunner (extv1 [] [jmap [("id", jstr "a"), ("in", jnum 6), ("out", jnum 8)]])
+  refuses (pack.runsetflags (pack.set "g") (waitflag "a" "flag#1") (some FIB))
+    "stale wait: flag#1"
+
+def testExtWaitFlagNamesEntry : Except String Unit := do
+  let pack ← extrunner (extv1 [] [jmap [("id", jstr "a"), ("in", jnum 6), ("out", jnum 8)]])
+  refuses (pack.runsetflags (pack.set "g") (waitflag "zz" "c") (some FIB))
+    "wait names no entry: zz"
+
+def testExtWaitCause : Except String Unit := do
+  let pack ← extrunner (extv1 ["wait"] [
+    jmap [("in", jnum 6), ("out", jnum 9), ("wait", jmap [])]])
+  refuses (pack.runset (pack.set "g") (some FIB)) "entry wait has no cause"
+
+def testExtUnrequiredFields : Except String Unit := do
+  let waits ← extrunner (extv1 [] [
+    jmap [("in", jnum 6), ("out", jnum 9), ("wait", jmap [("cause", jstr "c")])]])
+  refuses (waits.runset (waits.set "g") (some FIB)) "unknown entry field: wait"
+  let fns ← extrunner (extv1 [] [jmap [("fn", jstr "fib"), ("in", jnum 6), ("out", jnum 8)]])
+  refuses (fns.runset (fns.set "g") (some FIB)) "unknown entry field: fn"
+
+def testExtUnknownFn : Except String Unit := do
+  let pack ← extrunner (extv1 ["fn"] [
+    jmap [("fn", jstr "nope"), ("in", jnum 6), ("out", jnum 8)]])
+  refuses (pack.runset (pack.set "g") (some FIB)) "unknown fn: nope"
+
+def testExtCtxArgs : Except String Unit := do
+  let noctxargs ← extrunner (extv1 [] [
+    jmap [("ctx", jmap [("shift", jnum 0)]), ("args", jlist [jnum 0, jnum 1]),
+          ("out", jlist [jnum 0, jnum 1])]])
+  refuses (noctxargs.runset (noctxargs.set "g") (some FIBSHIFTED))
+    "more than one of in, args, ctx"
+  let within ← extrunner (extv1 ["ctxargs"] [
+    jmap [("in", jnum 1), ("ctx", jmap [("shift", jnum 0)]), ("out", jlist [jnum 0])]])
+  refuses (within.runset (within.set "g") (some FIBSHIFTED)) "entry has in beside args or ctx"
+
+def testExtLegacy : Except String Unit := do
+  let pack ← extrunner (jmap [("fib", jmap [("g", jmap [("set", jlist [
+    jmap [("in", jnum 6), ("out", jnum 8), ("fn", jstr "nope"),
+          ("wait", jmap [("cause", jstr "c")])]])])])])
+  pack.runset (pack.set "g") (some FIB)
+
+-- `runset` takes `Option Subject`, so `none` is "no subject".
+def testExtFnNoDefault : Except String Unit := do
+  let fibx := Omni.provider (subject := some (fun name => if name == "fibx" then some FIB else none))
+  let named := jmap [("fn", jstr "fibx"), ("in", jnum 6), ("out", jnum 8)]
+  let unnamed := jmap [("in", jnum 6), ("out", jnum 8)]
+
+  let pack ← makeRunnerSpec (extv1 ["fn"] [named]) fibx "fib"
+  pack.runset (pack.set "g") none
+
+  let mixed ← makeRunnerSpec (extv1 ["fn"] [named, unnamed]) fibx "fib"
+  refuses (mixed.runset (mixed.set "g") none) "^omni: no test subject for: fib$"
+
+  let legacy ← makeRunnerSpec (extv1 [] [unnamed]) fibx "fib"
+  refuses (legacy.runset (legacy.set "g") none) "^omni: no test subject for: fib$"
+
+def testExtWaitOwnId : Except String Unit := do
+  let pack ← extrunner (extv1 [] [
+    jmap [("id", jstr "constructor"), ("in", jnum 6), ("out", jnum 8)],
+    jmap [("id", jstr "toString"), ("in", jnum 7), ("out", jnum 13)]])
+  pack.runset (pack.set "g") (some FIB)
+  pack.runsetflags (pack.set "g") { wait := some (jmap []) } (some FIB)
+
+def testExtAll : Except String Unit := do
+  let pack ← extrunner (extv1 [] [
+    jmap [("in", jnum 5), ("out", jnum 6)],
+    jmap [("in", jnum 6), ("out", jnum 8)],
+    jmap [("in", jnum 7), ("out", jnum 14)]])
+  refuses (pack.runsetflags (pack.set "g") { all := true } (some FIB))
+    ("^omni: fib: 2 of 3 entries failed\\n(.|\\n)*fib\\[0\\]: result mismatch" ++
+      "(.|\\n)*fib\\[2\\]: result mismatch")
+  refuses (pack.runset (pack.set "g") (some FIB)) "^omni: fib\\[0\\]: result mismatch"
+
 def main (argv : List String) : IO UInt32 := do
   let only := argv.head?
   let counts ← IO.mkRef ({} : Counts)
@@ -394,6 +518,27 @@ def main (argv : List String) : IO UInt32 := do
   run "a legacy spec (no OMNI block) stays lenient" testLegacyLenient
   run "deepequal is structural: numbers by value (Lean JSON has no NaN)"
     testDeepEqualNumbers
+
+  let extpack ← makeRunner (← specfile "ext.json") (fibprovider 0.0) "fib"
+
+  run "ext capabilities" testExtCapabilities
+  run "ext ctxargs" (extpack.runset (extpack.set "ctxargs") (some FIBSHIFTED))
+  run "ext fn" (extpack.runset (extpack.set "fn") (some FIB))
+  run "ext wait" (extpack.runset (extpack.set "wait") (some FIB))
+
+  run "ext runner: a waiting entry that passes fails the set" testExtStaleWait
+  run "ext runner: the wait flag holds an entry by id" testExtWaitFlagHolds
+  run "ext runner: the wait flag fails when its entry passes" testExtWaitFlagStale
+  run "ext runner: the wait flag must name an entry" testExtWaitFlagNamesEntry
+  run "ext runner: a wait needs a cause" testExtWaitCause
+  run "ext runner: wait and fn are unknown fields unless required" testExtUnrequiredFields
+  run "ext runner: an unknown fn is a spec error" testExtUnknownFn
+  run "ext runner: ctx with args needs ctxargs, and never takes in" testExtCtxArgs
+  run "ext runner: a legacy spec ignores fn and wait" testExtLegacy
+  run "ext runner: fn needs no default subject, but an entry without fn does" testExtFnNoDefault
+  run "ext runner: a wait is found by an id the entry owns, never an inherited one"
+    testExtWaitOwnId
+  run "ext runner: all reports every failure at once" testExtAll
 
   let final ← counts.get
   IO.println s!"\n{final.pass} passed, {final.fail} failed"

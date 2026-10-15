@@ -480,14 +480,17 @@ def SPECVERSION : Nat := 1
 /-- Capability strings this runner supports beyond the version baseline. A
 spec's `OMNI.requires` list is checked against this: an unknown capability
 refuses the spec loudly at load time, instead of a lagging port silently
-mis-running it. (Empty today; future format features mint a string here.) -/
-def CAPABILITIES : List String := []
+mis-running it. A spec turns each on only by requiring it. -/
+def CAPABILITIES : List String := ["ctxargs", "fn", "wait"]
 
 /-- The complete set of fields an entry may carry. Under version 1 anything
 else is an error: an unrecognised key is almost always a typo'd assertion,
 and a typo'd assertion is a test that silently stopped testing. -/
 private def ENTRYFIELDS : List String :=
   ["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"]
+
+/-- Entry fields a capability adds, permitted only in a spec that requires it. -/
+private def CAPFIELDS : List (String × String) := [("fn", "fn"), ("wait", "wait")]
 
 -- A capability that is not a string, or not in CAPABILITIES, is one this
 -- runner does not recognise.
@@ -541,6 +544,13 @@ def resolveversion (alltests : Json) : Except String Nat :=
       | none => throw "omni: malformed OMNI version block"
     | _ => throw "omni: malformed OMNI version block"
 
+/-- The capabilities a spec requires, which `resolveversion` has already
+checked against `CAPABILITIES`. -/
+private def resolverequires (alltests : Json) : List String :=
+  match aslist (jget (jget (some alltests) "OMNI") "requires") with
+  | some caps => caps.toList.filterMap (fun cap => asstr (some cap))
+  | none => []
+
 /-- The function under test. Arguments arrive as `Val` - JSON values, or
 absence - and failure is reported as `Except.error message`.
 
@@ -566,10 +576,14 @@ break every consumer for a capability most subjects do not need. omni-rust,
 pair, for the same reason. -/
 abbrev SubjectArgs : Type := List Val → Except String (List Val × Val)
 
-/-- Run-time options for a set of test entries. -/
+/-- Run-time options for a set of test entries. `all` runs every entry, then
+fails once listing each failure; `wait` maps an entry id to `{ cause }`,
+holding that entry as its own `wait` field would. -/
 structure Flags where
   null : Bool := true
   name : Option String := none
+  all : Bool := false
+  wait : Val := none
 
 def Flags.nonull : Flags := { null := false }
 
@@ -650,21 +664,42 @@ private def failure (label : String) (index : Nat) (entry : Json) (reason : Stri
     | none => head
   head ++ s!"\n  entry:    {stringify (some (entrysummary entry))}"
 
+private def iswait (wait : Val) : Bool :=
+  match asstr (jget wait "cause") with
+  | some cause => cause != ""
+  | none => false
+
 -- Strict entry validation, applied when the spec declares version 1 or
 -- later. The lenient format converts each of these mistakes into a silent
 -- pass or a dead field; here they fail with the entry named.
-private def checkentry (label : String) (index : Nat) (entry : Json) : Except String Unit := do
+private def checkentry (label : String) (index : Nat) (entry : Json) (requires : List String)
+    : Except String Unit := do
   if !ismap (some entry) then
     throw (failure label index entry "entry is not a map" none none)
 
+  let capfield (key : String) : Bool :=
+    CAPFIELDS.any (fun field => field.1 == key && requires.contains field.2)
   let entrykeys := (asmap (some entry)).getD []
-  match entrykeys.find? (fun kv => !(ENTRYFIELDS.contains kv.1)) with
+  match entrykeys.find? (fun kv => !(ENTRYFIELDS.contains kv.1) && !capfield kv.1) with
   | some badkv => throw (failure label index entry s!"unknown entry field: {badkv.1}" none none)
   | none => pure ()
 
-  let argsources := (["in", "args", "ctx"].filter (fun key => jhas (some entry) key)).length
-  if 1 < argsources then
-    throw (failure label index entry "entry has more than one of in, args, ctx" none none)
+  let present (key : String) : Bool := jhas (some entry) key
+  if requires.contains "ctxargs" then
+    if present "in" && (present "args" || present "ctx") then
+      throw (failure label index entry "entry has in beside args or ctx" none none)
+  else
+    let argsources := (["in", "args", "ctx"].filter present).length
+    if 1 < argsources then
+      throw (failure label index entry "entry has more than one of in, args, ctx" none none)
+
+  let fnval := jget (some entry) "fn"
+  if !isabsent fnval && (asstr fnval).getD "" == "" then
+    throw (failure label index entry "entry fn is not a name" none none)
+
+  let waitval := jget (some entry) "wait"
+  if !isabsent waitval && !iswait waitval then
+    throw (failure label index entry "entry wait has no cause" none none)
 
   -- `err` must be present AND non-null; `out` only needs to be present -
   -- an authored `out: null` still collides with an `err` expectation.
@@ -685,7 +720,7 @@ private def checkentry (label : String) (index : Nat) (entry : Json) : Except St
 -- malformed spec is a spec error, not a test result, so it fails before
 -- any subject runs.
 private def checkset (label : String) (testspec : Json) (normalset : Array Json)
-    : Except String Unit := do
+    (requires : List String) : Except String Unit := do
   let origset :=
     match aslist (jget (some testspec) "set") with
     | some entries => entries
@@ -699,7 +734,7 @@ private def checkset (label : String) (testspec : Json) (normalset : Array Json)
     throw s!"omni: empty test set: {label}"
 
   for index in List.range origset.size do
-    checkentry label index origset[index]!
+    checkentry label index origset[index]! requires
 
 -- Check that every leaf of `check` is present, and matches, in `base`.
 private partial def matchcheck (label : String) (index : Nat) (entry check base : Json)
@@ -827,10 +862,117 @@ structure RunPack where
   -- legacy spec with no `OMNI` block, in which case strict validation
   -- (`checkset`/`checkentry`) never runs.
   specversion : Nat
+  -- The capabilities the spec requires (see `resolverequires`).
+  requires : List String := []
 
 /-- A named group of the resolved spec. -/
 def RunPack.set (pack : RunPack) (setname : String) : Json :=
   (jget (some pack.spec) setname).getD Json.null
+
+/-- The provider and subject one entry runs against. A plain `Subject` runs
+lifted, handing its arguments back unchanged. -/
+private structure TestPack where
+  client : Provider
+  subject : Option SubjectArgs
+
+private def liftsubject (subject : Subject) : SubjectArgs :=
+  fun args => (subject args).map (fun res => (args, res))
+
+private def resolvesubject (name : String) (prov : Provider) : Option Subject :=
+  if name.isEmpty then none
+  else match prov.subject with
+    | some resolve => resolve name
+    | none => none
+
+-- An entry with no `out` expects a null (or absent) result.
+private def resolveentry (entry : Json) (flags : Flags) : Json :=
+  if flags.null && isnone (jget (some entry) "out") then jset entry "out" (jstr nullmark)
+  else entry
+
+private def resolvetestpack (pack : RunPack) (entry : Json) (subject : Option SubjectArgs)
+    (fnon : Bool) : Except String TestPack := do
+  let mut testpack : TestPack := { client := pack.client, subject := subject }
+
+  if let some clientname := asstr (jget (some entry) "client") then
+    match pack.clients.lookup clientname with
+    | none => throw s!"omni: unknown client: {clientname}"
+    | some client =>
+      testpack := { client := client,
+                    subject := ((resolvesubject pack.name client).map liftsubject).orElse
+                      (fun _ => subject) }
+
+  if fnon then
+    if let some fnname := asstr (jget (some entry) "fn") then
+      match resolvesubject fnname testpack.client with
+      | none => throw s!"omni: unknown fn: {fnname}"
+      | some found => testpack := { testpack with subject := some (liftsubject found) }
+
+  pure testpack
+
+-- Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an entry
+-- with both passes the context first, then each argument.
+private def resolveargs (entry : Json) (prov : Provider) (ctxargs : Bool) : List Val × Json :=
+  let hasctx := jhas (some entry) "ctx"
+  let hasargs := jhas (some entry) "args"
+
+  let listargs : List Val :=
+    match aslist (jget (some entry) "args") with
+    | some list => list.toList.map some
+    | none => [jget (some entry) "args"]
+
+  -- `Val`, so an entry with no `in` reaches the subject as ABSENT rather
+  -- than as null - the distinction `minor/typify` asserts (register 4.12).
+  let args0 : List Val :=
+    if ctxargs && hasctx && hasargs then jget (some entry) "ctx" :: listargs
+    else if hasctx then [jget (some entry) "ctx"]
+    else if hasargs then listargs
+    else [jget (some entry) "in"]
+
+  if (hasctx || hasargs) && !args0.isEmpty && ismap args0.head! then
+    let head := args0.head!.getD Json.null
+    let contextified := match prov.contextify with
+      | some contextify => contextify head
+      | none => head
+    -- Canonical attaches the resolved client onto ctx/args[0]
+    -- (testpack.client) so a context subject can tell it was invoked
+    -- through one. Json has no case for a live Provider reference,
+    -- and the resolved client is never absent (it defaults to the
+    -- root provider), so a boolean marker carries the same
+    -- observable meaning the corpus checks for - presence, never
+    -- identity.
+    let first := jset contextified "client" (jbool true)
+    (some first :: args0.tail!, jset entry "ctx" first)
+  else (args0, entry)
+
+-- The runner-side waits: entry id to its declaration. Each must name an
+-- entry of the set, so a declaration cannot outlive the entry it held.
+private def resolvewaits (label : String) (flags : Flags) (origset : Array Json)
+    : Except String (List (String × Json)) := do
+  if isnone flags.wait then
+    return []
+  let some waits := asmap flags.wait
+    | throw s!"omni: {label}: wait flag is not a map"
+  let ids := origset.toList.map (fun entry => asstr (jget (some entry) "id"))
+  for (id, wait) in waits do
+    if !ids.contains (some id) then
+      throw s!"omni: {label}: wait names no entry: {id}"
+    if !iswait (some wait) then
+      throw s!"omni: {label}: wait for {id} has no cause"
+  pure waits
+
+-- An args-subject returns its arguments alongside the result, so
+-- `match.args` sees what the subject actually did with them.
+private def runentry (label : String) (flags : Flags) (index : Nat) (entry : Json)
+    (subject : SubjectArgs) (prov : Provider) (ctxargs : Bool) : Except String Unit :=
+  let (args, entry) := resolveargs entry prov ctxargs
+  match subject args with
+  | .ok (callargs, rawres) =>
+    let res := fixjson rawres flags.null
+    let done := match res with
+      | some value => jset entry "res" value
+      | none => entry
+    checkresult label index done callargs res
+  | .error message => handleerror label index entry message prov
 
 /-- Run one set of test entries with flags, for a subject that may replace
 its arguments. See `SubjectArgs`. -/
@@ -838,13 +980,17 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
     (testsubject : Option Subject) (argsubject : Option SubjectArgs)
     : Except String Unit := do
   let label := flags.name.getD (if pack.name.isEmpty then "set" else pack.name)
+  let ctxargs := pack.requires.contains "ctxargs"
+  let fnon := pack.requires.contains "fn"
+  let waiton := pack.requires.contains "wait"
 
-  let usesubject ← match argsubject with
-    | some _ => pure none
-    | none =>
-      match testsubject.orElse (fun _ => pack.subject) with
-      | some found => pure (some found)
-      | none => throw s!"omni: no test subject for: {label}"
+  let usesubject : Option SubjectArgs := match argsubject with
+    | some call => some call
+    | none => (testsubject.orElse (fun _ => pack.subject)).map liftsubject
+
+  -- Under `fn` each entry may name its own subject, so the check is per entry.
+  if usesubject.isNone && !fnon then
+    throw s!"omni: no test subject for: {label}"
 
   let testspecmap := fixjson (some testspec) flags.null
 
@@ -856,79 +1002,45 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
   -- any subject runs - see checkset for why this must read the
   -- pre-normalisation entries.
   if 1 <= pack.specversion then
-    checkset label testspec testset
+    checkset label testspec testset pack.requires
 
-  for index in List.range testset.size do
-    let rawentry := testset[index]!
+  let origset := (aslist (jget (some testspec) "set")).getD testset
+  let waits ← resolvewaits label flags origset
 
+  let runone (index : Nat) (rawentry : Json) : Except String Unit := do
     if !ismap (some rawentry) then
       throw s!"omni: {label}[{index}]: entry is not a map"
 
-    -- An entry with no `out` expects a null (or absent) result.
-    let entry :=
-      if flags.null && isnone (jget (some rawentry) "out") then
-        jset rawentry "out" (jstr nullmark)
-      else rawentry
+    let entry := resolveentry rawentry flags
+    let testpack ← resolvetestpack pack entry usesubject fnon
+    let some subject := testpack.subject
+      | throw s!"omni: no test subject for: {label}"
 
-    let entrysubject ←
-      match usesubject, asstr (jget (some entry) "client") with
-      | none, _ => pure none
-      | some found, some clientname =>
-        match pack.clients.lookup clientname with
-        | none => throw s!"omni: unknown client: {clientname}"
-        | some client =>
-          match client.subject with
-          | some resolve => pure (some ((resolve pack.name).getD found))
-          | none => pure (some found)
-      | some found, none => pure (some found)
+    let wait : Val :=
+      if waiton && jhas (some entry) "wait" then jget (some entry) "wait"
+      else match asstr (jget (some entry) "id") with
+        | some id => waits.lookup id
+        | none => none
 
-    -- Build the argument list: `ctx`, `args`, or `in`.
-    let hasctx := jhas (some entry) "ctx"
-    let hasargs := jhas (some entry) "args"
+    let ran := runentry label flags index entry subject pack.client ctxargs
+    match wait, ran with
+    | none, _ => ran
+    | some _, .error _ => pure ()
+    | some held, .ok () =>
+      let cause := stringify (jget (some held) "cause")
+      throw (failure label index entry s!"stale wait: {cause}" none none)
 
-    -- `Val`, so an entry with no `in` reaches the subject as ABSENT rather
-    -- than as null - the distinction `minor/typify` asserts (register 4.12).
-    let args0 : List Val :=
-      if hasctx then [jget (some entry) "ctx"]
-      else if hasargs then
-        match aslist (jget (some entry) "args") with
-        | some list => list.toList.map some
-        | none => [jget (some entry) "args"]
-      else [jget (some entry) "in"]
+  let mut failures : Array String := #[]
+  for index in List.range testset.size do
+    match runone index testset[index]! with
+    | .ok () => pure ()
+    | .error message =>
+      if flags.all then failures := failures.push message
+      else throw message
 
-    let (args, entry) :=
-      if (hasctx || hasargs) && !args0.isEmpty && ismap args0.head! then
-        let head := args0.head!.getD Json.null
-        let contextified := match pack.client.contextify with
-          | some contextify => contextify head
-          | none => head
-        -- Canonical attaches the resolved client onto ctx/args[0]
-        -- (testpack.client) so a context subject can tell it was invoked
-        -- through one. Json has no case for a live Provider reference,
-        -- and the resolved client is never absent (it defaults to the
-        -- root provider), so a boolean marker carries the same
-        -- observable meaning the corpus checks for - presence, never
-        -- identity.
-        let first := jset contextified "client" (jbool true)
-        (some first :: args0.tail!, jset entry "ctx" first)
-      else (args0, entry)
-
-    -- An args-subject returns its arguments alongside the result, so
-    -- `match.args` sees what the subject actually did with them.
-    let outcome : Except String (List Val × Val) :=
-      match argsubject, entrysubject with
-      | some call, _ => call args
-      | none, some call => (call args).map (fun res => (args, res))
-      | none, none => throw s!"omni: no test subject for: {label}"
-
-    match outcome with
-    | .ok (callargs, rawres) =>
-      let res := fixjson rawres flags.null
-      let done := match res with
-        | some value => jset entry "res" value
-        | none => entry
-      checkresult label index done callargs res
-    | .error message => handleerror label index entry message pack.client
+  if 0 < failures.size then
+    let listed := String.intercalate "\n" failures.toList
+    throw s!"omni: {label}: {failures.size} of {testset.size} entries failed\n{listed}"
 
 /-- Run one set of test entries with flags. Returns the failure message. -/
 def RunPack.runsetflags (pack : RunPack) (testspec : Json) (flags : Flags)
@@ -965,14 +1077,9 @@ def makeRunnerSpec (alltests : Json) (provider : Provider) (name : String)
         (kv.1, clientmaker copts))
     | _, _ => []
 
-  let subject :=
-    if name.isEmpty then none
-    else match provider.subject with
-      | some resolve => resolve name
-      | none => none
-
-  pure { spec := spec, subject := subject, client := provider, clients := clients,
-         name := name, specversion := specversion }
+  pure { spec := spec, subject := resolvesubject name provider, client := provider,
+         clients := clients, name := name, specversion := specversion,
+         requires := resolverequires alltests }
 
 /-- Load a spec: a path to a JSON file. -/
 def loadspec (path : String) : IO Json := do

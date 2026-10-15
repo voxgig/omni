@@ -10,7 +10,7 @@
 
 module Main (main) where
 
-import Control.Exception (SomeException, fromException, throwIO, try)
+import Control.Exception (SomeException, fromException, throw, throwIO, try)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Fib
@@ -491,6 +491,204 @@ deepequalNaN = do
   checkequal False (Bool True) (Num 1) "True, 1"
   checkequal False (Num 1) (Num 2) "1, 2"
 
+-- ---- capabilities (spec/ext.json) ------------------------------------
+
+-- The ctxargs subject: the context comes first, and must arrive
+-- contextified with its client attached.
+fibshiftedsub :: Subject
+fibshiftedsub args = case args of
+  (ctx : start : end : _)
+    | deepequal (jget ctx "mark") (Str "CTX") && not (isnone (jget ctx "client")) ->
+        fibrange (shift ctx start) (shift ctx end)
+  _ -> throwIO (FibError "fib: context not delivered")
+  where
+    shift ctx value = case (asnum value, asnum (jget ctx "shift")) of
+      (Just num, Just by) -> Num (num + by)
+      _ -> value
+
+-- Expect `action` to raise an OmniError whose message matches `pattern`.
+refuses :: IO () -> String -> IO ()
+refuses action pattern = do
+  outcome <- try action
+  case outcome of
+    Right () -> throwIO (OmniError ("omni: expected a failure matching: " ++ pattern))
+    Left (OmniError message) ->
+      if regexFind pattern message
+        then pure ()
+        else throwIO (OmniError ("omni: message does not match [" ++ pattern ++ "]: " ++ message))
+
+extpack :: Json -> IO RunPack
+extpack spec = makeRunnerSpec spec (fibprovider 0) "fib"
+
+v1 :: [String] -> [Json] -> Json
+v1 requires set =
+  JMap
+    [ ("OMNI", JMap [("version", Num 1), ("requires", JList (map Str requires))]),
+      ("fib", JMap [("g", JMap [("set", JList set)])])
+    ]
+
+rung :: RunPack -> Subject -> IO ()
+rung pack subject = runset pack (packSet pack "g") (Just subject)
+
+rungwith :: RunPack -> RunFlags -> Subject -> IO ()
+rungwith pack runflags subject = runsetWith pack (packSet pack "g") defaultFlags runflags (Just subject)
+
+waitflag :: String -> String -> RunFlags
+waitflag entryid cause = defaultRunFlags {flagWait = JMap [(entryid, JMap [("cause", Str cause)])]}
+
+extCapabilities :: IO ()
+extCapabilities =
+  mapM_
+    ( \cap ->
+        if cap `elem` capabilities
+          then pure ()
+          else throwIO (OmniError ("omni: missing capability: " ++ cap))
+    )
+    ["ctxargs", "fn", "wait"]
+
+waitingEntryPasses :: IO ()
+waitingEntryPasses = do
+  pack <- extpack (v1 ["wait"] [JMap [("in", Num 5), ("out", Num 5), ("wait", JMap [("cause", Str "gone#1")])]])
+  refuses (rung pack fibsub) "\\[0\\]: stale wait: gone#1"
+
+waitFlagHolds :: IO ()
+waitFlagHolds = do
+  pack <- extpack (v1 [] [JMap [("id", Str "a"), ("in", Num 6), ("out", Num 9)], JMap [("in", Num 7), ("out", Num 13)]])
+  rungwith pack (waitflag "a" "flag#1") fibsub
+
+waitFlagStale :: IO ()
+waitFlagStale = do
+  pack <- extpack (v1 [] [JMap [("id", Str "a"), ("in", Num 6), ("out", Num 8)]])
+  refuses (rungwith pack (waitflag "a" "flag#1") fibsub) "stale wait: flag#1"
+
+waitFlagNamesEntry :: IO ()
+waitFlagNamesEntry = do
+  pack <- extpack (v1 [] [JMap [("id", Str "a"), ("in", Num 6), ("out", Num 8)]])
+  refuses (rungwith pack (waitflag "zz" "c") fibsub) "wait names no entry: zz"
+
+waitNeedsCause :: IO ()
+waitNeedsCause = do
+  pack <- extpack (v1 ["wait"] [JMap [("in", Num 6), ("out", Num 9), ("wait", JMap [])]])
+  refuses (rung pack fibsub) "entry wait has no cause"
+
+unknownUnlessRequired :: IO ()
+unknownUnlessRequired = do
+  waitpack <- extpack (v1 [] [JMap [("in", Num 6), ("out", Num 9), ("wait", JMap [("cause", Str "c")])]])
+  refuses (rung waitpack fibsub) "unknown entry field: wait"
+  fnpack <- extpack (v1 [] [JMap [("fn", Str "fib"), ("in", Num 6), ("out", Num 8)]])
+  refuses (rung fnpack fibsub) "unknown entry field: fn"
+
+unknownFn :: IO ()
+unknownFn = do
+  pack <- extpack (v1 ["fn"] [JMap [("fn", Str "nope"), ("in", Num 6), ("out", Num 8)]])
+  refuses (rung pack fibsub) "unknown fn: nope"
+
+ctxWithArgs :: IO ()
+ctxWithArgs = do
+  nopack <-
+    extpack
+      ( v1
+          []
+          [ JMap
+              [ ("ctx", JMap [("shift", Num 0)]),
+                ("args", JList [Num 0, Num 1]),
+                ("out", JList [Num 0, Num 1])
+              ]
+          ]
+      )
+  refuses (rung nopack fibshiftedsub) "more than one of in, args, ctx"
+  inpack <-
+    extpack (v1 ["ctxargs"] [JMap [("in", Num 1), ("ctx", JMap [("shift", Num 0)]), ("out", JList [Num 0])]])
+  refuses (rung inpack fibshiftedsub) "entry has in beside args or ctx"
+
+legacyIgnoresFnWait :: IO ()
+legacyIgnoresFnWait = do
+  let entry = JMap [("in", Num 6), ("out", Num 8), ("fn", Str "nope"), ("wait", JMap [("cause", Str "c")])]
+  pack <- extpack (JMap [("fib", JMap [("g", JMap [("set", JList [entry])])])])
+  rung pack fibsub
+
+-- A hook raises from pure code, with the subject's own error type.
+boomprovider :: Provider
+boomprovider =
+  emptyProvider
+    { providerSubject = Just (const (Just fibsub)),
+      providerContextify = Just (\_ -> throw (FibError "contextify boom"))
+    }
+
+raisingHook :: IO ()
+raisingHook = do
+  let run spec = makeRunnerSpec spec boomprovider "fib"
+      ctx = ("ctx", JMap [("n", Num 6)])
+  expected <- run (v1 [] [JMap [ctx, ("err", Str "contextify boom")]])
+  rung expected fibsub
+  unexpected <- run (v1 [] [JMap [ctx, ("out", Num 8)]])
+  refuses (rung unexpected fibsub) "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom"
+  held <- run (v1 ["wait"] [JMap [ctx, ("out", Num 8), ("wait", JMap [("cause", Str "hook#1")])]])
+  rung held fibsub
+  let boom name = if "boom" == name then throw (FibError "subject boom") else Just fibsub
+  fnpack <-
+    makeRunnerSpec
+      (v1 ["fn"] [JMap [("fn", Str "boom"), ("in", Num 6), ("err", Str "subject boom")]])
+      emptyProvider {providerSubject = Just boom}
+      "fib"
+  rung fnpack fibsub
+
+-- Laziness must not let a raising hook pass unseen: the runner forces the
+-- arguments, whether or not the subject reads them.
+raisingHookUnread :: IO ()
+raisingHookUnread = do
+  pack <- makeRunnerSpec (v1 [] [JMap [("ctx", JMap [("n", Num 6)]), ("out", Num 8)]]) boomprovider "fib"
+  refuses (rung pack (const (pure (Num 8)))) "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom"
+
+waitHoldsPrestart :: IO ()
+waitHoldsPrestart = do
+  let resolve name
+        | "boom" == name = throw (FibError "subject boom")
+        | "fib" == name = Just fibsub
+        | otherwise = Nothing
+      run spec = makeRunnerSpec spec emptyProvider {providerSubject = Just resolve} "fib"
+  held <- run (v1 ["fn", "wait"] [JMap [("fn", Str "boom"), ("in", Num 6), ("out", Num 8), ("wait", JMap [("cause", Str "hook#2")])]])
+  rung held fibsub
+  stale <-
+    run (v1 ["fn", "wait"] [JMap [("fn", Str "boom"), ("in", Num 6), ("err", Str "subject boom"), ("wait", JMap [("cause", Str "hook#3")])]])
+  refuses (rung stale fibsub) "\\[0\\]: stale wait: hook#3"
+
+fnNeedsNoDefault :: IO ()
+fnNeedsNoDefault = do
+  let provider = emptyProvider {providerSubject = Just (\name -> if "fibx" == name then Just fibsub else Nothing)}
+      run spec = makeRunnerSpec spec provider "fib"
+      nosubject pack = runset pack (packSet pack "g") Nothing
+      fibx = JMap [("fn", Str "fibx"), ("in", Num 6), ("out", Num 8)]
+      plain = JMap [("in", Num 6), ("out", Num 8)]
+  resolved <- run (v1 ["fn"] [fibx])
+  nosubject resolved
+  unnamed <- run (v1 ["fn"] [fibx, plain])
+  refuses (nosubject unnamed) "^omni: no test subject for: fib$"
+  legacy <- run (v1 [] [plain])
+  refuses (nosubject legacy) "^omni: no test subject for: fib$"
+
+waitOwnId :: IO ()
+waitOwnId = do
+  pack <- extpack (v1 [] [JMap [("id", Str "constructor"), ("in", Num 6), ("out", Num 8)], JMap [("id", Str "toString"), ("in", Num 7), ("out", Num 13)]])
+  rung pack fibsub
+  rungwith pack defaultRunFlags {flagWait = JMap []} fibsub
+
+allReportsEvery :: IO ()
+allReportsEvery = do
+  pack <-
+    extpack
+      ( v1
+          []
+          [ JMap [("in", Num 5), ("out", Num 6)],
+            JMap [("in", Num 6), ("out", Num 8)],
+            JMap [("in", Num 7), ("out", Num 14)]
+          ]
+      )
+  refuses
+    (rungwith pack defaultRunFlags {flagAll = True} fibsub)
+    "^omni: fib: 2 of 3 entries failed\n.*fib\\[0\\]: result mismatch.*fib\\[2\\]: result mismatch"
+  refuses (rung pack fibsub) "^omni: fib\\[0\\]: result mismatch"
+
 main :: IO ()
 main = do
   args <- getArgs
@@ -544,6 +742,30 @@ main = do
 
   run "reports entry index and id" checkmessage
   run "deepequal: NaN equals NaN, structurally" deepequalNaN
+
+  extpath <- specfile "ext.json"
+  ext <- makeRunner extpath (fibprovider 0) "fib"
+
+  run "ext capabilities" extCapabilities
+  run "ext ctxargs" (runset ext (packSet ext "ctxargs") (Just fibshiftedsub))
+  run "ext fn" (runset ext (packSet ext "fn") (Just fibsub))
+  run "ext wait" (runset ext (packSet ext "wait") (Just fibsub))
+
+  run "a waiting entry that passes fails the set" waitingEntryPasses
+  run "the wait flag holds an entry by id" waitFlagHolds
+  run "the wait flag fails when its entry passes" waitFlagStale
+  run "the wait flag must name an entry" waitFlagNamesEntry
+  run "a wait needs a cause" waitNeedsCause
+  run "wait and fn are unknown fields unless required" unknownUnlessRequired
+  run "an unknown fn is a spec error" unknownFn
+  run "ctx with args needs ctxargs, and never takes in" ctxWithArgs
+  run "a legacy spec ignores fn and wait" legacyIgnoresFnWait
+  run "a raising hook is the entry's error, not the set's" raisingHook
+  run "a raising hook fails the entry even when the subject ignores its arguments" raisingHookUnread
+  run "a waiting entry holds a hook's error raised before the subject starts" waitHoldsPrestart
+  run "fn needs no default subject, but an entry without fn does" fnNeedsNoDefault
+  run "a wait is found by an id the entry owns, never an inherited one" waitOwnId
+  run "all reports every failure at once" allReportsEvery
 
   passed <- readIORef passcount
   failed <- readIORef failcount
