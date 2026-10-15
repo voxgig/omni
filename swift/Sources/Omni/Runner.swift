@@ -341,12 +341,9 @@ public final class RunPack {
     }
     let label = useflags.name ?? "set"
 
-    var usesubject: Subject? = nil
-    if nil == argsubject {
-      guard let found = testsubject ?? subject else {
-        throw OmniError("omni: no test subject for: \(label)")
-      }
-      usesubject = found
+    let usesubject = nil == argsubject ? testsubject ?? subject : nil
+    if nil == argsubject && nil == usesubject && !fnon {
+      throw OmniError("omni: no test subject for: \(label)")
     }
 
     let testspecmap = fixjson(testspec, useflags.null)
@@ -366,10 +363,9 @@ public final class RunPack {
     var failures: [String] = []
 
     for (index, rawentry) in testset.enumerated() {
-      var entry = rawentry
-      var started = false
-
       do {
+        var entry = rawentry
+
         guard entry.ismap else {
           throw OmniError("omni: \(label)[\(index)]: entry is not a map")
         }
@@ -380,6 +376,9 @@ public final class RunPack {
         }
 
         let testpack = try resolvetestpack(entry, usesubject, argsubject)
+        if nil == testpack.subject && nil == testpack.argsubject {
+          throw OmniError("omni: no test subject for: \(label)")
+        }
 
         var wait = Json.absent
         if waiton && !entry.get("wait").isabsent {
@@ -388,7 +387,6 @@ public final class RunPack {
           wait = waits.get(id)
         }
 
-        started = true
         if wait.isabsent {
           try runentry(useflags, index, &entry, testpack)
         } else {
@@ -402,22 +400,8 @@ public final class RunPack {
             throw fail(useflags, index, entry, "stale wait: " + stringify(wait.get("cause")))
           }
         }
-      } catch {
-        var failure = error
-        // Before the subject starts, a hook's raw error is still the entry's.
-        if !started && !(error is OmniError) {
-          do {
-            try handleerror(useflags, index, entry, error)
-            continue
-          } catch {
-            failure = error
-          }
-        }
-        if useflags.all, let omnierr = failure as? OmniError {
-          failures.append(omnierr.message)
-          continue
-        }
-        throw failure
+      } catch let omnierr as OmniError where useflags.all {
+        failures.append(omnierr.message)
       }
     }
 
@@ -438,7 +422,7 @@ public final class RunPack {
         throw OmniError("omni: unknown client: \(clientname)", entry)
       }
       testpack.client = found
-      if nil != testpack.subject, let clientsubject = found.subject?(name) {
+      if nil == testpack.argsubject, let clientsubject = found.subject?(name) {
         testpack.subject = clientsubject
       }
     }

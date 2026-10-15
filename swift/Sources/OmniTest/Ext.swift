@@ -135,6 +135,26 @@ func extsuite() {
     try R.runset(R.set("g"), FIB)
   }
 
+  testcase("fn needs no default subject, but an entry without fn does") {
+    let provider = Provider(subject: { name in "fibx" == name ? FIB : nil })
+    let R = try makeRunner(try v1(#"["fn"]"#, #"[{"fn":"fibx","in":6,"out":8}]"#), provider)
+      .runner("fib")
+    try R.runset(R.set("g"))
+    let N = try makeRunner(
+      try v1(#"["fn"]"#, #"[{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}]"#), provider
+    ).runner("fib")
+    try refuses("^omni: no test subject for: fib$") { try N.runset(N.set("g")) }
+    let L = try makeRunner(try v1("[]", #"[{"in":6,"out":8}]"#), provider).runner("fib")
+    try refuses("^omni: no test subject for: fib$") { try L.runset(L.set("g")) }
+  }
+
+  testcase("a wait is found by an id the entry owns, never an inherited one") {
+    let R = try extrunner(
+      try v1("[]", #"[{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}]"#))
+    try R.runset(R.set("g"), FIB)
+    try R.runsetflags(R.set("g"), Flags(wait: .map([])), FIB)
+  }
+
   testcase("all reports every failure at once") {
     let R = try extrunner(
       try v1("[]", #"[{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}]"#))
