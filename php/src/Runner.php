@@ -716,7 +716,7 @@ final class Runner
                 $useflags['name'] = $useflags['name'] ?? ($name ?? 'set');
 
                 $subject = $testsubject ?: $defsubject;
-                if (null === $subject) {
+                if (null === $subject && !$fnon) {
                     throw new OmniError('omni: no test subject for: ' . $useflags['name']);
                 }
 
@@ -738,24 +738,43 @@ final class Runner
                 $failures = [];
 
                 foreach ($testset as $index => $entry) {
-                    $started = false;
-
                     try {
-                        $entry = self::resolveentry($entry, $useflags);
+                        $testpack = null;
+                        $prestart = null;
 
-                        $testpack = self::resolvetestpack($name, $entry, $subject, $useprovider, $clients, $fnon);
+                        // A hook's raw error before the subject starts is still the entry's.
+                        try {
+                            $entry = self::resolveentry($entry, $useflags);
+                            $testpack = self::resolvetestpack($name, $entry, $subject, $useprovider, $clients, $fnon);
+                        } catch (OmniError $omnierr) {
+                            throw $omnierr;
+                        } catch (\Throwable $err) {
+                            $prestart = $err;
+                        }
 
-                        $id = $entry['id'] ?? null;
-                        $wait = $waiton && array_key_exists('wait', $entry) ? $entry['wait']
-                            : (is_string($id) || is_int($id) ? ($waits[$id] ?? null) : null);
+                        if (null === $prestart && null === ($testpack['subject'] ?? null)) {
+                            throw new OmniError('omni: no test subject for: ' . $useflags['name']);
+                        }
 
-                        $started = true;
+                        $id = Util::ismap($entry) ? ($entry['id'] ?? null) : null;
+                        $wait = !Util::ismap($entry) ? null
+                            : ($waiton && array_key_exists('wait', $entry) ? $entry['wait']
+                                : (is_string($id) || is_int($id) ? ($waits[$id] ?? null) : null));
+
+                        $run = function () use ($useflags, $index, &$entry, $testpack, $useprovider, $ctxargs, $prestart): void {
+                            if (null === $prestart) {
+                                self::runentry($useflags, $index, $entry, $testpack, $useprovider, $ctxargs);
+                            } else {
+                                self::handleerror($useflags, $index, $entry, $prestart, $useprovider);
+                            }
+                        };
+
                         if (null === $wait) {
-                            self::runentry($useflags, $index, $entry, $testpack, $useprovider, $ctxargs);
+                            $run();
                         } else {
                             $held = false;
                             try {
-                                self::runentry($useflags, $index, $entry, $testpack, $useprovider, $ctxargs);
+                                $run();
                             } catch (OmniError) {
                                 $held = true;
                             }
@@ -768,22 +787,12 @@ final class Runner
                                 );
                             }
                         }
-                    } catch (\Throwable $err) {
-                        $failure = $err;
-                        // Before the subject starts, a hook's raw error is still the entry's.
-                        if (!$started && !($err instanceof OmniError)) {
-                            try {
-                                self::handleerror($useflags, $index, $entry, $err, $useprovider);
-                                continue;
-                            } catch (\Throwable $herr) {
-                                $failure = $herr;
-                            }
-                        }
-                        if (true === ($useflags['all'] ?? null) && $failure instanceof OmniError) {
-                            $failures[] = $failure->getMessage();
+                    } catch (OmniError $omnierr) {
+                        if (true === ($useflags['all'] ?? null)) {
+                            $failures[] = $omnierr->getMessage();
                             continue;
                         }
-                        throw $failure;
+                        throw $omnierr;
                     }
                 }
 

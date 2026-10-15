@@ -200,6 +200,38 @@ testcase('a raising hook is the entry\'s error, not the set\'s', function () use
     ($F['runset'])($F['spec']['g'], $fib);
 });
 
+testcase('a waiting entry holds a hook\'s error raised before the subject starts', function () use ($fib) {
+    $provider = [
+        'subject' => function (string $name) use ($fib) {
+            if ('boom' === $name) {
+                throw new \RuntimeException('subject boom');
+            }
+            return 'fib' === $name ? $fib : null;
+        },
+    ];
+    $run = fn($spec) => (Runner::makeRunner($spec, $provider))('fib');
+    $H = $run(v1(['fn', 'wait'], [['fn' => 'boom', 'in' => 6, 'out' => 8, 'wait' => ['cause' => 'hook#2']]]));
+    ($H['runset'])($H['spec']['g'], $fib);
+    $S = $run(v1(['fn', 'wait'], [['fn' => 'boom', 'in' => 6, 'err' => 'subject boom', 'wait' => ['cause' => 'hook#3']]]));
+    refuses(fn() => ($S['runset'])($S['spec']['g'], $fib), '/\[0\]: stale wait: hook#3/');
+});
+
+testcase('fn needs no default subject, but an entry without fn does', function () use ($fib) {
+    $provider = ['subject' => fn(string $name) => 'fibx' === $name ? $fib : null];
+    $R = (Runner::makeRunner(v1(['fn'], [['fn' => 'fibx', 'in' => 6, 'out' => 8]]), $provider))('fib');
+    ($R['runset'])($R['spec']['g']);
+    $N = (Runner::makeRunner(v1(['fn'], [['fn' => 'fibx', 'in' => 6, 'out' => 8], ['in' => 6, 'out' => 8]]), $provider))('fib');
+    refuses(fn() => ($N['runset'])($N['spec']['g']), '/^omni: no test subject for: fib$/D');
+    $L = (Runner::makeRunner(v1([], [['in' => 6, 'out' => 8]]), $provider))('fib');
+    refuses(fn() => ($L['runset'])($L['spec']['g']), '/^omni: no test subject for: fib$/D');
+});
+
+testcase('a wait is found by an id the entry owns, never an inherited one', function () use ($fib) {
+    $R = runner(v1([], [['id' => 'constructor', 'in' => 6, 'out' => 8], ['id' => 'toString', 'in' => 7, 'out' => 13]]));
+    ($R['runset'])($R['spec']['g'], $fib);
+    ($R['runsetflags'])($R['spec']['g'], ['wait' => []], $fib);
+});
+
 testcase('all reports every failure at once', function () use ($fib) {
     $R = runner(v1([], [['in' => 5, 'out' => 6], ['in' => 6, 'out' => 8], ['in' => 7, 'out' => 14]]));
     refuses(
