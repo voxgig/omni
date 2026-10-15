@@ -871,20 +871,19 @@ int omni_runset(omni_runpack *pack, omni_json *testspec, omni_subject *subject, 
 
 typedef struct {
   omni_subject *subject;
-  omni_json *args;
+  omni_provider *client;
 } omni_entrycall;
 
-/* Resolve one entry's subject and arguments. A failure here is a spec
- * error, never one a wait holds. Returns 0, or 1 with *errout set. */
+/* Resolve one entry's subject and the provider it runs through. A failure
+ * here is a spec error, never one a wait holds. Returns 0, or 1 with
+ * *errout set. */
 static int omni_prepareentry(omni_runpack *pack, omni_flags flags, omni_json *entry,
                              omni_subject *usesubject, omni_entrycall *call, char **errout) {
   omni_pool *pool = pack->pool;
-  omni_json *args = omni_list(pool);
   omni_subject *entrysubject = usesubject;
   omni_provider *entryprovider = pack->provider;
   omni_json *clientname;
   omni_json *fn;
-  omni_json *rawargs;
   size_t at;
 
   /* An entry with no `out` expects a null (or absent) result. */
@@ -926,9 +925,19 @@ static int omni_prepareentry(omni_runpack *pack, omni_flags flags, omni_json *en
     entrysubject = fnsubject;
   }
 
-  /* Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
-   * entry with both passes the context first, then each argument. */
-  rawargs = omni_map_get(entry, "args");
+  call->subject = entrysubject;
+  call->client = entryprovider;
+  return 0;
+}
+
+/* Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+ * entry with both passes the context first, then each argument. */
+static omni_json *omni_resolveargs(omni_runpack *pack, omni_json *entry, omni_entrycall *call) {
+  omni_pool *pool = pack->pool;
+  omni_json *args = omni_list(pool);
+  omni_json *rawargs = omni_map_get(entry, "args");
+  size_t at;
+
   if (pack->ctxargs && omni_map_has(entry, "ctx") && omni_map_has(entry, "args")) {
     omni_list_push(args, omni_map_get(entry, "ctx"));
     if (omni_islist(rawargs)) {
@@ -959,21 +968,20 @@ static int omni_prepareentry(omni_runpack *pack, omni_flags flags, omni_json *en
 
     /* So a subject can reach the client it was invoked through. */
     if (omni_ismap(first)) {
-      first->client = entryprovider;
+      first->client = call->client;
     }
   }
 
-  call->subject = entrysubject;
-  call->args = args;
-  return 0;
+  return args;
 }
 
-/* Call one entry's subject and check the result. Returns 0 on a pass, or
- * 1 with *errout set. */
+/* Build one entry's arguments, call its subject and check the result.
+ * Returns 0 on a pass, or 1 with *errout set. */
 static int omni_callentry(omni_runpack *pack, omni_flags flags, size_t index, omni_json *entry,
                           omni_entrycall *call, char **errout) {
   omni_pool *pool = pack->pool;
-  omni_result result = call->subject->call(call->subject, call->args->list, call->args->listlen);
+  omni_json *args = omni_resolveargs(pack, entry, call);
+  omni_result result = call->subject->call(call->subject, args->list, args->listlen);
 
   if (NULL != result.err) {
     return omni_handleerror(pool, flags, index, entry, result.err, pack->provider, errout);
@@ -982,7 +990,7 @@ static int omni_callentry(omni_runpack *pack, omni_flags flags, size_t index, om
   {
     omni_json *res = omni_fixjson(pool, result.val, flags.null);
     omni_map_set(entry, "res", res);
-    return omni_checkresult(pool, flags, index, entry, call->args, res, errout);
+    return omni_checkresult(pool, flags, index, entry, args, res, errout);
   }
 }
 
