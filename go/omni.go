@@ -910,7 +910,7 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 			if nil == usesubject {
 				usesubject = defsubject
 			}
-			if nil == usesubject {
+			if nil == usesubject && !fnon {
 				return &OmniError{Message: "omni: no test subject for: " + Stringify(useflags["name"])}
 			}
 
@@ -958,6 +958,9 @@ func MakeRunner(specref any, provider *Provider) (Runner, error) {
 					pack, err := resolvetestpack(name, entry, usesubject, useprovider, clients, fnon)
 					if nil != err {
 						return err
+					}
+					if nil == pack.subject {
+						return &OmniError{Message: "omni: no test subject for: " + Stringify(useflags["name"])}
 					}
 
 					wait, haswait := entry["wait"]

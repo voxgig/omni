@@ -54,7 +54,12 @@ func (fault *fibfault) Error() string { return fault.msg }
 
 func extrunner(t *testing.T, spec any) *omni.RunPack {
 	t.Helper()
-	runner, err := omni.MakeRunner(spec, extprovider())
+	return providerrunner(t, spec, extprovider())
+}
+
+func providerrunner(t *testing.T, spec any, provider *omni.Provider) *omni.RunPack {
+	t.Helper()
+	runner, err := omni.MakeRunner(spec, provider)
 	if nil != err {
 		t.Fatalf("omni: %v", err)
 	}
@@ -172,6 +177,35 @@ func TestExtRunner(t *testing.T) {
 		R := extrunner(t, map[string]any{"fib": map[string]any{"g": map[string]any{"set": []any{
 			entry("in", 6.0, "out", 8.0, "fn", "nope", "wait", map[string]any{"cause": "c"})}}}})
 		if err := R.RunSet(g(R), FIB); nil != err {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("fn needs no default subject, but an entry without fn does", func(t *testing.T) {
+		provider := &omni.Provider{Subject: func(name string) omni.Subject {
+			if "fibx" == name {
+				return FIB
+			}
+			return nil
+		}}
+		run := func(spec any) *omni.RunPack { return providerrunner(t, spec, provider) }
+		R := run(v1([]any{"fn"}, []any{entry("fn", "fibx", "in", 6.0, "out", 8.0)}))
+		if err := R.RunSet(g(R), nil); nil != err {
+			t.Fatal(err)
+		}
+		N := run(v1([]any{"fn"}, []any{entry("fn", "fibx", "in", 6.0, "out", 8.0), entry("in", 6.0, "out", 8.0)}))
+		refuses(t, N.RunSet(g(N), nil), `^omni: no test subject for: fib$`)
+		L := run(v1([]any{}, []any{entry("in", 6.0, "out", 8.0)}))
+		refuses(t, L.RunSet(g(L), nil), `^omni: no test subject for: fib$`)
+	})
+
+	t.Run("a wait is found by an id the entry owns, never an inherited one", func(t *testing.T) {
+		R := extrunner(t, v1([]any{}, []any{
+			entry("id", "constructor", "in", 6.0, "out", 8.0), entry("id", "toString", "in", 7.0, "out", 13.0)}))
+		if err := R.RunSet(g(R), FIB); nil != err {
+			t.Fatal(err)
+		}
+		if err := R.RunSetFlags(g(R), omni.Flags{"wait": map[string]any{}}, FIB); nil != err {
 			t.Fatal(err)
 		}
 	})
