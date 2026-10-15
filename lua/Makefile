@@ -5,7 +5,7 @@ LUA ?= lua5.4
 build:
 
 test:
-	$(LUA) test/run.lua
+	$(LUA) test/run.lua && $(LUA) test/ext.lua
 
 clean:
 
