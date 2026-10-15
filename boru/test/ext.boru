@@ -1,0 +1,404 @@
+# RUN: boru run -no-check -no-compile test/main.boru
+#
+# The capability suite: spec/ext.json requires ctxargs, fn and wait, and a
+# port that carries them runs it, beside the runner flag `all`.
+
+import "boru:io"
+import "boru:minilang"
+import "boru:string-util"
+import "../src/omni.boru"
+import "./fib.boru"
+
+def ex-tally (flex {npass: 0 nfail: 0})
+
+def ex-only (flex {name: none})
+
+def ex-wanted fn [[name:Any] [Boolean] [
+  def o (ex-only get "name")
+  def r (
+    if (o is None) [true] [o eq name]
+  )
+  r
+]]
+
+def ex-ok fn [[name:Any] [Any] [
+  def np ((ex-tally get "npass") add 1)
+  (ex-tally set "npass" np) drop
+  print `ok   - ${name}`
+  def r none
+  r
+]]
+
+def ex-bad fn [[name:Any msg:Any] [Any] [
+  def nf ((ex-tally get "nfail") add 1)
+  (ex-tally set "nfail" nf) drop
+  print `FAIL - ${name}`
+  print (msg)
+  def r none
+  r
+]]
+
+# --- the subjects and the provider -------------------------------------------
+# Callbacks capture the library functions as values: see ./run.boru.
+
+def ex-build fn [[x:Any] [Any] [
+  def fibfn (Fib.fib/v)
+  def seqfn (Fib.fibseq/v)
+  def rangefn (Fib.fibrange/v)
+  def infofn (Fib.fibinfo/v)
+
+  def fibsub ([av:Any] => [
+    def r (fibfn (av get 0))
+    r
+  ])
+  def seqsub ([av:Any] => [
+    def r (seqfn (av get 0))
+    r
+  ])
+  def rangesub ([av:Any] => [
+    def r (rangefn (av get 0) (av get 1))
+    r
+  ])
+  def infosub ([av:Any] => [
+    def r (infofn (av get 0))
+    r
+  ])
+
+  def subj ([av:Any] => [
+    def name (av get 0)
+    def r (
+      if (name eq "fib") [[fibsub/v]] [
+        if (name eq "fibseq") [[seqsub/v]] [
+          if (name eq "fibrange") [[rangesub/v]] [
+            if (name eq "fibinfo") [[infosub/v]] [none]
+          ]
+        ]
+      ]
+    )
+    r
+  ])
+
+  def cfy ([av:Any] => [
+    def v (av get 0)
+    (v set "mark" "CTX") drop
+    def r v
+    r
+  ])
+
+  # The ctxargs subject: the context comes first, and must arrive
+  # contextified with its client attached.
+  def shifted ([av:Any] => [
+    def ctx (av get 0)
+    def delivered (
+      if (ctx is Map) [
+        def marked (if (ctx has "mark") [(ctx get "mark") eq "CTX"] [false])
+        def withclient (if (ctx has "client") [((ctx get "client") is None) not] [false])
+        (marked and withclient)
+      ] [false]
+    )
+    if (delivered not) [
+      raise {code: fib_err/q message: "fib: context not delivered"}
+    ] [none] drop
+    def by (ctx get "shift")
+    def r (rangefn ((av get 1) add by) ((av get 2) add by))
+    r
+  ])
+
+  def r (flex {
+    provider: (flex {subject: [subj/v] contextify: [cfy/v]})
+    fib: [fibsub/v]
+    shifted: [shifted/v]
+  })
+  r
+]]
+
+# --- spec discovery ----------------------------------------------------------
+
+def exl-specfile fn [[i:Integer dir:String name:String] [Any] [
+  def r (
+    if (i gte 8) [
+      raise {code: omni_fail/q message: `omni: spec not found: ${name}`}
+    ] [
+      def cand (StringUtil.concat [dir "/spec/" name])
+      def found (do [
+        (IO.read (make Pathon cand)) drop
+        true
+      ] error [var [[e] false]])
+      if (found eq true) [cand] [
+        def up (StringUtil.concat [dir "/.."])
+        def i1 (i add 1)
+        def rr (exl-specfile i1 up name)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+# --- checks ------------------------------------------------------------------
+
+# Run one group, building the runner inside the protected block so a refused
+# spec is a recorded outcome rather than a crash.
+def ex-run fn [[prov:Any spec:Any setname:Any flags:Any subject:Any] [Any] [
+  def outcome (do [
+    def rn (Omni.makeRunner spec prov)
+    def pack (Omni.runner rn "fib" none)
+    (Omni.runsetflags pack (Omni.set pack setname) flags subject) drop
+    {ok: true code: none msg: "the set passed"}
+  ] error [var [[e]
+    def o (flex {})
+    (o set "ok" false) drop
+    (o set "code" (e get "code")) drop
+    (o set "msg" (Omni.errmessage e)) drop
+    o
+  ]])
+  def r outcome
+  r
+]]
+
+def ex-matches fn [[s:Any pattern:String] [Boolean] [
+  def r (
+    if (s is String) [
+      def m (s mini re (pattern) {})
+      (m.ok)
+    ] [false]
+  )
+  r
+]]
+
+# An omni failure whose message matches the RE2 pattern.
+def ex-refused fn [[out:Any pattern:String] [Boolean] [
+  def failed ((out get "ok") eq false)
+  def omnifail ((out get "code") eq omni_fail/q)
+  def hit (ex-matches (out get "msg") pattern)
+  def r ((failed and omnifail) and hit)
+  r
+]]
+
+def ex-report fn [[label:Any pass:Boolean out:Any] [Any] [
+  def r (
+    if (pass eq true) [
+      def rr (ex-ok label)
+      rr
+    ] [
+      def rr (ex-bad label (out get "msg"))
+      rr
+    ]
+  )
+  r
+]]
+
+def ex-v1 fn [[requires:Any entries:Any] [Any] [
+  def r (flex {OMNI: {version: 1 requires: (requires)} fib: {g: {set: (entries)}}})
+  r
+]]
+
+def exl-inlist fn [[i:Integer xs:Any v:Any] [Boolean] [
+  def r (
+    if (i gte (size xs)) [false] [
+      if ((xs get i) eq v) [true] [
+        def i1 (i add 1)
+        def rr (exl-inlist i1 xs v)
+        rr
+      ]
+    ]
+  )
+  r
+]]
+
+def exl-hascaps fn [[i:Integer caps:Any want:Any] [Boolean] [
+  def r (
+    if (i gte (size want)) [true] [
+      if (exl-inlist 0 caps (want get i)) [
+        def i1 (i add 1)
+        def rr (exl-hascaps i1 caps want)
+        rr
+      ] [false]
+    ]
+  )
+  r
+]]
+
+def ex-capabilities fn [[label:Any] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def pass (exl-hascaps 0 Omni.CAPABILITIES ["ctxargs" "fn" "wait"])
+      def caps (Omni.stringify Omni.CAPABILITIES)
+      def rr (ex-report label pass {msg: `omni: capabilities lack one of ctxargs, fn, wait: ${caps}`})
+      rr
+    ]
+  )
+  r
+]]
+
+def ex-group fn [[prov:Any path:Any setname:Any subject:Any] [Any] [
+  def r (
+    if ((ex-wanted setname) not) [none] [
+      def out (ex-run prov path setname (flex {}) subject)
+      def rr (ex-report setname ((out get "ok") eq true) out)
+      rr
+    ]
+  )
+  r
+]]
+
+def ex-passes fn [[label:Any prov:Any spec:Any flags:Any subject:Any] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def out (ex-run prov spec "g" flags subject)
+      def rr (ex-report label ((out get "ok") eq true) out)
+      rr
+    ]
+  )
+  r
+]]
+
+def ex-refuses fn [[label:Any prov:Any spec:Any flags:Any subject:Any pattern:String] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def out (ex-run prov spec "g" flags subject)
+      def rr (ex-report label (ex-refused out pattern) out)
+      rr
+    ]
+  )
+  r
+]]
+
+# A pair of refusals under one name: both have to hold.
+def ex-refuses2 fn [[label:Any prov:Any a:Any aflags:Any asub:Any apat:String b:Any bflags:Any bsub:Any bpat:String] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def outa (ex-run prov a "g" aflags asub)
+      def outb (ex-run prov b "g" bflags bsub)
+      def pa (ex-refused outa apat)
+      def pb (ex-refused outb bpat)
+      def rr (
+        if (pa eq true) [ex-report label pb outb] [ex-report label false outa]
+      )
+      rr
+    ]
+  )
+  r
+]]
+
+# A raising hook is the entry's error, not the set's: `err` can expect it,
+# it is an unexpected error otherwise, a waiting entry holds it, and a subject
+# hook raising while `fn` resolves is caught the same way.
+def ex-hookerr fn [[label:Any sfib:Any] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def boom ([av:Any] => [
+        raise {code: hook_fail/q message: "contextify boom"}
+      ])
+      def anyfib ([av:Any] => [
+        def r2 sfib
+        r2
+      ])
+      def hookprov (flex {subject: [anyfib/v] contextify: [boom/v]})
+      def subjboom ([av:Any] => [
+        if ((av get 0) eq "boom") [
+          raise {code: hook_fail/q message: "subject boom"}
+        ] [none] drop
+        def r2 sfib
+        r2
+      ])
+      def subjprov (flex {subject: [subjboom/v]})
+
+      def oute (ex-run hookprov (ex-v1 [] [{ctx: {n: 6} err: "contextify boom"}]) "g" (flex {}) sfib)
+      def outu (ex-run hookprov (ex-v1 [] [{ctx: {n: 6} out: 8}]) "g" (flex {}) sfib)
+      def outw (ex-run hookprov (ex-v1 ["wait"] [{ctx: {n: 6} out: 8 wait: {cause: "hook#1"}}]) "g" (flex {}) sfib)
+      def outf (ex-run subjprov (ex-v1 ["fn"] [{fn: "boom" in: 6 err: "subject boom"}]) "g" (flex {}) sfib)
+
+      def pe ((oute get "ok") eq true)
+      def pu (ex-refused outu "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom")
+      def pw ((outw get "ok") eq true)
+      def pf ((outf get "ok") eq true)
+      def rr (
+        if (pe not) [ex-report label false oute] [
+          if (pu not) [ex-report label false outu] [
+            if (pw not) [ex-report label false outw] [
+              ex-report label pf outf
+            ]
+          ]
+        ]
+      )
+      rr
+    ]
+  )
+  r
+]]
+
+# --- main --------------------------------------------------------------------
+
+def ex-main fn [[av:Any] [Any] [
+  if (av is List) [
+    if ((size av) gt 0) [(ex-only set "name" (av get 0)) drop none] [none] drop
+    none
+  ] [none] drop
+
+  def built (ex-build none)
+  def prov (built get "provider")
+  def sfib (built get "fib")
+  def sshifted (built get "shifted")
+  def path (exl-specfile 0 "." "ext.json")
+
+  (ex-capabilities "capabilities") drop
+  (ex-group prov path "ctxargs" sshifted) drop
+  (ex-group prov path "fn" sfib) drop
+  (ex-group prov path "wait" sfib) drop
+
+  (ex-refuses "a waiting entry that passes fails the set" prov
+    (ex-v1 ["wait"] [{in: 5 out: 5 wait: {cause: "gone#1"}}])
+    (flex {}) sfib "\\[0\\]: stale wait: gone#1") drop
+
+  (ex-passes "the wait flag holds an entry by id" prov
+    (ex-v1 [] [{id: "a" in: 6 out: 9} {in: 7 out: 13}])
+    (flex {wait: {a: {cause: "flag#1"}}}) sfib) drop
+
+  (ex-refuses "the wait flag fails when its entry passes" prov
+    (ex-v1 [] [{id: "a" in: 6 out: 8}])
+    (flex {wait: {a: {cause: "flag#1"}}}) sfib "stale wait: flag#1") drop
+
+  (ex-refuses "the wait flag must name an entry" prov
+    (ex-v1 [] [{id: "a" in: 6 out: 8}])
+    (flex {wait: {zz: {cause: "c"}}}) sfib "wait names no entry: zz") drop
+
+  (ex-refuses "a wait needs a cause" prov
+    (ex-v1 ["wait"] [{in: 6 out: 9 wait: {}}])
+    (flex {}) sfib "entry wait has no cause") drop
+
+  (ex-refuses2 "wait and fn are unknown fields unless required" prov
+    (ex-v1 [] [{in: 6 out: 9 wait: {cause: "c"}}]) (flex {}) sfib "unknown entry field: wait"
+    (ex-v1 [] [{fn: "fib" in: 6 out: 8}]) (flex {}) sfib "unknown entry field: fn") drop
+
+  (ex-refuses "an unknown fn is a spec error" prov
+    (ex-v1 ["fn"] [{fn: "nope" in: 6 out: 8}])
+    (flex {}) sfib "unknown fn: nope") drop
+
+  (ex-refuses2 "ctx with args needs ctxargs, and never takes in" prov
+    (ex-v1 [] [{ctx: {shift: 0} args: [0 1] out: [0 1]}]) (flex {}) sshifted "more than one of in, args, ctx"
+    (ex-v1 ["ctxargs"] [{in: 1 ctx: {shift: 0} out: [0]}]) (flex {}) sshifted "entry has in beside args or ctx") drop
+
+  (ex-passes "a legacy spec ignores fn and wait" prov
+    (flex {fib: {g: {set: [{in: 6 out: 8 fn: "nope" wait: {cause: "c"}}]}}})
+    (flex {}) sfib) drop
+
+  (ex-hookerr "a raising hook is the entry's error, not the set's" sfib) drop
+
+  def allspec (ex-v1 [] [{in: 5 out: 6} {in: 6 out: 8} {in: 7 out: 14}])
+  (ex-refuses2 "all reports every failure at once" prov
+    allspec (flex {all: true}) sfib
+    "^omni: fib: 2 of 3 entries failed\n[\\s\\S]*fib\\[0\\]: result mismatch[\\s\\S]*fib\\[2\\]: result mismatch"
+    allspec (flex {}) sfib "^omni: fib\\[0\\]: result mismatch") drop
+
+  def np (ex-tally get "npass")
+  def nf (ex-tally get "nfail")
+  print `ext: ${np} passed, ${nf} failed`
+  if (nf gt 0) [
+    raise {code: omni_fail/q message: `${nf} failures`}
+  ] [none] drop
+  def r none
+  r
+]]
+
+export "Ext" {main: ex-main/v}
