@@ -436,7 +436,7 @@
         fnon (contains? requires "fn")
         waiton (contains? requires "wait")]
 
-    (when (nil? usesubject)
+    (when (and (nil? usesubject) (not fnon))
       (throw (omni-error (str "omni: no test subject for: " label))))
 
     (let [testspecmap (fixjson testspec donull)
@@ -458,36 +458,37 @@
                (when-not (u/ismap rawentry)
                  (throw (omni-error (str "omni: " label "[" index "]: entry is not a map"))))
 
-               (let [entry (resolveentry rawentry donull)
-                     started (volatile! false)]
+               (let [entry (resolveentry rawentry donull)]
                  (try
-                   (let [testpack (resolvetestpack name entry usesubject provider clients fnon)
-                         id (get entry "id")
-                         wait (if (and waiton (contains? entry "wait"))
-                                (get entry "wait")
-                                (when (some? id) (get waits id)))
-                         run #(runentry label index entry testpack provider ctxargs donull argsmode)]
-                     (vreset! started true)
-                     (if (nil? wait)
-                       (run)
-                       (when-let [ran (try
-                                        (run)
-                                        (catch Throwable err
-                                          (if (omni-error? err) nil (throw err))))]
-                         (throw (fail label index ran (str "stale wait: " (get wait "cause"))))))
-                     failures)
+                   ;; A hook's raw error before the subject starts is still the entry's.
+                   (let [[testpack prestart]
+                         (try
+                           [(resolvetestpack name entry usesubject provider clients fnon) nil]
+                           (catch Throwable err
+                             (if (omni-error? err) (throw err) [nil err])))]
+
+                     (when (and (nil? prestart) (nil? (:subject testpack)))
+                       (throw (omni-error (str "omni: no test subject for: " label))))
+
+                     (let [id (get entry "id")
+                           wait (if (and waiton (contains? entry "wait"))
+                                  (get entry "wait")
+                                  (when (some? id) (get waits id)))
+                           run (if (some? prestart)
+                                 #(do (handleerror label index entry prestart provider) entry)
+                                 #(runentry label index entry testpack provider ctxargs donull argsmode))]
+                       (if (nil? wait)
+                         (run)
+                         (when-let [ran (try
+                                          (run)
+                                          (catch Throwable err
+                                            (if (omni-error? err) nil (throw err))))]
+                           (throw (fail label index ran (str "stale wait: " (get wait "cause"))))))))
+                   failures
                    (catch Throwable err
-                     ;; Before the subject starts, a hook's raw error is still the entry's.
-                     (let [failure (if (or @started (omni-error? err))
-                                     err
-                                     (try
-                                       (handleerror label index entry err provider)
-                                       nil
-                                       (catch Throwable herr herr)))]
-                       (cond
-                         (nil? failure) failures
-                         (and (true? (:all flags)) (omni-error? failure)) (conj failures (ex-message failure))
-                         :else (throw failure)))))))
+                     (if (and (true? (:all flags)) (omni-error? err))
+                       (conj failures (ex-message err))
+                       (throw err))))))
              []
              (map-indexed vector testset))]
 

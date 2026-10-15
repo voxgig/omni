@@ -117,6 +117,36 @@
     ((:runset W) (g W) FIB)
     ((:runset F) (g F) FIB)))
 
+(defn- prestartheld []
+  (let [provider {:subject (fn [name]
+                             (cond
+                               (= "boom" name) (throw (RuntimeException. "subject boom"))
+                               (= "fib" name) FIB
+                               :else nil))}
+        run (fn [spec] ((runner/make-runner spec provider) "fib"))
+        H (run (v1 ["fn" "wait"] [{"fn" "boom" "in" 6.0 "out" 8.0 "wait" {"cause" "hook#2"}}]))
+        S (run (v1 ["fn" "wait"] [{"fn" "boom" "in" 6.0 "err" "subject boom"
+                                   "wait" {"cause" "hook#3"}}]))]
+    ((:runset H) (g H) FIB)
+    (refuses #((:runset S) (g S) FIB) #"\[0\]: stale wait: hook#3")))
+
+;; A nil subject is how runset is given none.
+(defn- fnnodefault []
+  (let [provider {:subject (fn [name] (when (= "fibx" name) FIB))}
+        run (fn [spec] ((runner/make-runner spec provider) "fib"))
+        R (run (v1 ["fn"] [{"fn" "fibx" "in" 6.0 "out" 8.0}]))
+        N (run (v1 ["fn"] [{"fn" "fibx" "in" 6.0 "out" 8.0} {"in" 6.0 "out" 8.0}]))
+        L (run (v1 [] [{"in" 6.0 "out" 8.0}]))]
+    ((:runset R) (g R) nil)
+    (refuses #((:runset N) (g N) nil) #"^omni: no test subject for: fib$")
+    (refuses #((:runset L) (g L) nil) #"^omni: no test subject for: fib$")))
+
+(defn- ownwaitid []
+  (let [R (extrunner (v1 [] [{"id" "constructor" "in" 6.0 "out" 8.0}
+                             {"id" "toString" "in" 7.0 "out" 13.0}]))]
+    ((:runset R) (g R) FIB)
+    ((:runsetflags R) (g R) {:wait {}} FIB)))
+
 ;; Each case as [name body], for the main harness to run and count.
 (defn cases [specfile]
   [["ext: capabilities" capabilities]
@@ -133,4 +163,7 @@
    ["ext: ctx with args needs ctxargs, and never takes in" ctxwithargs]
    ["ext: a legacy spec ignores fn and wait" legacyignores]
    ["ext: a raising hook is the entry's error, not the set's" raisinghook]
+   ["ext: a waiting entry holds a hook's error raised before the subject starts" prestartheld]
+   ["ext: fn needs no default subject, but an entry without fn does" fnnodefault]
+   ["ext: a wait is found by an id the entry owns, never an inherited one" ownwaitid]
    ["ext: all reports every failure at once" allfailures]])
