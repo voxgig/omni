@@ -14,6 +14,7 @@
 module Omni
   ( Json (..),
     Flags (..),
+    RunFlags (..),
     Provider (..),
     RunPack (..),
     Subject,
@@ -26,6 +27,7 @@ module Omni
     capabilities,
     defaultFlags,
     nonullFlags,
+    defaultRunFlags,
     emptyProvider,
     ismap,
     islist,
@@ -620,6 +622,14 @@ defaultFlags = Flags {flagNull = True, flagName = Nothing}
 nonullFlags :: Flags
 nonullFlags = Flags {flagNull = False, flagName = Nothing}
 
+-- | The flags beyond 'Flags': @all@ runs every entry, then fails once
+-- listing each failure; @wait@ maps an entry id to its @{cause}@. A record
+-- of its own, so that a 'Flags' built with record syntax stays complete.
+data RunFlags = RunFlags {flagAll :: Bool, flagWait :: Json}
+
+defaultRunFlags :: RunFlags
+defaultRunFlags = RunFlags {flagAll = False, flagWait = Absent}
+
 -- | The host of the system under test. Every hook is optional.
 data Provider = Provider
   { providerSubject :: Maybe (String -> Maybe Subject),
@@ -655,6 +665,10 @@ data RunPack = RunPack
     -- | Everything 'runsetFlags' does, for a subject that may replace its
     -- arguments. See 'SubjectArgs'.
     runsetFlagsArgs :: Json -> Flags -> SubjectArgs -> IO (),
+    -- | 'runsetFlags' with 'RunFlags' as well.
+    runsetWith :: Json -> Flags -> RunFlags -> Maybe Subject -> IO (),
+    -- | 'runsetFlagsArgs' with 'RunFlags' as well.
+    runsetWithArgs :: Json -> Flags -> RunFlags -> SubjectArgs -> IO (),
     packSubject :: Maybe Subject,
     packClient :: Provider
   }
@@ -668,10 +682,9 @@ specversion = 1
 -- | Capability strings this runner supports beyond the version baseline.
 -- A spec's OMNI.requires list is checked against this: an unknown
 -- capability refuses the spec loudly at load time, instead of a lagging
--- port silently mis-running it. (Empty today; future format features
--- mint a string here.)
+-- port silently mis-running it. A spec turns each on only by requiring it.
 capabilities :: [String]
-capabilities = []
+capabilities = ["ctxargs", "fn", "wait"]
 
 -- | The complete set of fields an entry may carry. Under version 1
 -- anything else is an error: an unrecognised key is almost always a
@@ -679,6 +692,10 @@ capabilities = []
 -- stopped testing.
 entryfields :: [String]
 entryfields = ["in", "args", "ctx", "out", "err", "match", "client", "id", "doc"]
+
+-- Entry fields a capability adds, permitted only in a spec that requires it.
+capfields :: [(String, String)]
+capfields = [("fn", "fn"), ("wait", "wait")]
 
 -- | Read the spec's format version from its optional top-level OMNI
 -- block, and refuse a spec this runner cannot faithfully run: a version
@@ -715,19 +732,31 @@ resolveversion alltests
       Just text | text `elem` capabilities -> pure ()
       _ -> throwIO (OmniError ("omni: spec requires unsupported capability: " ++ stringify cap))
 
+-- The capabilities a spec requires, which resolveversion has already
+-- checked against capabilities.
+resolverequires :: Json -> [String]
+resolverequires alltests =
+  [cap | Str cap <- fromMaybe [] (aslist (jget (jget alltests "OMNI") "requires"))]
+
 -- | Strict entry validation, applied when the spec declares version 1 or
 -- later. The lenient format converts each of these mistakes into a
 -- silent pass or a dead field; here they fail with the entry named.
-checkentry :: String -> Int -> Json -> IO ()
-checkentry label index entry
+checkentry :: String -> Int -> Json -> [String] -> IO ()
+checkentry label index entry requires
   | not (ismap entry) = throwIO (failure label index entry "entry is not a map" Nothing Nothing)
   | otherwise = do
       mapM_ checkfield (map fst (fromMaybe [] (asmap entry)))
 
-      let argsources = length (filter (jhas entry) ["in", "args", "ctx"])
-      if 1 < argsources
-        then throwIO (failure label index entry "entry has more than one of in, args, ctx" Nothing Nothing)
-        else pure ()
+      if "ctxargs" `elem` requires
+        then refuse (has "in" && (has "args" || has "ctx")) "entry has in beside args or ctx"
+        else
+          refuse
+            (1 < length (filter has ["in", "args", "ctx"]))
+            "entry has more than one of in, args, ctx"
+
+      refuse (has "fn" && maybe True null (asstr (jget entry "fn"))) "entry fn is not a name"
+
+      refuse (has "wait" && not (iswait (jget entry "wait"))) "entry wait has no cause"
 
       if not (isnone (jget entry "err")) && jhas entry "out"
         then throwIO (failure label index entry "entry has both err and out" Nothing Nothing)
@@ -740,18 +769,25 @@ checkentry label index entry
         then throwIO (failure label index entry "entry id is not a string" Nothing Nothing)
         else pure ()
   where
+    has key = not (isabsent (jget entry key))
+
+    refuse broken reason =
+      if broken
+        then throwIO (failure label index entry reason Nothing Nothing)
+        else pure ()
+
     checkfield key =
-      if key `elem` entryfields
-        then pure ()
-        else throwIO (failure label index entry ("unknown entry field: " ++ key) Nothing Nothing)
+      refuse
+        (key `notElem` entryfields && not (maybe False (`elem` requires) (lookup key capfields)))
+        ("unknown entry field: " ++ key)
 
 -- | Validate a version-1 group up front, against the AUTHORED entries -
 -- null-normalisation would otherwise rewrite an authored null (e.g.
 -- id: null) into a sentinel string and hide it from validation. A
 -- malformed spec is a spec error, not a test result, so it fails before
 -- any subject runs.
-checkset :: String -> Json -> [Json] -> IO ()
-checkset label testspec normalset = do
+checkset :: String -> Json -> [Json] -> [String] -> IO ()
+checkset label testspec normalset requires = do
   let origset = case (asmap testspec, aslist (jget testspec "set")) of
         (Just _, Just list) -> list
         _ -> normalset
@@ -764,7 +800,7 @@ checkset label testspec normalset = do
     then throwIO (OmniError ("omni: empty test set: " ++ label))
     else pure ()
 
-  mapM_ (\(index, entry) -> checkentry label index entry) (zip [0 :: Int ..] origset)
+  mapM_ (\(index, entry) -> checkentry label index entry requires) (zip [0 :: Int ..] origset)
 
 -- | Find @primary.\<name\>@, then @\<name\>@, then the whole spec.
 resolvespec :: String -> Json -> Json
@@ -1008,6 +1044,94 @@ handleerror label index entry message provider = do
                 (Just message)
             )
 
+iswait :: Json -> Bool
+iswait wait = ismap wait && maybe False (not . null) (asstr (jget wait "cause"))
+
+-- The runner-side waits: entry id to its declaration. Each must name an
+-- entry of the set, so a declaration cannot outlive the entry it held.
+resolvewaits :: String -> Json -> [Json] -> IO [(String, Json)]
+resolvewaits label waits origset
+  | isnone waits = pure []
+  | otherwise = case asmap waits of
+      Nothing -> throwIO (OmniError ("omni: " ++ label ++ ": wait flag is not a map"))
+      Just declared -> mapM_ checkwait declared >> pure declared
+  where
+    ids = [entryid | entry <- origset, Just entryid <- [asstr (jget entry "id")]]
+
+    checkwait (entryid, wait)
+      | entryid `notElem` ids =
+          throwIO (OmniError ("omni: " ++ label ++ ": wait names no entry: " ++ entryid))
+      | not (iswait wait) =
+          throwIO (OmniError ("omni: " ++ label ++ ": wait for " ++ entryid ++ " has no cause"))
+      | otherwise = pure ()
+
+resolvesubject :: String -> Provider -> Maybe Subject
+resolvesubject name provider = providerSubject provider >>= \resolve -> resolve name
+
+-- The subject one entry runs: `client` picks the provider, and `fn` a
+-- subject of that provider. An args-subject stays unless `fn` replaces it.
+resolvetestpack ::
+  String ->
+  Json ->
+  Either SubjectArgs Subject ->
+  Provider ->
+  [(String, Provider)] ->
+  Bool ->
+  IO (Either SubjectArgs Subject)
+resolvetestpack name entry subject provider clients fnon = do
+  (client, picked) <- case asstr (jget entry "client") of
+    Nothing -> pure (provider, subject)
+    Just clientname -> case lookup clientname clients of
+      Nothing -> throwIO (OmniError ("omni: unknown client: " ++ clientname))
+      Just client -> pure (client, fmap (\found -> fromMaybe found (resolvesubject name client)) subject)
+
+  case asstr (jget entry "fn") of
+    Just fnname | fnon -> case resolvesubject fnname client of
+      Nothing -> throwIO (OmniError ("omni: unknown fn: " ++ fnname))
+      Just found -> pure (Right found)
+    _ -> pure picked
+
+-- | Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+-- entry with both passes the context first, then each argument.
+resolveargs :: Json -> Provider -> Bool -> ([Json], Json)
+resolveargs entry provider ctxargs =
+  if (hasctx || hasargs) && not (null args0) && ismap (head args0)
+    then
+      let contextified = case providerContextify provider of
+            Just contextify -> contextify (head args0)
+            Nothing -> head args0
+          -- The resolved client is a live Provider, and Json has no variant
+          -- to hold one, so canonical's `first.client = testpack.client`
+          -- becomes presence, not identity: enough for a subject to prove
+          -- the runner attached a client.
+          first = jset contextified "client" (Bool True)
+       in (first : tail args0, jset entry "ctx" first)
+    else (args0, entry)
+  where
+    hasctx = jhas entry "ctx"
+    hasargs = jhas entry "args"
+    arglist = fromMaybe [jget entry "args"] (aslist (jget entry "args"))
+
+    args0
+      | ctxargs && hasctx && hasargs = jget entry "ctx" : arglist
+      | hasctx = [jget entry "ctx"]
+      | hasargs = arglist
+      | otherwise = [clone (jget entry "in")]
+
+runentry :: Flags -> String -> Int -> Json -> Either SubjectArgs Subject -> [Json] -> Provider -> IO ()
+runentry flags label index entry subject args provider = do
+  -- An args-subject returns its arguments alongside the result, so
+  -- `match.args` sees what the subject actually did with them.
+  outcome <- try (either ($ args) (\call -> (,) args <$> call args) subject)
+
+  case outcome of
+    Right (callargs, rawres) -> do
+      let res = fixjson rawres (flagNull flags)
+      checkresult label index (jset entry "res" res) callargs res
+    Left err -> case fromOmni err of
+      Just omnierr -> throwIO omnierr
+      Nothing -> handleerror label index entry (errmessage err) provider
+
 -- | Make a runner for a spec value and a provider.
 makeRunnerSpec :: Json -> Provider -> String -> IO RunPack
 makeRunnerSpec alltests provider name = do
@@ -1015,7 +1139,12 @@ makeRunnerSpec alltests provider name = do
   -- an unsupported version rather than mid-run.
   specver <- resolveversion alltests
 
-  let spec = resolvespec name alltests
+  let requires = resolverequires alltests
+      ctxargs = "ctxargs" `elem` requires
+      fnon = "fn" `elem` requires
+      waiton = "wait" `elem` requires
+
+      spec = resolvespec name alltests
 
       clients = case (asmap (jget (jget spec "DEF") "client"), providerClient provider) of
         (Just entries, Just clientmaker) ->
@@ -1031,19 +1160,13 @@ makeRunnerSpec alltests provider name = do
         Just resolve | not (null name) -> resolve name
         _ -> Nothing
 
-      runsetflags testspec flags testsubject =
-        drive testspec flags testsubject Nothing
-
-      runsetflagsargs testspec flags argsubject =
-        drive testspec flags Nothing (Just argsubject)
-
-      drive testspec flags testsubject argsubject = do
+      drive testspec flags runflags testsubject argsubject = do
         let label = fromMaybe (if null name then "set" else name) (flagName flags)
 
         subject <- case (argsubject, testsubject, defsubject) of
-          (Just _, _, _) -> pure Nothing
-          (Nothing, Just found, _) -> pure (Just found)
-          (Nothing, Nothing, Just found) -> pure (Just found)
+          (Just call, _, _) -> pure (Left call)
+          (Nothing, Just found, _) -> pure (Right found)
+          (Nothing, Nothing, Just found) -> pure (Right found)
           _ -> throwIO (OmniError ("omni: no test subject for: " ++ label))
 
         let testspecmap = fixjson testspec (flagNull flags)
@@ -1053,81 +1176,80 @@ makeRunnerSpec alltests provider name = do
           Nothing -> throwIO (OmniError ("omni: test spec has no set: " ++ label))
 
         if 1 <= specver
-          then checkset label testspec testset
+          then checkset label testspec testset requires
           else pure ()
 
-        mapM_ (runentry label subject argsubject clients flags) (zip [0 ..] testset)
+        waits <- resolvewaits label (flagWait runflags) (fromMaybe testset (aslist (jget testspec "set")))
 
-      runentry label subject argsubject clients' flags (index, rawentry) = do
+        let loop [] failures = pure (reverse failures)
+            loop (item : rest) failures = do
+              outcome <- try (runone label subject waits flags item)
+              case outcome of
+                Right () -> loop rest failures
+                Left (OmniError message)
+                  | flagAll runflags -> loop rest (message : failures)
+                  | otherwise -> throwIO (OmniError message)
+
+        failures <- loop (zip [0 ..] testset) []
+
+        if null failures
+          then pure ()
+          else
+            throwIO
+              ( OmniError
+                  ( "omni: "
+                      ++ label
+                      ++ ": "
+                      ++ show (length failures)
+                      ++ " of "
+                      ++ show (length testset)
+                      ++ " entries failed\n"
+                      ++ joinwith "\n" failures
+                  )
+              )
+
+      runone label subject waits flags (index, rawentry) = do
         if not (ismap rawentry)
           then throwIO (OmniError ("omni: " ++ label ++ "[" ++ show index ++ "]: entry is not a map"))
           else pure ()
 
         -- An entry with no `out` expects a null (or absent) result.
-        let entry0 =
+        let resolved =
               if flagNull flags && isnone (jget rawentry "out")
                 then jset rawentry "out" (Str nullmark)
                 else rawentry
 
-        entrysubject <- case (subject, asstr (jget entry0 "client")) of
-          (Nothing, _) -> pure Nothing
-          (Just found, Just clientname) -> case lookup clientname clients' of
-            Nothing -> throwIO (OmniError ("omni: unknown client: " ++ clientname))
-            Just client -> case providerSubject client of
-              Just resolve -> pure (Just (fromMaybe found (resolve name)))
-              Nothing -> pure (Just found)
-          (Just found, Nothing) -> pure (Just found)
+        entrysubject <- resolvetestpack name resolved subject provider clients fnon
 
-        -- Build the argument list: `ctx`, `args`, or `in`.
-        let hasctx = jhas entry0 "ctx"
-            hasargs = jhas entry0 "args"
+        let (args, entry) = resolveargs resolved provider ctxargs
 
-            args0
-              | hasctx = [jget entry0 "ctx"]
-              | hasargs = fromMaybe [jget entry0 "args"] (aslist (jget entry0 "args"))
-              | otherwise = [clone (jget entry0 "in")]
+            wait = case jget entry "wait" of
+              declared | waiton && not (isabsent declared) -> Just declared
+              _ -> asstr (jget entry "id") >>= (`lookup` waits)
 
-            (args, entry) =
-              if (hasctx || hasargs) && not (null args0) && ismap (head args0)
-                then
-                  let contextified = case providerContextify provider of
-                        Just contextify -> contextify (head args0)
-                        Nothing -> head args0
-                      -- The resolved client is a live Provider (closures
-                      -- over the system under test), and this port's Json
-                      -- carries no host-object variant to hold one - so
-                      -- canonical's `first.client = testpack.client`
-                      -- becomes presence, not identity: enough for a
-                      -- subject to prove the runner attached a client.
-                      first = jset contextified "client" (Bool True)
-                   in (first : tail args0, jset entry0 "ctx" first)
-                else (args0, entry0)
+            run = runentry flags label index entry entrysubject args provider
 
-        -- An args-subject returns its arguments alongside the result, so
-        -- `match.args` sees what the subject actually did with them.
-        let invoke = case (argsubject, entrysubject) of
-              (Just call, _) -> call args
-              (Nothing, Just call) -> (,) args <$> call args
-              (Nothing, Nothing) ->
-                throwIO (OmniError ("omni: no test subject for: " ++ label))
-
-        outcome <- try invoke
-
-        case outcome of
-          Right (callargs, rawres) -> do
-            let res = fixjson rawres (flagNull flags)
-            checkresult label index (jset entry "res" res) callargs res
-          Left err -> case fromOmni err of
-            Just omnierr -> throwIO omnierr
-            Nothing -> handleerror label index entry (errmessage err) provider
+        case wait of
+          Nothing -> run
+          Just declared -> do
+            outcome <- try run
+            case outcome of
+              Left (OmniError _) -> pure ()
+              Right () ->
+                throwIO
+                  (failure label index entry ("stale wait: " ++ stringify (jget declared "cause")) Nothing Nothing)
 
   pure
     RunPack
       { packSpec = spec,
         packSet = jget spec,
-        runset = \testspec testsubject -> runsetflags testspec defaultFlags testsubject,
-        runsetFlags = runsetflags,
-        runsetFlagsArgs = runsetflagsargs,
+        runset = \testspec testsubject -> drive testspec defaultFlags defaultRunFlags testsubject Nothing,
+        runsetFlags = \testspec flags testsubject -> drive testspec flags defaultRunFlags testsubject Nothing,
+        runsetFlagsArgs = \testspec flags argsubject ->
+          drive testspec flags defaultRunFlags Nothing (Just argsubject),
+        runsetWith = \testspec flags runflags testsubject -> drive testspec flags runflags testsubject Nothing,
+        runsetWithArgs = \testspec flags runflags argsubject ->
+          drive testspec flags runflags Nothing (Just argsubject),
         packSubject = defsubject,
         packClient = provider
       }
