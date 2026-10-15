@@ -399,39 +399,44 @@ defmodule Voxgig.Omni.Runner do
           raise OmniError, message: "omni: #{label}[#{index}]: entry is not a map"
         end
 
+        entry = resolveentry(rawentry, donull)
+
         try do
-          entry = resolveentry(rawentry, donull)
-          testpack = resolvetestpack(runpack, entry, usesubject)
-          {args, entry} = resolveargs(runpack, entry, testpack)
+          case attempt(fn -> resolvetestpack(runpack, entry, usesubject) end) do
+            # Before the subject starts, a hook's raw error is still the entry's.
+            {:error, err} ->
+              handleerror(label, index, entry, err, runpack.provider)
 
-          id = U.get(entry, "id")
+            {:ok, testpack} ->
+              id = U.get(entry, "id")
 
-          wait =
-            cond do
-              runpack.waiton and U.has(entry, "wait") -> U.get(entry, "wait")
-              U.isnone(id) -> nil
-              true -> Map.get(waits, id)
-            end
+              wait =
+                cond do
+                  runpack.waiton and U.has(entry, "wait") -> U.get(entry, "wait")
+                  U.isnone(id) -> nil
+                  true -> Map.get(waits, id)
+                end
 
-          run = fn ->
-            runentry(label, index, entry, testpack, args, runpack.provider, donull, argsmode)
-          end
-
-          if is_nil(wait) do
-            run.()
-          else
-            held =
-              try do
-                run.()
-                false
-              rescue
-                _err in OmniError -> true
+              run = fn ->
+                runentry(label, index, entry, testpack, runpack, donull, argsmode)
               end
 
-            if not held do
-              cause = U.stringify(U.get(wait, "cause"))
-              raise fail(label, index, entry, "stale wait: #{cause}", nil, nil)
-            end
+              if is_nil(wait) do
+                run.()
+              else
+                held =
+                  try do
+                    run.()
+                    false
+                  rescue
+                    _err in OmniError -> true
+                  end
+
+                if not held do
+                  cause = U.stringify(U.get(wait, "cause"))
+                  raise fail(label, index, entry, "stale wait: #{cause}", nil, nil)
+                end
+              end
           end
 
           failures
@@ -493,25 +498,35 @@ defmodule Voxgig.Omni.Runner do
     end
   end
 
-  defp runentry(label, index, entry, testpack, args, provider, donull, argsmode) do
-    try do
-      if argsmode do
-        {:ok, testpack.subject.(args)}
-      else
-        {:ok, {args, testpack.subject.(args)}}
-      end
-    rescue
-      omnierr in OmniError -> reraise(omnierr, __STACKTRACE__)
-      err -> {:error, err}
-    end
-    |> case do
-      {:ok, {callargs, rawres}} ->
-        res = fixjson(rawres, donull)
-        checkresult(label, index, Map.put(entry, "res", res), callargs, res)
-
+  # A raw error from resolving the arguments, or from the subject, is the
+  # entry's: handleerror sees the entry as far as it resolved.
+  defp runentry(label, index, entry, testpack, runpack, donull, argsmode) do
+    case attempt(fn -> resolveargs(runpack, entry, testpack) end) do
       {:error, err} ->
-        handleerror(label, index, entry, err, provider)
+        handleerror(label, index, entry, err, runpack.provider)
+
+      {:ok, {args, entry}} ->
+        case attempt(fn -> callsubject(testpack.subject, args, argsmode) end) do
+          {:ok, {callargs, rawres}} ->
+            res = fixjson(rawres, donull)
+            checkresult(label, index, Map.put(entry, "res", res), callargs, res)
+
+          {:error, err} ->
+            handleerror(label, index, entry, err, runpack.provider)
+        end
     end
+  end
+
+  defp callsubject(subject, args, true), do: subject.(args)
+  defp callsubject(subject, args, false), do: {args, subject.(args)}
+
+  # Run one step, returning a raw error rather than raising it. The
+  # runner's own failure is never a candidate for `err`, so it propagates.
+  defp attempt(step) do
+    {:ok, step.()}
+  rescue
+    omnierr in OmniError -> reraise(omnierr, __STACKTRACE__)
+    err -> {:error, err}
   end
 
   # Resolve the client and subject for one entry: the entry's own `client`

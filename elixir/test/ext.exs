@@ -172,6 +172,38 @@ defmodule OmniExtTest do
     r.runset.(r.set.("g"), &fib/1)
   end
 
+  def raising_hook do
+    boom = fn _val -> raise "contextify boom" end
+    provider = %{subject: fn _name -> &fib/1 end, contextify: boom}
+    run = fn spec -> Runner.make_runner(spec, provider).("fib", nil) end
+
+    e = run.(v1([], [%{"ctx" => %{"n" => 6}, "err" => "contextify boom"}]))
+    e.runset.(e.set.("g"), &fib/1)
+
+    u = run.(v1([], [%{"ctx" => %{"n" => 6}, "out" => 8}]))
+
+    refuses(
+      fn -> u.runset.(u.set.("g"), &fib/1) end,
+      ~r/\[0\]: unexpected error\n\s+actual:\s+contextify boom/
+    )
+
+    w = run.(v1(["wait"], [%{"ctx" => %{"n" => 6}, "out" => 8, "wait" => %{"cause" => "hook#1"}}]))
+    w.runset.(w.set.("g"), &fib/1)
+
+    subject = fn
+      "boom" -> raise "subject boom"
+      _name -> &fib/1
+    end
+
+    f =
+      Runner.make_runner(
+        v1(["fn"], [%{"fn" => "boom", "in" => 6, "err" => "subject boom"}]),
+        %{subject: subject}
+      ).("fib", nil)
+
+    f.runset.(f.set.("g"), &fib/1)
+  end
+
   def all_failures do
     r =
       runner(
@@ -254,6 +286,13 @@ state =
 
 state =
   OmniExtTest.testcase("a legacy spec ignores fn and wait", &OmniExtTest.legacy_ignores/0, state)
+
+state =
+  OmniExtTest.testcase(
+    "a raising hook is the entry's error, not the set's",
+    &OmniExtTest.raising_hook/0,
+    state
+  )
 
 state =
   OmniExtTest.testcase("all reports every failure at once", &OmniExtTest.all_failures/0, state)
