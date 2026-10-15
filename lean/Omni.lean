@@ -962,7 +962,8 @@ private def resolvewaits (label : String) (flags : Flags) (origset : Array Json)
 -- An args-subject returns its arguments alongside the result, so
 -- `match.args` sees what the subject actually did with them.
 private def runentry (label : String) (flags : Flags) (index : Nat) (entry : Json)
-    (testpack : TestPack) (args : List Val) (prov : Provider) : Except String Unit :=
+    (testpack : TestPack) (prov : Provider) (ctxargs : Bool) : Except String Unit :=
+  let (args, entry) := resolveargs entry prov ctxargs
   match testpack.subject args with
   | .ok (callargs, rawres) =>
     let res := fixjson rawres flags.null
@@ -1010,7 +1011,6 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
 
     let entry := resolveentry rawentry flags
     let testpack ← resolvetestpack pack entry usesubject fnon
-    let (args, entry) := resolveargs entry pack.client ctxargs
 
     let wait : Val :=
       if waiton && jhas (some entry) "wait" then jget (some entry) "wait"
@@ -1018,7 +1018,7 @@ partial def RunPack.drive (pack : RunPack) (testspec : Json) (flags : Flags)
         | some id => waits.lookup id
         | none => none
 
-    let ran := runentry label flags index entry testpack args pack.client
+    let ran := runentry label flags index entry testpack pack.client ctxargs
     match wait, ran with
     | none, _ => ran
     | some _, .error _ => pure ()
