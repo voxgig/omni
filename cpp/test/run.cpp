@@ -640,6 +640,50 @@ void exthook() {
   F.runset(F.set("g"), FIB);
 }
 
+void extprestartwait() {
+  auto provider = std::make_shared<omni::Provider>();
+  provider->subject = [](const std::string& name) -> omni::Subject {
+    if ("boom" == name) {
+      throw std::runtime_error("subject boom");
+    }
+    return "fib" == name ? FIB : nullptr;
+  };
+  auto run = [&provider](const omni::Json& spec) {
+    return omni::makeRunner(spec, provider).runner("fib");
+  };
+
+  omni::RunPack H = run(v1({"fn", "wait"},
+                           R"([{"fn":"boom","in":6,"out":8,"wait":{"cause":"hook#2"}}])"));
+  H.runset(H.set("g"), FIB);
+  omni::RunPack S = run(v1(
+      {"fn", "wait"}, R"([{"fn":"boom","in":6,"err":"subject boom","wait":{"cause":"hook#3"}}])"));
+  refuses([&S] { S.runset(S.set("g"), FIB); }, R"(\[0\]: stale wait: hook#3)");
+}
+
+void extfnnodefault() {
+  auto provider = std::make_shared<omni::Provider>();
+  provider->subject = [](const std::string& name) -> omni::Subject {
+    return "fibx" == name ? FIB : nullptr;
+  };
+  auto run = [&provider](const omni::Json& spec) {
+    return omni::makeRunner(spec, provider).runner("fib");
+  };
+
+  omni::RunPack R = run(v1({"fn"}, R"([{"fn":"fibx","in":6,"out":8}])"));
+  R.runset(R.set("g"));
+  omni::RunPack N = run(v1({"fn"}, R"([{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}])"));
+  refuses([&N] { N.runset(N.set("g")); }, R"(^omni: no test subject for: fib$)");
+  omni::RunPack L = run(v1({}, R"([{"in":6,"out":8}])"));
+  refuses([&L] { L.runset(L.set("g")); }, R"(^omni: no test subject for: fib$)");
+}
+
+void extownid() {
+  omni::RunPack R =
+      extrunner(v1({}, R"([{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}])"));
+  R.runset(R.set("g"), FIB);
+  R.runsetflags(R.set("g"), flagswait("{}"), FIB);
+}
+
 void extall() {
   omni::RunPack R =
       extrunner(v1({}, R"([{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}])"));
@@ -722,6 +766,10 @@ int main(int argc, char** argv) {
   testcase("ctx with args needs ctxargs, and never takes in", extctxargs);
   testcase("a legacy spec ignores fn and wait", extlegacy);
   testcase("a raising hook is the entry's error, not the set's", exthook);
+  testcase("a waiting entry holds a hook's error raised before the subject starts",
+           extprestartwait);
+  testcase("fn needs no default subject, but an entry without fn does", extfnnodefault);
+  testcase("a wait is found by an id the entry owns, never an inherited one", extownid);
   testcase("all reports every failure at once", extall);
 
   std::cout << "\n" << PASSCOUNT << " passed, " << FAILCOUNT << " failed\n";

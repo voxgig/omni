@@ -16,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -546,7 +547,7 @@ class RunPack {
       flags.name = name_.empty() ? "set" : name_;
     }
 
-    if (!usesubject) {
+    if (!usesubject && !fnon_) {
       throw OmniError("omni: no test subject for: " + flags.name);
     }
 
@@ -568,44 +569,53 @@ class RunPack {
 
     for (size_t index = 0; index < testset.listval.size(); index++) {
       Json entry = testset.listval[index];
-      bool started = false;
 
       try {
+        TestPack testpack;
+        std::optional<std::string> prestart;
+
+        // A hook's raw error before the subject starts is still the entry's.
         try {
           resolveentry(entry, flags);
-
-          TestPack testpack = resolvetestpack(entry, usesubject);
-
-          Json id = entry.get("id");
-          Json wait = Json::absent();
-          if (waiton_ && entry.has("wait")) {
-            wait = entry.get("wait");
-          } else if (id.isstr() && waits.has(id.strval)) {
-            wait = waits.get(id.strval);
-          }
-
-          started = true;
-          if (wait.isabsent()) {
-            runentry(flags, index, entry, testpack, ctxargs_);
-          } else {
-            bool held = false;
-            try {
-              runentry(flags, index, entry, testpack, ctxargs_);
-            } catch (const OmniError&) {
-              held = true;
-            }
-            if (!held) {
-              throw fail(flags, index, entry, "stale wait: " + stringify(wait.get("cause")));
-            }
-          }
+          testpack = resolvetestpack(entry, usesubject);
         } catch (const OmniError&) {
           throw;
         } catch (const std::exception& err) {
-          // Before the subject starts, a hook's raw error is still the entry's.
-          if (started) {
-            throw;
+          prestart = err.what();
+        }
+
+        if (!prestart && !testpack.subject) {
+          throw OmniError("omni: no test subject for: " + flags.name);
+        }
+
+        Json id = entry.get("id");
+        Json wait = Json::absent();
+        if (waiton_ && entry.has("wait")) {
+          wait = entry.get("wait");
+        } else if (id.isstr() && waits.has(id.strval)) {
+          wait = waits.get(id.strval);
+        }
+
+        auto run = [&]() {
+          if (prestart) {
+            handleerror(flags, index, entry, *prestart);
+          } else {
+            runentry(flags, index, entry, testpack, ctxargs_);
           }
-          handleerror(flags, index, entry, err.what());
+        };
+
+        if (wait.isabsent()) {
+          run();
+        } else {
+          bool held = false;
+          try {
+            run();
+          } catch (const OmniError&) {
+            held = true;
+          }
+          if (!held) {
+            throw fail(flags, index, entry, "stale wait: " + stringify(wait.get("cause")));
+          }
         }
       } catch (const OmniError& err) {
         if (flags.all) {
