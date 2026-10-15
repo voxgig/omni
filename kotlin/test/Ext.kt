@@ -142,6 +142,43 @@ fun extsuite() {
         F.runset(F.set("g"), FIB)
     }
 
+    testcase("a waiting entry holds a hook's error raised before the subject starts") {
+        val provider = Provider(
+            subject = { name ->
+                if ("boom" == name) {
+                    throw RuntimeException("subject boom")
+                }
+                if ("fib" == name) FIB else null
+            },
+        )
+        val hooked = { spec: Json -> makeRunner(spec, provider).runner("fib") }
+        val H = hooked(v1("""["fn","wait"]""", """[{"fn":"boom","in":6,"out":8,"wait":{"cause":"hook#2"}}]"""))
+        H.runset(H.set("g"), FIB)
+        val S = hooked(
+            v1("""["fn","wait"]""", """[{"fn":"boom","in":6,"err":"subject boom","wait":{"cause":"hook#3"}}]"""),
+        )
+        refuses("""\[0\]: stale wait: hook#3""") { S.runset(S.set("g"), FIB) }
+    }
+
+    testcase("fn needs no default subject, but an entry without fn does") {
+        val provider = Provider(subject = { name -> if ("fibx" == name) FIB else null })
+        val R = makeRunner(v1("""["fn"]""", """[{"fn":"fibx","in":6,"out":8}]"""), provider).runner("fib")
+        R.runset(R.set("g"))
+        val N = makeRunner(
+            v1("""["fn"]""", """[{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}]"""),
+            provider,
+        ).runner("fib")
+        refuses("^omni: no test subject for: fib$") { N.runset(N.set("g")) }
+        val L = makeRunner(v1("[]", """[{"in":6,"out":8}]"""), provider).runner("fib")
+        refuses("^omni: no test subject for: fib$") { L.runset(L.set("g")) }
+    }
+
+    testcase("a wait is found by an id the entry owns, never an inherited one") {
+        val R = extrunner(v1("[]", """[{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}]"""))
+        R.runset(R.set("g"), FIB)
+        R.runsetflags(R.set("g"), Flags(wait = Json.map()), FIB)
+    }
+
     testcase("all reports every failure at once") {
         val R = extrunner(v1("[]", """[{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}]"""))
         refuses("""(?s)^omni: fib: 2 of 3 entries failed\n.*fib\[0\]: result mismatch.*fib\[2\]: result mismatch""") {

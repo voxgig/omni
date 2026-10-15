@@ -235,7 +235,9 @@ class RunPack(
         val label = flags.name ?: if (name.isEmpty()) "set" else name
 
         val usesubject = testsubject ?: subject
-            ?: throw OmniError("omni: no test subject for: $label")
+        if (null == usesubject && !fnon) {
+            throw OmniError("omni: no test subject for: $label")
+        }
 
         val testspecmap = fixjson(testspec, flags.nulls)
         val testset = testspecmap.get("set").aslist
@@ -254,7 +256,6 @@ class RunPack(
         val failures = mutableListOf<String>()
 
         for ((index, entry) in testset.withIndex()) {
-            var started = false
             try {
                 if (!entry.ismap) {
                     throw OmniError("omni: $label[$index]: entry is not a map")
@@ -265,7 +266,19 @@ class RunPack(
                     entry.set("out", Json.str(NULLMARK))
                 }
 
-                val testpack = resolvetestpack(entry, usesubject)
+                // A hook's raw error before the subject starts is still the entry's.
+                val resolved = runCatching { resolvetestpack(entry, usesubject) }
+                val prestart = resolved.exceptionOrNull()
+                if (prestart is OmniError) {
+                    throw prestart
+                }
+                val testpack = resolved.getOrNull()
+
+                val run = when {
+                    null != prestart -> fun() { handleerror(label, index, entry, prestart) }
+                    null != testpack -> fun() { runentry(label, index, entry, testpack, flags) }
+                    else -> throw OmniError("omni: no test subject for: $label")
+                }
 
                 val wait = if (waiton && entry.has("wait")) {
                     entry.get("wait")
@@ -273,13 +286,12 @@ class RunPack(
                     entry.get("id").asstr?.let { waits[it] }
                 }
 
-                started = true
                 if (null == wait) {
-                    runentry(label, index, entry, testpack, flags)
+                    run()
                 } else {
                     var held = false
                     try {
-                        runentry(label, index, entry, testpack, flags)
+                        run()
                     } catch (err: OmniError) {
                         held = true
                     }
@@ -287,21 +299,11 @@ class RunPack(
                         throw fail(label, index, entry, "stale wait: " + stringify(wait.get("cause")))
                     }
                 }
-            } catch (err: Throwable) {
-                var failure = err
-                // Before the subject starts, a hook's raw error is still the entry's.
-                if (!started && err !is OmniError) {
-                    try {
-                        handleerror(label, index, entry, err)
-                        continue
-                    } catch (herr: Throwable) {
-                        failure = herr
-                    }
+            } catch (err: OmniError) {
+                if (!flags.all) {
+                    throw err
                 }
-                if (!flags.all || failure !is OmniError) {
-                    throw failure
-                }
-                failures.add(failure.message ?: "")
+                failures.add(err.message ?: "")
             }
         }
 
@@ -315,7 +317,8 @@ class RunPack(
 
     private class TestPack(val client: Provider, val subject: Subject)
 
-    private fun resolvetestpack(entry: Json, subject: Subject): TestPack {
+    // Null when the entry resolves no subject.
+    private fun resolvetestpack(entry: Json, subject: Subject?): TestPack? {
         var testclient = client
         var testsubject = subject
 
@@ -333,7 +336,7 @@ class RunPack(
                 ?: throw OmniError("omni: unknown fn: $fn", entry)
         }
 
-        return TestPack(testclient, testsubject)
+        return testsubject?.let { TestPack(testclient, it) }
     }
 
     // The runner-side waits: entry id to its declaration. Each must name an
