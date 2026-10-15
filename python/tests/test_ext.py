@@ -144,6 +144,38 @@ class TestExtRunner(unittest.TestCase):
                        {'subject': subject})('fib')
         F['runset'](F['spec']['g'], fib)
 
+    def test_waiting_entry_holds_prestart_hook_error(self):
+        def subject(name):
+            if 'boom' == name:
+                raise ValueError('subject boom')
+            return fib if 'fib' == name else None
+
+        def run(spec):
+            return makeRunner(spec, {'subject': subject})('fib')
+
+        H = run(v1(['fn', 'wait'], [{'fn': 'boom', 'in': 6, 'out': 8, 'wait': {'cause': 'hook#2'}}]))
+        H['runset'](H['spec']['g'], fib)
+        S = run(v1(['fn', 'wait'], [{'fn': 'boom', 'in': 6, 'err': 'subject boom', 'wait': {'cause': 'hook#3'}}]))
+        self.refuses(lambda: S['runset'](S['spec']['g'], fib), r'\[0\]: stale wait: hook#3')
+
+    def test_fn_needs_no_default_subject(self):
+        provider = {'subject': lambda name: fib if 'fibx' == name else None}
+
+        def run(spec):
+            return makeRunner(spec, provider)('fib')
+
+        R = run(v1(['fn'], [{'fn': 'fibx', 'in': 6, 'out': 8}]))
+        R['runset'](R['spec']['g'])
+        N = run(v1(['fn'], [{'fn': 'fibx', 'in': 6, 'out': 8}, {'in': 6, 'out': 8}]))
+        self.refuses(lambda: N['runset'](N['spec']['g']), r'^omni: no test subject for: fib$')
+        L = run(v1([], [{'in': 6, 'out': 8}]))
+        self.refuses(lambda: L['runset'](L['spec']['g']), r'^omni: no test subject for: fib$')
+
+    def test_wait_found_by_own_id(self):
+        R = runner(v1([], [{'id': 'constructor', 'in': 6, 'out': 8}, {'id': 'toString', 'in': 7, 'out': 13}]))
+        R['runset'](R['spec']['g'], fib)
+        R['runsetflags'](R['spec']['g'], {'wait': {}}, fib)
+
     def test_all_reports_every_failure(self):
         R = runner(v1([], [{'in': 5, 'out': 6}, {'in': 6, 'out': 8}, {'in': 7, 'out': 14}]))
         self.refuses(lambda: R['runsetflags'](R['spec']['g'], {'all': True}, fib),

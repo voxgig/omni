@@ -6,6 +6,7 @@ Port of the canonical TypeScript implementation
 
 import json
 import re
+from functools import partial
 from typing import Any, Callable, Optional
 
 from .util import (
@@ -587,7 +588,7 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
             useflags['name'] = useflags.get('name') or name or 'set'
 
             subject = testsubject or defsubject
-            if subject is None:
+            if subject is None and not fnon:
                 raise OmniError('omni: no test subject for: ' + str(useflags['name']))
 
             testspecmap = fixjson(testspec, useflags)
@@ -605,38 +606,46 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
             failures = []
 
             for index, entry in enumerate(testset):
-                started = False
                 try:
-                    entry = resolveentry(entry, useflags)
+                    testpack = None
+                    prestart = None
 
-                    testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+                    # A hook's raw error before the subject starts is still the entry's.
+                    try:
+                        entry = resolveentry(entry, useflags)
+                        testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+                    except OmniError:
+                        raise
+                    except Exception as err:  # noqa: BLE001 - a hook's error is data
+                        prestart = err
 
-                    wait = entry['wait'] if waiton and 'wait' in entry else (
-                        waits.get(entry['id']) if entry.get('id') is not None else None)
+                    if prestart is None and testpack['subject'] is None:
+                        raise OmniError('omni: no test subject for: ' + str(useflags['name']))
 
-                    started = True
+                    wait = None
+                    if ismap(entry):
+                        wait = entry['wait'] if waiton and 'wait' in entry else (
+                            waits.get(entry['id']) if entry.get('id') is not None else None)
+
+                    if prestart is None:
+                        run = partial(runentry, useflags, index, entry, testpack, useprovider, ctxargs)
+                    else:
+                        run = partial(handleerror, useflags, index, entry, prestart, useprovider)
+
                     if wait is None:
-                        runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+                        run()
                     else:
                         try:
-                            runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+                            run()
                         except OmniError:
                             continue
                         raise fail(useflags, index, entry, 'stale wait: ' + str(wait['cause']))
 
-                except Exception as err:  # noqa: BLE001 - a hook's error is data
-                    failure = err
-                    # Before the subject starts, a hook's raw error is still the entry's.
-                    if not started and not isinstance(err, OmniError):
-                        try:
-                            handleerror(useflags, index, entry, err, useprovider)
-                            continue
-                        except Exception as herr:  # noqa: BLE001 - rethrown below
-                            failure = herr
-                    if useflags.get('all') is True and isinstance(failure, OmniError):
-                        failures.append(str(failure))
+                except OmniError as err:
+                    if useflags.get('all') is True:
+                        failures.append(str(err))
                         continue
-                    raise failure
+                    raise
 
             if failures:
                 raise OmniError('omni: ' + str(useflags['name']) + ': ' + str(len(failures)) + ' of ' +
