@@ -29,15 +29,18 @@ defmodule Voxgig.Omni.Runner do
   Capability strings this runner supports beyond the version baseline. A
   spec's OMNI.requires list is checked against this: an unknown capability
   refuses the spec loudly at load time, instead of a lagging port silently
-  mis-running it. (Empty today; future format features mint a string here.)
+  mis-running it. A spec turns each on only by requiring it.
   """
-  def capabilities, do: []
+  def capabilities, do: ["ctxargs", "fn", "wait"]
 
   # The complete set of fields an entry may carry. Under version 1 anything
   # else is an error: an unrecognised key is almost always a typo'd
   # assertion, and a typo'd assertion is a test that silently stopped
   # testing.
   @entryfields ~w(in args ctx out err match client id doc)
+
+  # Entry fields a capability adds, permitted only in a spec that requires it.
+  @capfields %{"fn" => "fn", "wait" => "wait"}
 
   @doc "Load a spec: a path to a JSON file."
   def loadspec(path) do
@@ -87,24 +90,50 @@ defmodule Voxgig.Omni.Runner do
     end
   end
 
+  # The capabilities a spec requires, which resolveversion has already
+  # checked against capabilities/0.
+  defp resolverequires(alltests) do
+    requires = U.get(U.get(alltests, "OMNI"), "requires")
+    if U.islist(requires), do: requires, else: []
+  end
+
   # Strict entry validation, applied when the spec declares version 1 or
   # later. The lenient format converts each of these mistakes into a
   # silent pass or a dead field; here they fail with the entry named.
-  defp checkentry(label, index, entry) do
+  defp checkentry(label, index, entry, requires) do
     if not U.ismap(entry) do
       raise fail(label, index, entry, "entry is not a map", nil, nil)
     end
 
     Enum.each(Map.keys(entry), fn key ->
-      if key not in @entryfields do
+      capfield = Map.has_key?(@capfields, key) and Map.get(@capfields, key) in requires
+
+      if key not in @entryfields and not capfield do
         raise fail(label, index, entry, "unknown entry field: #{key}", nil, nil)
       end
     end)
 
-    argsources = Enum.count(["in", "args", "ctx"], &Map.has_key?(entry, &1))
+    if "ctxargs" in requires do
+      if Map.has_key?(entry, "in") and
+           (Map.has_key?(entry, "args") or Map.has_key?(entry, "ctx")) do
+        raise fail(label, index, entry, "entry has in beside args or ctx", nil, nil)
+      end
+    else
+      argsources = Enum.count(["in", "args", "ctx"], &Map.has_key?(entry, &1))
 
-    if argsources > 1 do
-      raise fail(label, index, entry, "entry has more than one of in, args, ctx", nil, nil)
+      if argsources > 1 do
+        raise fail(label, index, entry, "entry has more than one of in, args, ctx", nil, nil)
+      end
+    end
+
+    fnname = U.get(entry, "fn")
+
+    if Map.has_key?(entry, "fn") and not (U.isstr(fnname) and "" != fnname) do
+      raise fail(label, index, entry, "entry fn is not a name", nil, nil)
+    end
+
+    if Map.has_key?(entry, "wait") and not iswait(U.get(entry, "wait")) do
+      raise fail(label, index, entry, "entry wait has no cause", nil, nil)
     end
 
     entryerr = U.get(entry, "err")
@@ -123,7 +152,7 @@ defmodule Voxgig.Omni.Runner do
   # id: null) into a sentinel string and hide it from validation. A
   # malformed spec is a spec error, not a test result, so it fails
   # before any subject runs.
-  defp checkset(label, testspec, normalset) do
+  defp checkset(label, testspec, normalset, requires) do
     origset =
       if U.ismap(testspec) and U.islist(U.get(testspec, "set")) do
         U.get(testspec, "set")
@@ -139,7 +168,7 @@ defmodule Voxgig.Omni.Runner do
 
     origset
     |> Enum.with_index()
-    |> Enum.each(fn {entry, index} -> checkentry(label, index, entry) end)
+    |> Enum.each(fn {entry, index} -> checkentry(label, index, entry, requires) end)
   end
 
   @doc "Find `primary.<name>`, then `<name>`, then the whole spec."
@@ -254,6 +283,7 @@ defmodule Voxgig.Omni.Runner do
   def make_runner(specref, provider \\ %{}) do
     alltests = if is_binary(specref), do: loadspec(specref), else: specref
     specversion = resolveversion(alltests)
+    requires = resolverequires(alltests)
 
     fn name, store ->
       spec = resolvespec(name, alltests)
@@ -271,7 +301,11 @@ defmodule Voxgig.Omni.Runner do
         provider: provider,
         clients: clients,
         name: name,
-        specversion: specversion
+        specversion: specversion,
+        requires: requires,
+        ctxargs: "ctxargs" in requires,
+        fnon: "fn" in requires,
+        waiton: "wait" in requires
       }
 
       runsetflags = fn testspec, flags, testsubject ->
@@ -344,32 +378,122 @@ defmodule Voxgig.Omni.Runner do
     end
 
     if 1 <= runpack.specversion do
-      checkset(label, testspec, testset)
+      checkset(label, testspec, testset, runpack.requires)
     end
 
-    testset
-    |> Enum.with_index()
-    |> Enum.each(fn {rawentry, index} ->
-      if not U.ismap(rawentry) do
-        raise OmniError, message: "omni: #{label}[#{index}]: entry is not a map"
+    origset =
+      if U.ismap(testspec) and U.islist(U.get(testspec, "set")) do
+        U.get(testspec, "set")
+      else
+        testset
       end
 
-      run_entry(runpack, label, index, rawentry, donull, usesubject, argsmode)
-    end)
+    waits = resolvewaits(label, flags, origset)
+    all = true == Map.get(flags, :all)
+
+    failures =
+      testset
+      |> Enum.with_index()
+      |> Enum.reduce([], fn {rawentry, index}, failures ->
+        if not U.ismap(rawentry) do
+          raise OmniError, message: "omni: #{label}[#{index}]: entry is not a map"
+        end
+
+        try do
+          entry = resolveentry(rawentry, donull)
+          testpack = resolvetestpack(runpack, entry, usesubject)
+          {args, entry} = resolveargs(runpack, entry, testpack)
+
+          id = U.get(entry, "id")
+
+          wait =
+            cond do
+              runpack.waiton and U.has(entry, "wait") -> U.get(entry, "wait")
+              U.isnone(id) -> nil
+              true -> Map.get(waits, id)
+            end
+
+          run = fn ->
+            runentry(label, index, entry, testpack, args, runpack.provider, donull, argsmode)
+          end
+
+          if is_nil(wait) do
+            run.()
+          else
+            held =
+              try do
+                run.()
+                false
+              rescue
+                _err in OmniError -> true
+              end
+
+            if not held do
+              cause = U.stringify(U.get(wait, "cause"))
+              raise fail(label, index, entry, "stale wait: #{cause}", nil, nil)
+            end
+          end
+
+          failures
+        rescue
+          err in OmniError ->
+            if all, do: [err.message | failures], else: reraise(err, __STACKTRACE__)
+        end
+      end)
+
+    if [] != failures do
+      raise OmniError,
+        message:
+          "omni: #{label}: #{length(failures)} of #{length(testset)} entries failed\n" <>
+            Enum.join(Enum.reverse(failures), "\n")
+    end
   end
 
-  defp run_entry(runpack, label, index, rawentry, donull, usesubject, argsmode) do
-    # An entry with no `out` expects a null (or absent) result.
-    entry =
-      if donull and U.isnone(U.get(rawentry, "out")) do
-        Map.put(rawentry, "out", U.nullmark())
-      else
-        rawentry
-      end
+  # An entry with no `out` expects a null (or absent) result.
+  defp resolveentry(entry, donull) do
+    if donull and U.isnone(U.get(entry, "out")) do
+      Map.put(entry, "out", U.nullmark())
+    else
+      entry
+    end
+  end
 
-    testpack = resolvetestpack(runpack, entry, usesubject)
-    {args, entry} = resolveargs(runpack, entry, testpack)
+  defp iswait(wait) do
+    cause = U.get(wait, "cause")
+    U.ismap(wait) and U.isstr(cause) and "" != cause
+  end
 
+  # The runner-side waits: entry id to its declaration. Each must name an
+  # entry of the set, so a declaration cannot outlive the entry it held.
+  defp resolvewaits(label, flags, origset) do
+    waits = Map.get(flags, :wait)
+
+    cond do
+      is_nil(waits) ->
+        %{}
+
+      not U.ismap(waits) ->
+        raise OmniError, message: "omni: #{label}: wait flag is not a map"
+
+      true ->
+        ids = Enum.map(origset, &U.get(&1, "id"))
+
+        Enum.each(waits, fn {id, wait} ->
+          if id not in ids do
+            raise OmniError, message: "omni: #{label}: wait names no entry: #{U.stringify(id)}"
+          end
+
+          if not iswait(wait) do
+            raise OmniError,
+              message: "omni: #{label}: wait for #{U.stringify(id)} has no cause"
+          end
+        end)
+
+        waits
+    end
+  end
+
+  defp runentry(label, index, entry, testpack, args, provider, donull, argsmode) do
     try do
       if argsmode do
         {:ok, testpack.subject.(args)}
@@ -386,49 +510,72 @@ defmodule Voxgig.Omni.Runner do
         checkresult(label, index, Map.put(entry, "res", res), callargs, res)
 
       {:error, err} ->
-        handleerror(label, index, entry, err, runpack.provider)
+        handleerror(label, index, entry, err, provider)
     end
   end
 
   # Resolve the client and subject for one entry: the entry's own `client`
   # override when present (looked up in the spec's DEF.client clients),
-  # else the root provider.
+  # else the root provider. Under `fn`, the entry's `fn` names the subject.
   defp resolvetestpack(runpack, entry, usesubject) do
-    case U.get(entry, "client") do
-      clientname when is_binary(clientname) ->
-        client =
-          Map.get(runpack.clients, clientname) ||
-            raise(OmniError, message: "omni: unknown client: #{clientname}", entry: entry)
+    testpack =
+      case U.get(entry, "client") do
+        clientname when is_binary(clientname) ->
+          client =
+            Map.get(runpack.clients, clientname) ||
+              raise(OmniError, message: "omni: unknown client: #{clientname}", entry: entry)
 
-        subject =
-          case Map.get(client, :subject) do
-            nil -> usesubject
-            resolve -> resolve.(runpack.name) || usesubject
-          end
+          subject =
+            case Map.get(client, :subject) do
+              nil -> usesubject
+              resolve -> resolve.(runpack.name) || usesubject
+            end
 
-        %{client: client, subject: subject}
+          %{client: client, subject: subject}
 
-      _ ->
-        %{client: runpack.provider, subject: usesubject}
+        _ ->
+          %{client: runpack.provider, subject: usesubject}
+      end
+
+    fnname = U.get(entry, "fn")
+
+    if runpack.fnon and not U.isnone(fnname) do
+      fnsubject =
+        resolvesubject(fnname, testpack.client) ||
+          raise(OmniError, message: "omni: unknown fn: #{U.stringify(fnname)}", entry: entry)
+
+      %{testpack | subject: fnsubject}
+    else
+      testpack
     end
   end
 
-  # Build the argument list: `ctx`, `args`, or `in`. A map `ctx`/`args[0]`
-  # is passed through the provider's contextify hook, then stamped with
-  # the resolved client (the one testpack.subject will actually run
-  # against), so a context-aware subject can see what served it.
+  defp resolvesubject(name, provider) do
+    resolve = if is_map(provider), do: Map.get(provider, :subject), else: nil
+    if is_nil(name) or is_nil(resolve), do: nil, else: resolve.(name)
+  end
+
+  # Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+  # entry with both passes the context first, then each argument. A map
+  # `ctx`/`args[0]` is passed through the provider's contextify hook, then
+  # stamped with the resolved client, so a context-aware subject can see
+  # what served it.
   defp resolveargs(runpack, entry, testpack) do
     hasctx = U.has(entry, "ctx")
     hasargs = U.has(entry, "args")
+    raw = U.get(entry, "args")
+    argslist = if U.islist(raw), do: raw, else: [raw]
 
     args =
       cond do
+        runpack.ctxargs and hasctx and hasargs ->
+          [U.get(entry, "ctx") | argslist]
+
         hasctx ->
           [U.get(entry, "ctx")]
 
         hasargs ->
-          raw = U.get(entry, "args")
-          if U.islist(raw), do: raw, else: [raw]
+          argslist
 
         true ->
           [U.clone(U.get(entry, "in"))]
