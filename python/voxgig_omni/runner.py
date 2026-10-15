@@ -552,8 +552,9 @@ def resolvewaits(flags: dict, origset: list) -> dict:
     return waits
 
 
-def runentry(flags: dict, index: int, entry: dict, testpack: dict, args: list, provider: Any) -> None:
+def runentry(flags: dict, index: int, entry: dict, testpack: dict, provider: Any, ctxargs: bool) -> None:
     try:
+        args = resolveargs(entry, testpack, provider, ctxargs)
         res = testpack['subject'](*args)
         res = fixjson(res, flags)
         entry['res'] = res
@@ -604,29 +605,38 @@ def makeRunner(specref: Any, provider: Any = None) -> Callable:
             failures = []
 
             for index, entry in enumerate(testset):
+                started = False
                 try:
                     entry = resolveentry(entry, useflags)
 
                     testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
-                    args = resolveargs(entry, testpack, useprovider, ctxargs)
 
                     wait = entry['wait'] if waiton and 'wait' in entry else (
                         waits.get(entry['id']) if entry.get('id') is not None else None)
 
+                    started = True
                     if wait is None:
-                        runentry(useflags, index, entry, testpack, args, useprovider)
+                        runentry(useflags, index, entry, testpack, useprovider, ctxargs)
                     else:
                         try:
-                            runentry(useflags, index, entry, testpack, args, useprovider)
+                            runentry(useflags, index, entry, testpack, useprovider, ctxargs)
                         except OmniError:
                             continue
                         raise fail(useflags, index, entry, 'stale wait: ' + str(wait['cause']))
 
-                except OmniError as err:
-                    if useflags.get('all') is True:
-                        failures.append(str(err))
+                except Exception as err:  # noqa: BLE001 - a hook's error is data
+                    failure = err
+                    # Before the subject starts, a hook's raw error is still the entry's.
+                    if not started and not isinstance(err, OmniError):
+                        try:
+                            handleerror(useflags, index, entry, err, useprovider)
+                            continue
+                        except Exception as herr:  # noqa: BLE001 - rethrown below
+                            failure = herr
+                    if useflags.get('all') is True and isinstance(failure, OmniError):
+                        failures.append(str(failure))
                         continue
-                    raise
+                    raise failure
 
             if failures:
                 raise OmniError('omni: ' + str(useflags['name']) + ': ' + str(len(failures)) + ' of ' +

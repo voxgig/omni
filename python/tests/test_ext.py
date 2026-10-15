@@ -118,6 +118,32 @@ class TestExtRunner(unittest.TestCase):
         R = runner({'fib': {'g': {'set': [{'in': 6, 'out': 8, 'fn': 'nope', 'wait': {'cause': 'c'}}]}}})
         R['runset'](R['spec']['g'], fib)
 
+    def test_raising_hook_is_entry_error(self):
+        def boom(_val):
+            raise ValueError('contextify boom')
+
+        provider = {'subject': lambda _name: fib, 'contextify': boom}
+
+        def run(spec):
+            return makeRunner(spec, provider)('fib')
+
+        E = run(v1([], [{'ctx': {'n': 6}, 'err': 'contextify boom'}]))
+        E['runset'](E['spec']['g'], fib)
+        U = run(v1([], [{'ctx': {'n': 6}, 'out': 8}]))
+        self.refuses(lambda: U['runset'](U['spec']['g'], fib),
+                     r'\[0\]: unexpected error\n\s+actual:\s+contextify boom')
+        W = run(v1(['wait'], [{'ctx': {'n': 6}, 'out': 8, 'wait': {'cause': 'hook#1'}}]))
+        W['runset'](W['spec']['g'], fib)
+
+        def subject(name):
+            if 'boom' == name:
+                raise ValueError('subject boom')
+            return fib
+
+        F = makeRunner(v1(['fn'], [{'fn': 'boom', 'in': 6, 'err': 'subject boom'}]),
+                       {'subject': subject})('fib')
+        F['runset'](F['spec']['g'], fib)
+
     def test_all_reports_every_failure(self):
         R = runner(v1([], [{'in': 5, 'out': 6}, {'in': 6, 'out': 8}, {'in': 7, 'out': 14}]))
         self.refuses(lambda: R['runsetflags'](R['spec']['g'], {'all': True}, fib),
