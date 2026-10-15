@@ -1068,29 +1068,30 @@ resolvewaits label waits origset
 resolvesubject :: String -> Provider -> Maybe Subject
 resolvesubject name provider = providerSubject provider >>= \resolve -> resolve name
 
--- The subject one entry runs: `client` picks the provider, and `fn` a
--- subject of that provider. An args-subject stays unless `fn` replaces it.
+-- The subject one entry runs, if any: `client` picks the provider, and
+-- `fn` a subject of that provider. An args-subject stays unless `fn`
+-- replaces it.
 resolvetestpack ::
   String ->
   Json ->
-  Either SubjectArgs Subject ->
+  Either SubjectArgs (Maybe Subject) ->
   Provider ->
   [(String, Provider)] ->
   Bool ->
-  IO (Either SubjectArgs Subject)
+  IO (Either SubjectArgs (Maybe Subject))
 resolvetestpack name entry subject provider clients fnon = do
   (client, picked) <- case asstr (jget entry "client") of
     Nothing -> pure (provider, subject)
     Just clientname -> case lookup clientname clients of
       Nothing -> throwIO (OmniError ("omni: unknown client: " ++ clientname))
       Just client -> case (resolvesubject name client, subject) of
-        (Just found, Right _) -> pure (client, Right found)
+        (Just found, Right _) -> pure (client, Right (Just found))
         _ -> pure (client, subject)
 
   case asstr (jget entry "fn") of
     Just fnname | fnon -> case resolvesubject fnname client of
       Nothing -> throwIO (OmniError ("omni: unknown fn: " ++ fnname))
-      Just found -> pure (Right found)
+      Just found -> pure (Right (Just found))
     _ -> pure picked
 
 -- | Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
@@ -1187,8 +1188,9 @@ makeRunnerSpec alltests provider name = do
 
         subject <- case (argsubject, testsubject, defsubject) of
           (Just call, _, _) -> pure (Left call)
-          (Nothing, Just found, _) -> pure (Right found)
-          (Nothing, Nothing, Just found) -> pure (Right found)
+          (Nothing, Just found, _) -> pure (Right (Just found))
+          (Nothing, Nothing, Just found) -> pure (Right (Just found))
+          _ | fnon -> pure (Right Nothing)
           _ -> throwIO (OmniError ("omni: no test subject for: " ++ label))
 
         let testspecmap = fixjson testspec (flagNull flags)
@@ -1243,34 +1245,28 @@ makeRunnerSpec alltests provider name = do
 
         prepared <- try (resolvetestpack name resolved subject provider clients fnon)
 
-        case prepared of
-          -- Before the subject starts, a hook's raw error is still the entry's.
+        -- A hook's raw error before the subject starts is still the entry's.
+        run <- case prepared of
           Left err -> case fromOmni err of
             Just omnierr -> throwIO omnierr
-            Nothing -> handleerror label index resolved (errmessage err) provider
-          Right entrysubject -> do
-            let wait = case jget resolved "wait" of
-                  declared | waiton && not (isabsent declared) -> Just declared
-                  _ -> asstr (jget resolved "id") >>= (`lookup` waits)
+            Nothing -> pure (handleerror label index resolved (errmessage err) provider)
+          Right (Left call) -> pure (runentry flags label index resolved (Left call) provider ctxargs)
+          Right (Right (Just found)) -> pure (runentry flags label index resolved (Right found) provider ctxargs)
+          Right (Right Nothing) -> throwIO (OmniError ("omni: no test subject for: " ++ label))
 
-                run = runentry flags label index resolved entrysubject provider ctxargs
+        let wait = case jget resolved "wait" of
+              declared | waiton && not (isabsent declared) -> Just declared
+              _ -> asstr (jget resolved "id") >>= (`lookup` waits)
 
-            case wait of
-              Nothing -> run
-              Just declared -> do
-                outcome <- try run
-                case outcome of
-                  Left (OmniError _) -> pure ()
-                  Right () ->
-                    throwIO
-                      ( failure
-                          label
-                          index
-                          resolved
-                          ("stale wait: " ++ stringify (jget declared "cause"))
-                          Nothing
-                          Nothing
-                      )
+        case wait of
+          Nothing -> run
+          Just declared -> do
+            outcome <- try run
+            case outcome of
+              Left (OmniError _) -> pure ()
+              Right () ->
+                throwIO
+                  (failure label index resolved ("stale wait: " ++ stringify (jget declared "cause")) Nothing Nothing)
 
   pure
     RunPack

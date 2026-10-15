@@ -640,6 +640,39 @@ raisingHookUnread = do
   pack <- makeRunnerSpec (v1 [] [JMap [("ctx", JMap [("n", Num 6)]), ("out", Num 8)]]) boomprovider "fib"
   refuses (rung pack (const (pure (Num 8)))) "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom"
 
+waitHoldsPrestart :: IO ()
+waitHoldsPrestart = do
+  let resolve name
+        | "boom" == name = throw (FibError "subject boom")
+        | "fib" == name = Just fibsub
+        | otherwise = Nothing
+      run spec = makeRunnerSpec spec emptyProvider {providerSubject = Just resolve} "fib"
+  held <- run (v1 ["fn", "wait"] [JMap [("fn", Str "boom"), ("in", Num 6), ("out", Num 8), ("wait", JMap [("cause", Str "hook#2")])]])
+  rung held fibsub
+  stale <-
+    run (v1 ["fn", "wait"] [JMap [("fn", Str "boom"), ("in", Num 6), ("err", Str "subject boom"), ("wait", JMap [("cause", Str "hook#3")])]])
+  refuses (rung stale fibsub) "\\[0\\]: stale wait: hook#3"
+
+fnNeedsNoDefault :: IO ()
+fnNeedsNoDefault = do
+  let provider = emptyProvider {providerSubject = Just (\name -> if "fibx" == name then Just fibsub else Nothing)}
+      run spec = makeRunnerSpec spec provider "fib"
+      nosubject pack = runset pack (packSet pack "g") Nothing
+      fibx = JMap [("fn", Str "fibx"), ("in", Num 6), ("out", Num 8)]
+      plain = JMap [("in", Num 6), ("out", Num 8)]
+  resolved <- run (v1 ["fn"] [fibx])
+  nosubject resolved
+  unnamed <- run (v1 ["fn"] [fibx, plain])
+  refuses (nosubject unnamed) "^omni: no test subject for: fib$"
+  legacy <- run (v1 [] [plain])
+  refuses (nosubject legacy) "^omni: no test subject for: fib$"
+
+waitOwnId :: IO ()
+waitOwnId = do
+  pack <- extpack (v1 [] [JMap [("id", Str "constructor"), ("in", Num 6), ("out", Num 8)], JMap [("id", Str "toString"), ("in", Num 7), ("out", Num 13)]])
+  rung pack fibsub
+  rungwith pack defaultRunFlags {flagWait = JMap []} fibsub
+
 allReportsEvery :: IO ()
 allReportsEvery = do
   pack <-
@@ -729,6 +762,9 @@ main = do
   run "a legacy spec ignores fn and wait" legacyIgnoresFnWait
   run "a raising hook is the entry's error, not the set's" raisingHook
   run "a raising hook fails the entry even when the subject ignores its arguments" raisingHookUnread
+  run "a waiting entry holds a hook's error raised before the subject starts" waitHoldsPrestart
+  run "fn needs no default subject, but an entry without fn does" fnNeedsNoDefault
+  run "a wait is found by an id the entry owns, never an inherited one" waitOwnId
   run "all reports every failure at once" allReportsEvery
 
   passed <- readIORef passcount
