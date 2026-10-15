@@ -300,7 +300,7 @@ class RunPack {
     final label = flags.name ?? (_name.isEmpty ? 'set' : _name);
 
     final usesubject = testsubject ?? subject;
-    if (null == usesubject) {
+    if (null == usesubject && !_fnon) {
       throw OmniError('omni: no test subject for: $label');
     }
 
@@ -328,19 +328,34 @@ class RunPack {
 
     for (var index = 0; index < testset.length; index++) {
       final entry = testset[index];
-      var started = false;
 
       try {
         if (entry is! Map) {
           throw OmniError('omni: $label[$index]: entry is not a map');
         }
 
-        // An entry with no `out` expects a null (or absent) result.
-        if (flags.nulls && null == entry['out']) {
-          entry['out'] = NULLMARK;
+        ({Provider client, Subject? subject})? testpack;
+        Object? prestart;
+
+        // A hook's raw error before the subject starts is still the entry's.
+        try {
+          // An entry with no `out` expects a null (or absent) result.
+          if (flags.nulls && null == entry['out']) {
+            entry['out'] = NULLMARK;
+          }
+
+          testpack = _resolvetestpack(entry, usesubject);
+        } on OmniError {
+          rethrow;
+        } catch (err) {
+          prestart = err;
         }
 
-        final testpack = _resolvetestpack(entry, usesubject);
+        final client = testpack?.client ?? _provider;
+        final entrysubject = testpack?.subject;
+        if (null == prestart && null == entrysubject) {
+          throw OmniError('omni: no test subject for: $label');
+        }
 
         final id = entry['id'];
         final wait = _waiton && entry.containsKey('wait')
@@ -349,13 +364,20 @@ class RunPack {
                 ? waits[id]
                 : ABSENT;
 
-        started = true;
+        void run() {
+          if (null != prestart) {
+            _handleerror(label, index, entry, prestart);
+          } else {
+            _runentry(label, flags, index, entry, (client: client, subject: entrysubject!));
+          }
+        }
+
         if (isabsent(wait)) {
-          _runentry(label, flags, index, entry, testpack);
+          run();
         } else {
           var held = false;
           try {
-            _runentry(label, flags, index, entry, testpack);
+            run();
           } on OmniError {
             held = true;
           }
@@ -364,25 +386,12 @@ class RunPack {
             throw _fail(label, index, entry, 'stale wait: $cause');
           }
         }
-      } catch (err) {
-        var failure = err;
-        // Before the subject starts, a hook's raw error is still the entry's.
-        if (!started && err is! OmniError) {
-          try {
-            _handleerror(label, index, entry, err);
-            continue;
-          } catch (herr) {
-            failure = herr;
-          }
-        }
-        if (flags.all && failure is OmniError) {
-          failures.add(failure.message);
+      } on OmniError catch (err) {
+        if (flags.all) {
+          failures.add(err.message);
           continue;
         }
-        if (identical(failure, err)) {
-          rethrow;
-        }
-        throw failure;
+        rethrow;
       }
     }
 
@@ -434,7 +443,7 @@ class RunPack {
     return waits;
   }
 
-  _TestPack _resolvetestpack(Map entry, Subject subject) {
+  ({Provider client, Subject? subject}) _resolvetestpack(Map entry, Subject? subject) {
     var client = _provider;
     var usesubject = subject;
 

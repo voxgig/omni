@@ -189,6 +189,56 @@ void extrunnersuite() {
     F.runset(F.set('g'), FIB);
   });
 
+  testcase('a waiting entry holds a hook\'s error raised before the subject starts', () {
+    final provider = Provider(subject: (name) {
+      if ('boom' == name) {
+        throw Exception('subject boom');
+      }
+      return 'fib' == name ? FIB : null;
+    });
+    RunPack run(dynamic spec) => makeRunner(spec, provider).runner('fib');
+    final H = run(v1(['fn', 'wait'], [
+      {'fn': 'boom', 'in': 6, 'out': 8, 'wait': {'cause': 'hook#2'}},
+    ]));
+    H.runset(H.set('g'), FIB);
+    final S = run(v1(['fn', 'wait'], [
+      {'fn': 'boom', 'in': 6, 'err': 'subject boom', 'wait': {'cause': 'hook#3'}},
+    ]));
+    refuses(() => S.runset(S.set('g'), FIB), r'\[0\]: stale wait: hook#3');
+  });
+
+  testcase('fn needs no default subject, but an entry without fn does', () {
+    final provider = Provider(subject: (name) => 'fibx' == name ? FIB : null);
+    final R = makeRunner(
+        v1(['fn'], [
+          {'fn': 'fibx', 'in': 6, 'out': 8},
+        ]),
+        provider).runner('fib');
+    R.runset(R.set('g'));
+    final N = makeRunner(
+        v1(['fn'], [
+          {'fn': 'fibx', 'in': 6, 'out': 8},
+          {'in': 6, 'out': 8},
+        ]),
+        provider).runner('fib');
+    refuses(() => N.runset(N.set('g')), r'^omni: no test subject for: fib$');
+    final L = makeRunner(
+        v1([], [
+          {'in': 6, 'out': 8},
+        ]),
+        provider).runner('fib');
+    refuses(() => L.runset(L.set('g')), r'^omni: no test subject for: fib$');
+  });
+
+  testcase('a wait is found by an id the entry owns, never an inherited one', () {
+    final R = extrunner(v1([], [
+      {'id': 'constructor', 'in': 6, 'out': 8},
+      {'id': 'toString', 'in': 7, 'out': 13},
+    ]));
+    R.runset(R.set('g'), FIB);
+    R.runsetflags(R.set('g'), const Flags(wait: {}), FIB);
+  });
+
   testcase('all reports every failure at once', () {
     final R = extrunner(v1([], [
       {'in': 5, 'out': 6},
