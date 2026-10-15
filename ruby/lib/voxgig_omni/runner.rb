@@ -46,7 +46,7 @@ module VoxgigOmni
 
     # Load a spec: a path to a JSON file, or an already-parsed object.
     def loadspec(specref)
-      return JSON.parse(File.read(specref)) if specref.is_a?(String)
+      return JSON.parse(File.read(specref, encoding: 'UTF-8')) if specref.is_a?(String)
 
       specref
     end

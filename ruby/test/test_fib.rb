@@ -201,6 +201,16 @@ class TestRunner < Minitest::Test
     expectfail('emptystr', FIBINFO)
   end
 
+  # A C locale makes the default external encoding US-ASCII; the spec is UTF-8 regardless.
+  def test_loadspec_reads_utf8_whatever_the_locale
+    saved = Encoding.default_external
+    Encoding.default_external = Encoding::US_ASCII
+    spec = VoxgigOmni::Runner.loadspec(File.join(__dir__, 'utf8.json'))
+    assert_equal "caf\u00e9", spec['name']
+  ensure
+    Encoding.default_external = saved
+  end
+
   def test_rejects_an_unsupported_spec_version
     err = assert_raises(VoxgigOmni::OmniError) do
       VoxgigOmni.make_runner(

@@ -72,6 +72,7 @@ import Data.Char (isAlphaNum, isDigit, isSpace, toLower)
 import Data.List (isInfixOf, isPrefixOf, sortBy)
 import Data.Maybe (fromMaybe, isJust)
 import Numeric (showHex)
+import System.IO (IOMode (ReadMode), hGetContents', hSetEncoding, utf8, withFile)
 import Text.Printf (printf)
 
 -- ---- the JSON value model -------------------------------------------
@@ -354,7 +355,7 @@ parseNumber text =
 -- | Load a spec: a path to a JSON file.
 loadspec :: String -> IO Json
 loadspec path = do
-  text <- readFile path
+  text <- withFile path ReadMode (\h -> hSetEncoding h utf8 >> hGetContents' h)
   case parse text of
     Right value -> pure value
     Left message -> throwIO (OmniError ("omni: cannot parse spec: " ++ path ++ ": " ++ message))

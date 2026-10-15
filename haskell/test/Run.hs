@@ -10,15 +10,16 @@
 
 module Main (main) where
 
-import Control.Exception (SomeException, fromException, throw, throwIO, try)
+import Control.Exception (SomeException, finally, fromException, throw, throwIO, try)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Fib
 import GHC.Float (castDoubleToWord64, castWord64ToDouble)
+import GHC.IO.Encoding (getLocaleEncoding, mkTextEncoding, setLocaleEncoding)
 import Omni
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
-import System.IO (hFlush, stdout)
+import System.IO (IOMode (ReadMode), hFlush, stdout, withFile)
 
 -- Find the shared spec directory by walking up from the working directory.
 specfile :: String -> IO String
@@ -28,7 +29,7 @@ specfile name = search "." (0 :: Int)
       | step >= 8 = throwIO (OmniError ("omni: spec not found: " ++ name))
       | otherwise = do
           let cand = dir ++ "/spec/" ++ name
-          found <- try (readFile cand) :: IO (Either SomeException String)
+          found <- try (withFile cand ReadMode (const (pure ()))) :: IO (Either SomeException ())
           case found of
             Right _ -> pure cand
             Left _ -> search (dir ++ "/..") (step + 1)
@@ -341,6 +342,17 @@ rejectsUnknownCapability =
           ("fib", JMap [("g", JMap [("set", JList [])])])
         ]
     )
+
+-- A C locale decodes files as ASCII; the spec is UTF-8 regardless.
+loadspecReadsUtf8 :: IO ()
+loadspecReadsUtf8 = do
+  saved <- getLocaleEncoding
+  ascii <- mkTextEncoding "ASCII"
+  setLocaleEncoding ascii
+  spec <- loadspec "test/utf8.json" `finally` setLocaleEncoding saved
+  case asstr (jget spec "name") of
+    Just "caf\233" -> pure ()
+    other -> throwIO (OmniError ("expected caf\\233, got " ++ show other))
 
 rejectsMalformedVersionBlock :: IO ()
 rejectsMalformedVersionBlock =
@@ -729,6 +741,7 @@ main = do
   run "__NULL__ does not match an absent key" (expectfail "nullonabsent" fibinfosub)
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" fibinfosub)
 
+  run "loadspec reads UTF-8 whatever the locale" loadspecReadsUtf8
   run "rejects an unsupported spec version" rejectsUnsupportedVersion
   run "rejects an unknown required capability" rejectsUnknownCapability
   run "rejects a malformed version block" rejectsMalformedVersionBlock
