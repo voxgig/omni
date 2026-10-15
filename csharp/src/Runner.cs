@@ -35,6 +35,12 @@ namespace Voxgig.Omni
         public bool Null { get; set; } = true;
         public string Name { get; set; }
 
+        /// <summary>Run every entry, then fail once, listing every failure.</summary>
+        public bool All { get; set; }
+
+        /// <summary>A map from entry id to <c>{cause}</c>, holding those entries.</summary>
+        public object Wait { get; set; }
+
         public static Flags NoNull() => new Flags { Null = false };
     }
 
@@ -73,9 +79,14 @@ namespace Voxgig.Omni
         private readonly Dictionary<string, Provider> clients;
         private readonly string name;
         private readonly int specversion;
+        private readonly string[] requires;
+        private readonly bool ctxargs;
+        private readonly bool fnon;
+        private readonly bool waiton;
 
         internal RunPack(object spec, Subject subject, Provider provider,
-                         Dictionary<string, Provider> clients, string name, int specversion)
+                         Dictionary<string, Provider> clients, string name, int specversion,
+                         string[] requires)
         {
             Spec = spec;
             Subject = subject;
@@ -84,6 +95,10 @@ namespace Voxgig.Omni
             this.clients = clients;
             this.name = name;
             this.specversion = specversion;
+            this.requires = requires;
+            ctxargs = requires.Contains("ctxargs");
+            fnon = requires.Contains("fn");
+            waiton = requires.Contains("wait");
         }
 
         /// <summary>A named group of the resolved spec.</summary>
@@ -107,6 +122,8 @@ namespace Voxgig.Omni
                 Name = null == flags || string.IsNullOrEmpty(flags.Name)
                     ? (string.IsNullOrEmpty(name) ? "set" : name)
                     : flags.Name,
+                All = null != flags && flags.All,
+                Wait = flags?.Wait,
             };
 
             Subject subject = testsubject ?? Subject;
@@ -125,64 +142,135 @@ namespace Voxgig.Omni
 
             if (1 <= specversion)
             {
-                Runner.CheckSet(useflags, testspec, testset);
+                Runner.CheckSet(useflags, testspec, testset, requires);
             }
+
+            IList<object> origset =
+                testspec is IDictionary<string, object> specmap &&
+                specmap.ContainsKey("set") && specmap["set"] is IList<object> authored
+                    ? authored
+                    : testset;
+            var waits = Runner.ResolveWaits(useflags, origset);
+            var failures = new List<string>();
 
             for (int index = 0; index < testset.Count; index++)
             {
-                if (!(testset[index] is IDictionary<string, object> entry))
-                {
-                    throw new OmniError("omni: " + useflags.Name + "[" + index + "]: entry is not a map");
-                }
-
-                // An entry with no `out` expects a null (or absent) result.
-                if (useflags.Null && (!entry.ContainsKey("out") || null == entry["out"]))
-                {
-                    entry["out"] = Util.NULLMARK;
-                }
-
-                Subject entrysubject = subject;
-                Provider entryclient = provider;
-
-                if (entry.ContainsKey("client") && entry["client"] is string clientname)
-                {
-                    if (!clients.ContainsKey(clientname))
-                    {
-                        throw new OmniError("omni: unknown client: " + clientname, entry);
-                    }
-                    entryclient = clients[clientname];
-                    var clientsubject = Runner.ResolveSubject(name, entryclient);
-                    if (null != clientsubject)
-                    {
-                        entrysubject = clientsubject;
-                    }
-                }
-
-                object[] args = ResolveArgs(entry, entryclient);
-
-                object res;
                 try
                 {
-                    res = entrysubject(args);
-                }
-                catch (OmniError)
-                {
-                    throw;
-                }
-                catch (Exception err)
-                {
-                    Runner.HandleError(useflags, index, entry, err, this.provider);
-                    continue;
-                }
+                    if (!(testset[index] is IDictionary<string, object> entry))
+                    {
+                        throw new OmniError("omni: " + useflags.Name + "[" + index + "]: entry is not a map");
+                    }
 
-                res = Runner.FixJson(res, useflags.Null);
-                entry["res"] = res;
+                    ResolveEntry(entry, useflags);
 
-                Runner.CheckResult(useflags, index, entry, args, res);
+                    var testpack = ResolveTestPack(entry, subject);
+                    object[] args = ResolveArgs(entry, testpack.client);
+
+                    bool haswait = waiton && entry.ContainsKey("wait");
+                    object wait = haswait ? entry["wait"] : null;
+                    if (!haswait && entry.ContainsKey("id") && entry["id"] is string id && waits.ContainsKey(id))
+                    {
+                        haswait = true;
+                        wait = waits[id];
+                    }
+
+                    if (!haswait)
+                    {
+                        RunEntry(useflags, index, entry, testpack, args);
+                    }
+                    else
+                    {
+                        bool held = false;
+                        try
+                        {
+                            RunEntry(useflags, index, entry, testpack, args);
+                        }
+                        catch (OmniError)
+                        {
+                            held = true;
+                        }
+                        if (!held)
+                        {
+                            string cause = wait is IDictionary<string, object> waitmap &&
+                                waitmap.ContainsKey("cause") && waitmap["cause"] is string text ? text : "";
+                            throw Runner.Fail(useflags, index, entry, "stale wait: " + cause);
+                        }
+                    }
+                }
+                catch (OmniError err) when (useflags.All)
+                {
+                    failures.Add(err.Message);
+                }
+            }
+
+            if (0 < failures.Count)
+            {
+                throw new OmniError("omni: " + useflags.Name + ": " +
+                    failures.Count.ToString(CultureInfo.InvariantCulture) + " of " +
+                    testset.Count.ToString(CultureInfo.InvariantCulture) + " entries failed\n" +
+                    string.Join("\n", failures));
             }
         }
 
-        // Build the argument list: `ctx`, `args`, or `in`.
+        // An entry with no `out` expects a null (or absent) result.
+        private static void ResolveEntry(IDictionary<string, object> entry, Flags flags)
+        {
+            if (flags.Null && (!entry.ContainsKey("out") || null == entry["out"]))
+            {
+                entry["out"] = Util.NULLMARK;
+            }
+        }
+
+        private (Provider client, Subject subject) ResolveTestPack(IDictionary<string, object> entry, Subject subject)
+        {
+            Provider client = provider;
+
+            if (entry.ContainsKey("client") && entry["client"] is string clientname)
+            {
+                if (!clients.ContainsKey(clientname))
+                {
+                    throw new OmniError("omni: unknown client: " + clientname, entry);
+                }
+                client = clients[clientname];
+                subject = Runner.ResolveSubject(name, client) ?? subject;
+            }
+
+            if (fnon && entry.ContainsKey("fn") && entry["fn"] is string fn)
+            {
+                subject = Runner.ResolveSubject(fn, client) ??
+                    throw new OmniError("omni: unknown fn: " + fn, entry);
+            }
+
+            return (client, subject);
+        }
+
+        private void RunEntry(Flags flags, int index, IDictionary<string, object> entry,
+                              (Provider client, Subject subject) testpack, object[] args)
+        {
+            object res;
+            try
+            {
+                res = testpack.subject(args);
+            }
+            catch (OmniError)
+            {
+                throw;
+            }
+            catch (Exception err)
+            {
+                Runner.HandleError(flags, index, entry, err, provider);
+                return;
+            }
+
+            res = Runner.FixJson(res, flags.Null);
+            entry["res"] = res;
+
+            Runner.CheckResult(flags, index, entry, args, res);
+        }
+
+        // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+        // entry with both passes the context first, then each argument.
         private object[] ResolveArgs(IDictionary<string, object> entry, Provider client)
         {
             object[] args;
@@ -190,7 +278,20 @@ namespace Voxgig.Omni
             bool hasctx = entry.ContainsKey("ctx");
             bool hasargs = entry.ContainsKey("args");
 
-            if (hasctx)
+            if (ctxargs && hasctx && hasargs)
+            {
+                var both = new List<object> { entry["ctx"] };
+                if (entry["args"] is IList<object> rest)
+                {
+                    both.AddRange(rest);
+                }
+                else
+                {
+                    both.Add(entry["args"]);
+                }
+                args = both.ToArray();
+            }
+            else if (hasctx)
             {
                 args = new object[] { entry["ctx"] };
             }
@@ -243,12 +344,14 @@ namespace Voxgig.Omni
         private readonly object alltests;
         private readonly Provider provider;
         private readonly int specversion;
+        private readonly string[] requires;
 
         internal RunnerPack(object alltests, Provider provider, int specversion)
         {
             this.alltests = alltests;
             this.provider = provider ?? new Provider();
             this.specversion = specversion;
+            requires = Runner.ResolveRequires(alltests);
         }
 
         /// <summary>Resolve one named section of the spec.</summary>
@@ -257,7 +360,7 @@ namespace Voxgig.Omni
             object spec = Runner.ResolveSpec(name, alltests);
             var clients = Runner.ResolveClients(provider, spec, store);
             var subject = Runner.ResolveSubject(name, provider);
-            return new RunPack(spec, subject, provider, clients, name, specversion);
+            return new RunPack(spec, subject, provider, clients, name, specversion, requires);
         }
     }
 
@@ -276,9 +379,9 @@ namespace Voxgig.Omni
         // Capability strings this runner supports beyond the version
         // baseline. A spec's OMNI.requires list is checked against this: an
         // unknown capability refuses the spec loudly at load time, instead
-        // of a lagging port silently mis-running it. (Empty today; future
-        // format features mint a string here.)
-        public static readonly string[] CAPABILITIES = Array.Empty<string>();
+        // of a lagging port silently mis-running it. A spec turns each on
+        // only by requiring it.
+        public static readonly string[] CAPABILITIES = { "ctxargs", "fn", "wait" };
 
         // The complete set of fields an entry may carry. Under version 1
         // anything else is an error: an unrecognised key is almost always a
@@ -286,6 +389,10 @@ namespace Voxgig.Omni
         // stopped testing.
         private static readonly string[] ENTRYFIELDS =
             { "in", "args", "ctx", "out", "err", "match", "client", "id", "doc" };
+
+        // Entry fields a capability adds, permitted only in a spec that requires it.
+        private static readonly Dictionary<string, string> CAPFIELDS =
+            new Dictionary<string, string> { ["fn"] = "fn", ["wait"] = "wait" };
 
         /// <summary>Make a runner for a spec file path and a provider.</summary>
         public static RunnerPack MakeRunner(string path, Provider provider = null)
@@ -359,11 +466,24 @@ namespace Voxgig.Omni
             return (int)version;
         }
 
+        // The capabilities a spec requires, which ResolveVersion has already
+        // checked against CAPABILITIES.
+        internal static string[] ResolveRequires(object alltests)
+        {
+            if (alltests is IDictionary<string, object> allmap && allmap.ContainsKey("OMNI") &&
+                allmap["OMNI"] is IDictionary<string, object> meta &&
+                meta.ContainsKey("requires") && meta["requires"] is IList<object> requires)
+            {
+                return requires.OfType<string>().ToArray();
+            }
+            return Array.Empty<string>();
+        }
+
         // Strict entry validation, applied when the spec declares version 1
         // or later. The lenient format converts each of these mistakes into
         // a silent pass or a dead field; here they fail with the entry
         // named.
-        internal static void CheckEntry(Flags flags, int index, object entry)
+        internal static void CheckEntry(Flags flags, int index, object entry, string[] requires)
         {
             if (!(entry is IDictionary<string, object> map))
             {
@@ -372,23 +492,44 @@ namespace Voxgig.Omni
 
             foreach (var key in map.Keys)
             {
-                if (!ENTRYFIELDS.Contains(key))
+                if (!ENTRYFIELDS.Contains(key) &&
+                    !(CAPFIELDS.ContainsKey(key) && requires.Contains(CAPFIELDS[key])))
                 {
                     throw Fail(flags, index, entry, "unknown entry field: " + key);
                 }
             }
 
-            int argsources = 0;
-            foreach (var key in new[] { "in", "args", "ctx" })
+            if (requires.Contains("ctxargs"))
             {
-                if (map.ContainsKey(key))
+                if (map.ContainsKey("in") && (map.ContainsKey("args") || map.ContainsKey("ctx")))
                 {
-                    argsources++;
+                    throw Fail(flags, index, entry, "entry has in beside args or ctx");
                 }
             }
-            if (1 < argsources)
+            else
             {
-                throw Fail(flags, index, entry, "entry has more than one of in, args, ctx");
+                int argsources = 0;
+                foreach (var key in new[] { "in", "args", "ctx" })
+                {
+                    if (map.ContainsKey(key))
+                    {
+                        argsources++;
+                    }
+                }
+                if (1 < argsources)
+                {
+                    throw Fail(flags, index, entry, "entry has more than one of in, args, ctx");
+                }
+            }
+
+            if (map.ContainsKey("fn") && !(map["fn"] is string fn && 0 < fn.Length))
+            {
+                throw Fail(flags, index, entry, "entry fn is not a name");
+            }
+
+            if (map.ContainsKey("wait") && !IsWait(map["wait"]))
+            {
+                throw Fail(flags, index, entry, "entry wait has no cause");
             }
 
             bool haserr = map.ContainsKey("err") && null != map["err"];
@@ -409,7 +550,7 @@ namespace Voxgig.Omni
         // (e.g. id: null) into a sentinel string and hide it from
         // validation. A malformed spec is a spec error, not a test result,
         // so it fails before any subject runs.
-        internal static void CheckSet(Flags flags, object testspec, IList<object> normalset)
+        internal static void CheckSet(Flags flags, object testspec, IList<object> normalset, string[] requires)
         {
             IList<object> origset = normalset;
 
@@ -433,8 +574,44 @@ namespace Voxgig.Omni
 
             for (int index = 0; index < origset.Count; index++)
             {
-                CheckEntry(flags, index, origset[index]);
+                CheckEntry(flags, index, origset[index], requires);
             }
+        }
+
+        internal static bool IsWait(object wait)
+        {
+            return wait is IDictionary<string, object> waitmap && waitmap.ContainsKey("cause") &&
+                   waitmap["cause"] is string cause && 0 < cause.Length;
+        }
+
+        // The runner-side waits: entry id to its declaration. Each must name
+        // an entry of the set, so a declaration cannot outlive the entry it
+        // held.
+        internal static IDictionary<string, object> ResolveWaits(Flags flags, IList<object> origset)
+        {
+            if (null == flags.Wait)
+            {
+                return new Dictionary<string, object>();
+            }
+            if (!(flags.Wait is IDictionary<string, object> waits))
+            {
+                throw new OmniError("omni: " + flags.Name + ": wait flag is not a map");
+            }
+            var ids = origset
+                .Select(entry => entry is IDictionary<string, object> map && map.ContainsKey("id") ? map["id"] : null)
+                .ToList();
+            foreach (var wait in waits)
+            {
+                if (!ids.Any(id => id is string text && text == wait.Key))
+                {
+                    throw new OmniError("omni: " + flags.Name + ": wait names no entry: " + wait.Key);
+                }
+                if (!IsWait(wait.Value))
+                {
+                    throw new OmniError("omni: " + flags.Name + ": wait for " + wait.Key + " has no cause");
+                }
+            }
+            return waits;
         }
 
         /// <summary>Find `primary.&lt;name&gt;`, then `&lt;name&gt;`, then the whole spec.</summary>

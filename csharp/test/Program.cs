@@ -14,7 +14,7 @@ using System.IO;
 using Voxgig.Omni;
 using Voxgig.Omni.Test;
 
-internal static class Program
+internal static partial class Program
 {
     private static string only;
     private static int passcount;
@@ -421,6 +421,8 @@ internal static class Program
         });
 
         TestCase("deepequal: two distinct NaNs are structurally equal", NanEquality);
+
+        ExtSuite();
 
         Console.WriteLine("\n" + passcount + " passed, " + failcount + " failed");
 
