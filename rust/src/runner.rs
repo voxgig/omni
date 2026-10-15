@@ -481,7 +481,6 @@ impl RunPack {
 
             let outcome = (|| -> Result<(), OmniError> {
                 let testpack = self.resolvetestpack(&entry, &usesubject, argsubject)?;
-                let mut args = self.resolveargs(&mut entry, &testpack.client);
 
                 let wait = if self.waiton && entry.has("wait") {
                     Some(entry.get("wait"))
@@ -495,8 +494,8 @@ impl RunPack {
                     index,
                     &mut entry,
                     &testpack,
-                    &mut args,
                     &self.provider,
+                    self.ctxargs,
                 );
 
                 match wait {
@@ -569,44 +568,49 @@ impl RunPack {
 
         Ok(testpack)
     }
+}
 
-    /// Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
-    /// entry with both passes the context first, then each argument.
-    fn resolveargs(&self, entry: &mut Json, _client: &Provider) -> Vec<Json> {
-        let hasctx = entry.has("ctx");
-        let hasargs = entry.has("args");
+/// Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+/// entry with both passes the context first, then each argument.
+fn resolveargs(
+    entry: &mut Json,
+    _testpack: &TestPack,
+    provider: &Provider,
+    ctxargs: bool,
+) -> Vec<Json> {
+    let hasctx = entry.has("ctx");
+    let hasargs = entry.has("args");
 
-        let listargs = |rawargs: Json| match rawargs {
-            Json::List(list) => list,
-            other => vec![other],
-        };
+    let listargs = |rawargs: Json| match rawargs {
+        Json::List(list) => list,
+        other => vec![other],
+    };
 
-        let mut args: Vec<Json> = if self.ctxargs && hasctx && hasargs {
-            let mut both = vec![entry.get("ctx")];
-            both.extend(listargs(entry.get("args")));
-            both
-        } else if hasctx {
-            vec![entry.get("ctx")]
-        } else if hasargs {
-            listargs(entry.get("args"))
-        } else {
-            vec![entry.get("in")]
-        };
+    let mut args: Vec<Json> = if ctxargs && hasctx && hasargs {
+        let mut both = vec![entry.get("ctx")];
+        both.extend(listargs(entry.get("args")));
+        both
+    } else if hasctx {
+        vec![entry.get("ctx")]
+    } else if hasargs {
+        listargs(entry.get("args"))
+    } else {
+        vec![entry.get("in")]
+    };
 
-        if (hasctx || hasargs) && !args.is_empty() && args[0].ismap() {
-            let mut first = args[0].clone();
-            if let Some(contextify) = &self.provider.contextify {
-                first = contextify(first);
-            }
-            if let Json::Map(map) = &mut first {
-                map.insert("client".to_string(), Json::Bool(true));
-            }
-            args[0] = first.clone();
-            jset(entry, "ctx", first);
+    if (hasctx || hasargs) && !args.is_empty() && args[0].ismap() {
+        let mut first = args[0].clone();
+        if let Some(contextify) = &provider.contextify {
+            first = contextify(first);
         }
-
-        args
+        if let Json::Map(map) = &mut first {
+            map.insert("client".to_string(), Json::Bool(true));
+        }
+        args[0] = first.clone();
+        jset(entry, "ctx", first);
     }
+
+    args
 }
 
 fn resolvesubject(name: &str, provider: &Provider) -> Option<Subject> {
@@ -1042,12 +1046,14 @@ fn runentry(
     index: usize,
     entry: &mut Json,
     testpack: &TestPack,
-    args: &mut [Json],
     provider: &Provider,
+    ctxargs: bool,
 ) -> Result<(), OmniError> {
+    let mut args = resolveargs(entry, testpack, provider, ctxargs);
+
     let called = match &testpack.argsubject {
-        Some(mutable) => mutable(args),
-        None => (testpack.subject)(args),
+        Some(mutable) => mutable(&mut args),
+        None => (testpack.subject)(&args),
     };
 
     match called {
@@ -1055,7 +1061,7 @@ fn runentry(
         Ok(rawres) => {
             let res = fixjson(&rawres, flags);
             jset(entry, "res", res.clone());
-            checkresult(flags, index, entry, args, &res)
+            checkresult(flags, index, entry, &args, &res)
         }
     }
 }
