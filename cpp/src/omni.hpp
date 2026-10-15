@@ -568,33 +568,44 @@ class RunPack {
 
     for (size_t index = 0; index < testset.listval.size(); index++) {
       Json entry = testset.listval[index];
+      bool started = false;
 
       try {
-        resolveentry(entry, flags);
+        try {
+          resolveentry(entry, flags);
 
-        TestPack testpack = resolvetestpack(entry, usesubject);
-        std::vector<Json> args = resolveargs(entry, ctxargs_);
+          TestPack testpack = resolvetestpack(entry, usesubject);
 
-        Json id = entry.get("id");
-        Json wait = Json::absent();
-        if (waiton_ && entry.has("wait")) {
-          wait = entry.get("wait");
-        } else if (id.isstr() && waits.has(id.strval)) {
-          wait = waits.get(id.strval);
-        }
-
-        if (wait.isabsent()) {
-          runentry(flags, index, entry, testpack, args);
-        } else {
-          bool held = false;
-          try {
-            runentry(flags, index, entry, testpack, args);
-          } catch (const OmniError&) {
-            held = true;
+          Json id = entry.get("id");
+          Json wait = Json::absent();
+          if (waiton_ && entry.has("wait")) {
+            wait = entry.get("wait");
+          } else if (id.isstr() && waits.has(id.strval)) {
+            wait = waits.get(id.strval);
           }
-          if (!held) {
-            throw fail(flags, index, entry, "stale wait: " + stringify(wait.get("cause")));
+
+          started = true;
+          if (wait.isabsent()) {
+            runentry(flags, index, entry, testpack, ctxargs_);
+          } else {
+            bool held = false;
+            try {
+              runentry(flags, index, entry, testpack, ctxargs_);
+            } catch (const OmniError&) {
+              held = true;
+            }
+            if (!held) {
+              throw fail(flags, index, entry, "stale wait: " + stringify(wait.get("cause")));
+            }
           }
+        } catch (const OmniError&) {
+          throw;
+        } catch (const std::exception& err) {
+          // Before the subject starts, a hook's raw error is still the entry's.
+          if (started) {
+            throw;
+          }
+          handleerror(flags, index, entry, err.what());
         }
       } catch (const OmniError& err) {
         if (flags.all) {
@@ -663,9 +674,11 @@ class RunPack {
   }
 
   void runentry(const Flags& flags, size_t index, Json& entry, const TestPack& testpack,
-                std::vector<Json>& args) const {
+                bool ctxargs) const {
+    std::vector<Json> args;
     Json res;
     try {
+      args = resolveargs(entry, ctxargs);
       res = testpack.subject(args);
     } catch (const OmniError&) {
       throw;

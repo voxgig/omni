@@ -609,6 +609,37 @@ void extlegacy() {
   R.runset(R.set("g"), FIB);
 }
 
+void exthook() {
+  auto provider = std::make_shared<omni::Provider>();
+  provider->subject = [](const std::string&) { return FIB; };
+  provider->contextify = [](const omni::Json&) -> omni::Json {
+    throw std::runtime_error("contextify boom");
+  };
+  auto run = [&provider](const omni::Json& spec) {
+    return omni::makeRunner(spec, provider).runner("fib");
+  };
+
+  omni::RunPack E = run(v1({}, R"([{"ctx":{"n":6},"err":"contextify boom"}])"));
+  E.runset(E.set("g"), FIB);
+  omni::RunPack U = run(v1({}, R"([{"ctx":{"n":6},"out":8}])"));
+  refuses([&U] { U.runset(U.set("g"), FIB); },
+          R"(\[0\]: unexpected error\n\s+actual:\s+contextify boom)");
+  omni::RunPack W = run(v1({"wait"}, R"([{"ctx":{"n":6},"out":8,"wait":{"cause":"hook#1"}}])"));
+  W.runset(W.set("g"), FIB);
+
+  auto raising = std::make_shared<omni::Provider>();
+  raising->subject = [](const std::string& name) -> omni::Subject {
+    if ("boom" == name) {
+      throw std::runtime_error("subject boom");
+    }
+    return FIB;
+  };
+  omni::RunPack F = omni::makeRunner(v1({"fn"}, R"([{"fn":"boom","in":6,"err":"subject boom"}])"),
+                                     raising)
+                        .runner("fib");
+  F.runset(F.set("g"), FIB);
+}
+
 void extall() {
   omni::RunPack R =
       extrunner(v1({}, R"([{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}])"));
@@ -690,6 +721,7 @@ int main(int argc, char** argv) {
   testcase("an unknown fn is a spec error", extunknownfn);
   testcase("ctx with args needs ctxargs, and never takes in", extctxargs);
   testcase("a legacy spec ignores fn and wait", extlegacy);
+  testcase("a raising hook is the entry's error, not the set's", exthook);
   testcase("all reports every failure at once", extall);
 
   std::cout << "\n" << PASSCOUNT << " passed, " << FAILCOUNT << " failed\n";
