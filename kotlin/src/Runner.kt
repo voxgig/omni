@@ -19,8 +19,16 @@ typealias Subject = (List<Json>) -> Json
  */
 class OmniError(message: String, val entry: Json = Json.Absent) : RuntimeException(message)
 
-/** Run-time options for a set of test entries. */
-data class Flags(val nulls: Boolean = true, val name: String? = null) {
+/**
+ * Run-time options for a set of test entries. `all` runs every entry, then
+ * fails once listing each failure; `wait` maps an entry id to its `{cause}`.
+ */
+data class Flags(
+    val nulls: Boolean = true,
+    val name: String? = null,
+    val all: Boolean = false,
+    val wait: Json = Json.Absent,
+) {
     companion object {
         fun nonull(): Flags = Flags(nulls = false)
     }
@@ -46,14 +54,17 @@ const val SPECVERSION = 1
 // Capability strings this runner supports beyond the version baseline. A
 // spec's OMNI.requires list is checked against this: an unknown capability
 // refuses the spec loudly at load time, instead of a lagging port silently
-// mis-running it. (Empty today; future format features mint a string here.)
-val CAPABILITIES: List<String> = emptyList()
+// mis-running it. A spec turns each on only by requiring it.
+val CAPABILITIES: List<String> = listOf("ctxargs", "fn", "wait")
 
 // The complete set of fields an entry may carry. Under version 1 anything
 // else is an error: an unrecognised key is almost always a typo'd
 // assertion, and a typo'd assertion is a test that silently stopped
 // testing.
 private val ENTRYFIELDS = listOf("in", "args", "ctx", "out", "err", "match", "client", "id", "doc")
+
+// Entry fields a capability adds, permitted only in a spec that requires it.
+private val CAPFIELDS = mapOf("fn" to "fn", "wait" to "wait")
 
 /** Load a spec: a path to a JSON file. */
 fun loadspec(path: String): Json {
@@ -119,6 +130,13 @@ fun resolveversion(alltests: Json): Int {
 
     return version.toInt()
 }
+
+// The capabilities a spec requires, which resolveversion has already
+// checked against CAPABILITIES.
+private fun resolverequires(alltests: Json): List<String> =
+    alltests.get("OMNI").get("requires").aslist?.mapNotNull { it.asstr } ?: emptyList()
+
+private fun iswait(wait: Json): Boolean = wait.ismap && !wait.get("cause").asstr.isNullOrEmpty()
 
 /** Nulls (and absent values) become NULLMARK. Always a fresh copy. */
 fun fixjson(val_: Json, donull: Boolean): Json {
@@ -198,7 +216,12 @@ class RunPack(
     private val clients: Map<String, Provider>,
     private val name: String,
     private val specversion: Int,
+    private val requires: List<String> = emptyList(),
 ) {
+    private val ctxargs = "ctxargs" in requires
+    private val fnon = "fn" in requires
+    private val waiton = "wait" in requires
+
     /** A named group of the resolved spec. */
     fun set(setname: String): Json = spec.get(setname)
 
@@ -219,58 +242,142 @@ class RunPack(
             ?: throw OmniError("omni: test spec has no set: $label")
 
         if (1 <= specversion) {
-            checkset(label, testspec, testset)
+            checkset(label, testspec, testset, requires)
         }
 
+        val origset = if (testspec.ismap && testspec.get("set").islist) {
+            testspec.get("set").aslist!!
+        } else {
+            testset
+        }
+        val waits = resolvewaits(label, flags, origset)
+        val failures = mutableListOf<String>()
+
         for ((index, entry) in testset.withIndex()) {
-            if (!entry.ismap) {
-                throw OmniError("omni: $label[$index]: entry is not a map")
-            }
-
-            // An entry with no `out` expects a null (or absent) result.
-            if (flags.nulls && entry.get("out").isnone) {
-                entry.set("out", Json.str(NULLMARK))
-            }
-
-            var entrysubject = usesubject
-            var entryclient = client
-
-            val clientname = entry.get("client").asstr
-            if (null != clientname) {
-                val found = clients[clientname]
-                    ?: throw OmniError("omni: unknown client: $clientname", entry)
-                entryclient = found
-                val clientsubject = found.subject?.invoke(name)
-                if (null != clientsubject) {
-                    entrysubject = clientsubject
-                }
-            }
-
-            val args = resolveargs(entry, entryclient)
-
-            val res: Json
             try {
-                res = entrysubject(args)
-            } catch (omnierr: OmniError) {
-                throw omnierr
-            } catch (err: Throwable) {
-                handleerror(label, index, entry, err)
-                continue
+                if (!entry.ismap) {
+                    throw OmniError("omni: $label[$index]: entry is not a map")
+                }
+
+                // An entry with no `out` expects a null (or absent) result.
+                if (flags.nulls && entry.get("out").isnone) {
+                    entry.set("out", Json.str(NULLMARK))
+                }
+
+                val testpack = resolvetestpack(entry, usesubject)
+                val args = resolveargs(entry, testpack.client)
+
+                val wait = if (waiton && entry.has("wait")) {
+                    entry.get("wait")
+                } else {
+                    entry.get("id").asstr?.let { waits[it] }
+                }
+
+                if (null == wait) {
+                    runentry(label, index, entry, testpack, args, flags)
+                } else {
+                    var held = false
+                    try {
+                        runentry(label, index, entry, testpack, args, flags)
+                    } catch (err: OmniError) {
+                        held = true
+                    }
+                    if (!held) {
+                        throw fail(label, index, entry, "stale wait: " + stringify(wait.get("cause")))
+                    }
+                }
+            } catch (err: OmniError) {
+                if (!flags.all) {
+                    throw err
+                }
+                failures.add(err.message ?: "")
             }
+        }
 
-            val fixed = fixjson(res, flags.nulls)
-            entry.set("res", fixed)
-
-            checkresult(label, index, entry, args, fixed)
+        if (failures.isNotEmpty()) {
+            throw OmniError(
+                "omni: $label: ${failures.size} of ${testset.size} entries failed\n" +
+                    failures.joinToString("\n"),
+            )
         }
     }
 
-    // Build the argument list: `ctx`, `args`, or `in`.
+    private class TestPack(val client: Provider, val subject: Subject)
+
+    private fun resolvetestpack(entry: Json, subject: Subject): TestPack {
+        var testclient = client
+        var testsubject = subject
+
+        val clientname = entry.get("client").asstr
+        if (null != clientname) {
+            val found = clients[clientname]
+                ?: throw OmniError("omni: unknown client: $clientname", entry)
+            testclient = found
+            testsubject = found.subject?.invoke(name) ?: subject
+        }
+
+        val fn = entry.get("fn").asstr
+        if (fnon && null != fn) {
+            testsubject = testclient.subject?.invoke(fn)
+                ?: throw OmniError("omni: unknown fn: $fn", entry)
+        }
+
+        return TestPack(testclient, testsubject)
+    }
+
+    // The runner-side waits: entry id to its declaration. Each must name an
+    // entry of the set, so a declaration cannot outlive the entry it held.
+    private fun resolvewaits(label: String, flags: Flags, origset: List<Json>): Map<String, Json> {
+        val waits = flags.wait
+        if (waits.isnone) {
+            return emptyMap()
+        }
+        val waitmap = waits.asmap ?: throw OmniError("omni: $label: wait flag is not a map")
+        for ((id, wait) in waitmap) {
+            if (origset.none { id == it.get("id").asstr }) {
+                throw OmniError("omni: $label: wait names no entry: $id")
+            }
+            if (!iswait(wait)) {
+                throw OmniError("omni: $label: wait for $id has no cause")
+            }
+        }
+        return waitmap
+    }
+
+    private fun runentry(
+        label: String,
+        index: Int,
+        entry: Json,
+        testpack: TestPack,
+        args: List<Json>,
+        flags: Flags,
+    ) {
+        val res: Json
+        try {
+            res = testpack.subject(args)
+        } catch (omnierr: OmniError) {
+            throw omnierr
+        } catch (err: Throwable) {
+            handleerror(label, index, entry, err)
+            return
+        }
+
+        val fixed = fixjson(res, flags.nulls)
+        entry.set("res", fixed)
+
+        checkresult(label, index, entry, args, fixed)
+    }
+
+    // Build the argument list: `ctx`, `args`, or `in`. Under `ctxargs` an
+    // entry with both passes the context first, then each argument.
     private fun resolveargs(entry: Json, entryclient: Provider): List<Json> {
         val hasctx = entry.has("ctx")
         val hasargs = entry.has("args")
 
         val args: MutableList<Json> = when {
+            ctxargs && hasctx && hasargs -> mutableListOf(entry.get("ctx")).apply {
+                addAll(entry.get("args").aslist ?: listOf(entry.get("args")))
+            }
             hasctx -> mutableListOf(entry.get("ctx"))
             hasargs -> entry.get("args").aslist ?: mutableListOf(entry.get("args"))
             else -> mutableListOf(clone(entry.get("in")))
@@ -306,7 +413,7 @@ class RunPack(
     // id: null) into a sentinel string and hide it from validation. A
     // malformed spec is a spec error, not a test result, so it fails before
     // any subject runs.
-    private fun checkset(label: String, testspec: Json, normalset: List<Json>) {
+    private fun checkset(label: String, testspec: Json, normalset: List<Json>, requires: List<String>) {
         val origset = if (testspec.ismap && testspec.get("set").islist) {
             testspec.get("set").aslist!!
         } else {
@@ -321,32 +428,47 @@ class RunPack(
         }
 
         for ((index, entry) in origset.withIndex()) {
-            checkentry(label, index, entry)
+            checkentry(label, index, entry, requires)
         }
     }
 
     // Strict entry validation, applied when the spec declares version 1 or
     // later. The lenient format converts each of these mistakes into a
     // silent pass or a dead field; here they fail with the entry named.
-    private fun checkentry(label: String, index: Int, entry: Json) {
+    private fun checkentry(label: String, index: Int, entry: Json, requires: List<String>) {
         if (!entry.ismap) {
             throw fail(label, index, entry, "entry is not a map")
         }
 
         for (key in entry.asmap!!.keys) {
-            if (key !in ENTRYFIELDS) {
+            val capfield = CAPFIELDS[key]
+            if (key !in ENTRYFIELDS && !(null != capfield && capfield in requires)) {
                 throw fail(label, index, entry, "unknown entry field: $key")
             }
         }
 
-        var argsources = 0
-        for (key in listOf("in", "args", "ctx")) {
-            if (entry.has(key)) {
-                argsources++
+        if ("ctxargs" in requires) {
+            if (entry.has("in") && (entry.has("args") || entry.has("ctx"))) {
+                throw fail(label, index, entry, "entry has in beside args or ctx")
+            }
+        } else {
+            var argsources = 0
+            for (key in listOf("in", "args", "ctx")) {
+                if (entry.has(key)) {
+                    argsources++
+                }
+            }
+            if (1 < argsources) {
+                throw fail(label, index, entry, "entry has more than one of in, args, ctx")
             }
         }
-        if (1 < argsources) {
-            throw fail(label, index, entry, "entry has more than one of in, args, ctx")
+
+        if (entry.has("fn") && entry.get("fn").asstr.isNullOrEmpty()) {
+            throw fail(label, index, entry, "entry fn is not a name")
+        }
+
+        if (entry.has("wait") && !iswait(entry.get("wait"))) {
+            throw fail(label, index, entry, "entry wait has no cause")
         }
 
         if (!entry.get("err").isnone && entry.has("out")) {
@@ -574,6 +696,7 @@ class Runner(private val alltests: Json, private val provider: Provider) {
     // Resolved once, at construction (i.e. inside makeRunner) - fail fast on
     // a spec version this runner cannot faithfully run, before any set runs.
     private val specversion: Int = resolveversion(alltests)
+    private val requires: List<String> = resolverequires(alltests)
 
     /** Resolve one named section of the spec. */
     fun runner(name: String, store: Json = Json.Absent): RunPack {
@@ -600,7 +723,7 @@ class Runner(private val alltests: Json, private val provider: Provider) {
 
         val subject = if (name.isEmpty()) null else provider.subject?.invoke(name)
 
-        return RunPack(spec, subject, provider, clients, name, specversion)
+        return RunPack(spec, subject, provider, clients, name, specversion, requires)
     }
 }
 

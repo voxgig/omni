@@ -509,6 +509,8 @@ fun main(args: Array<String>) {
         r.runset(r.set("g"), FIB)
     }
 
+    extsuite()
+
     println("\n$passcount passed, $failcount failed")
 
     exitProcess(if (0 == failcount) 0 else 1)
