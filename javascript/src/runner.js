@@ -581,6 +581,10 @@ function iswait(wait) {
 
 // The runner-side waits: entry id to its declaration. Each must name an
 // entry of the set, so a declaration cannot outlive the entry it held.
+function hasown(map, key) {
+  return Object.prototype.hasOwnProperty.call(map, key)
+}
+
 function resolvewaits(flags, origset) {
   const waits = flags.wait
   if (null == waits) {
@@ -637,7 +641,7 @@ async function makeRunner(specref, provider) {
       useflags.name = useflags.name || name || 'set'
 
       const subject = testsubject || defsubject
-      if (null == subject) {
+      if (null == subject && !fnon) {
         throw new OmniError('omni: no test subject for: ' + useflags.name)
       }
 
@@ -659,23 +663,40 @@ async function makeRunner(specref, provider) {
 
       for (let index = 0; index < testset.length; index++) {
         let entry = testset[index]
-        let started = false
 
         try {
-          entry = resolveentry(entry, useflags)
+          let testpack
+          let prestart = undefined
 
-          const testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+          // A hook's raw error before the subject starts is still the entry's.
+          try {
+            entry = resolveentry(entry, useflags)
+            testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+          } catch (err) {
+            if (err instanceof OmniError) {
+              throw err
+            }
+            prestart = err
+          }
 
-          const wait = waiton && undefined !== entry.wait ? entry.wait
-            : null != entry.id ? waits[entry.id] : undefined
+          if (undefined === prestart && null == testpack.subject) {
+            throw new OmniError('omni: no test subject for: ' + useflags.name)
+          }
 
-          started = true
+          const wait = !ismap(entry) ? undefined
+            : waiton && undefined !== entry.wait ? entry.wait
+              : null != entry.id && hasown(waits, entry.id) ? waits[entry.id] : undefined
+
+          const run = async () => undefined === prestart
+            ? runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+            : handleerror(useflags, index, entry, prestart, useprovider)
+
           if (undefined === wait) {
-            await runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+            await run()
           } else {
             let held = false
             try {
-              await runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+              await run()
             } catch (err) {
               if (!(err instanceof OmniError)) {
                 throw err
@@ -687,21 +708,11 @@ async function makeRunner(specref, provider) {
             }
           }
         } catch (err) {
-          let failure = err
-          // Before the subject starts, a hook's raw error is still the entry's.
-          if (!started && !(err instanceof OmniError)) {
-            try {
-              handleerror(useflags, index, entry, err, useprovider)
-              continue
-            } catch (herr) {
-              failure = herr
-            }
-          }
-          if (true === useflags.all && failure instanceof OmniError) {
-            failures.push(failure.message)
+          if (true === useflags.all && err instanceof OmniError) {
+            failures.push(err.message)
             continue
           }
-          throw failure
+          throw err
         }
       }
 

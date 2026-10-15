@@ -150,6 +150,39 @@ describe('ext runner', () => {
     await F.runset(F.spec.g, fib)
   })
 
+  test('a waiting entry holds a hook\'s error raised before the subject starts', async () => {
+    const provider = {
+      subject: (name) => {
+        if ('boom' === name) {
+          throw new Error('subject boom')
+        }
+        return 'fib' === name ? fib : undefined
+      },
+    }
+    const run = async (spec) => (await makeRunner(spec, provider))('fib')
+    const H = await run(v1(['fn', 'wait'], [{ fn: 'boom', in: 6, out: 8, wait: { cause: 'hook#2' } }]))
+    await H.runset(H.spec.g, fib)
+    const S = await run(v1(['fn', 'wait'], [{ fn: 'boom', in: 6, err: 'subject boom', wait: { cause: 'hook#3' } }]))
+    await refuses(() => S.runset(S.spec.g, fib), /\[0\]: stale wait: hook#3/)
+  })
+
+  test('fn needs no default subject, but an entry without fn does', async () => {
+    const provider = { subject: (name) => ('fibx' === name ? fib : undefined) }
+    const R = await (await makeRunner(v1(['fn'], [{ fn: 'fibx', in: 6, out: 8 }]), provider))('fib')
+    await R.runset(R.spec.g)
+    const N = await (await makeRunner(v1(['fn'], [{ fn: 'fibx', in: 6, out: 8 }, { in: 6, out: 8 }]),
+      provider))('fib')
+    await refuses(() => N.runset(N.spec.g), /^omni: no test subject for: fib$/)
+    const L = await (await makeRunner(v1([], [{ in: 6, out: 8 }]), provider))('fib')
+    await refuses(() => L.runset(L.spec.g), /^omni: no test subject for: fib$/)
+  })
+
+  test('a wait is found by an id the entry owns, never an inherited one', async () => {
+    const R = await runner(v1([], [{ id: 'constructor', in: 6, out: 8 }, { id: 'toString', in: 7, out: 13 }]))
+    await R.runset(R.spec.g, fib)
+    await R.runsetflags(R.spec.g, { wait: {} }, fib)
+  })
+
   test('all reports every failure at once', async () => {
     const R = await runner(v1([], [{ in: 5, out: 6 }, { in: 6, out: 8 }, { in: 7, out: 14 }]))
     await refuses(() => R.runsetflags(R.spec.g, { all: true }, fib),

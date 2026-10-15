@@ -349,7 +349,9 @@ Every port does exactly this.
       `out = "__NULL__"`.
    2. **Resolve the subject.** `entry.client` overrides the default, and
       `entry.fn` overrides both, through the entry's provider's `subject`
-      hook. An `fn` that hook does not know fails as `unknown fn`.
+      hook. An `fn` that hook does not know fails as `unknown fn`. In a
+      spec that requires `fn`, a group needs no default subject; an
+      entry that names no `fn` and finds none fails as `no test subject`.
    3. **Resolve the arguments.** `ctx`, else `args`, else `[clone(in)]`.
       Under `ctxargs`, an entry with both is `[ctx, ...args]`. For
       `ctx`/`args`, a leading map argument is cloned and passed through
@@ -371,7 +373,9 @@ Every port does exactly this.
 declaration for its `id`, holds the entry to a cause. It runs like any
 other, and its failure is set aside rather than raised. If it passes, the
 group fails with `stale wait: <cause>`, so a cause that has been fixed
-cannot go unnoticed. Errors from the runner itself are never set aside.
+cannot go unnoticed. Any failure of the entry is held, a hook's error
+from steps 2 and 3 included. Errors from the runner itself, such as
+`unknown fn` or `no test subject`, are never set aside.
 
 **Ordering.** Entries run in spec order and the first failure stops the
 group, unless the `all` flag is set. Map key order is never significant

@@ -270,7 +270,7 @@ function resolveentry(entry: Json, flags: Flags): Json {
 function resolvetestpack(
   name: string | undefined,
   entry: Json,
-  subject: Subject,
+  subject: Subject | undefined,
   provider: Provider,
   clients: Record<string, Provider>,
   fnon: boolean,
@@ -621,6 +621,10 @@ function iswait(wait: Json): boolean {
 
 // The runner-side waits: entry id to its declaration. Each must name an
 // entry of the set, so a declaration cannot outlive the entry it held.
+function hasown(map: Record<string, Json>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(map, key)
+}
+
 function resolvewaits(flags: Flags, origset: Json[]): Record<string, Json> {
   const waits = flags.wait
   if (null == waits) {
@@ -641,11 +645,13 @@ function resolvewaits(flags: Flags, origset: Json[]): Record<string, Json> {
   return waits
 }
 
+type TestPack = { client: Provider, subject: Subject }
+
 async function runentry(
   flags: Flags,
   index: number,
   entry: Json,
-  testpack: { client: Provider, subject: Subject },
+  testpack: TestPack,
   provider: Provider,
   ctxargs: boolean,
 ): Promise<void> {
@@ -687,7 +693,7 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
       useflags.name = useflags.name || name || 'set'
 
       const subject = testsubject || defsubject
-      if (null == subject) {
+      if (null == subject && !fnon) {
         throw new OmniError('omni: no test subject for: ' + useflags.name)
       }
 
@@ -709,23 +715,40 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
 
       for (let index = 0; index < testset.length; index++) {
         let entry = testset[index]
-        let started = false
 
         try {
-          entry = resolveentry(entry, useflags)
+          let testpack: { client: Provider, subject: Subject | undefined } | undefined
+          let prestart: any = undefined
 
-          const testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+          // A hook's raw error before the subject starts is still the entry's.
+          try {
+            entry = resolveentry(entry, useflags)
+            testpack = resolvetestpack(name, entry, subject, useprovider, clients, fnon)
+          } catch (err: any) {
+            if (err instanceof OmniError) {
+              throw err
+            }
+            prestart = err
+          }
 
-          const wait = waiton && undefined !== entry.wait ? entry.wait
-            : null != entry.id ? waits[entry.id] : undefined
+          if (undefined === prestart && null == testpack?.subject) {
+            throw new OmniError('omni: no test subject for: ' + useflags.name)
+          }
 
-          started = true
+          const wait = !ismap(entry) ? undefined
+            : waiton && undefined !== entry.wait ? entry.wait
+              : null != entry.id && hasown(waits, entry.id) ? waits[entry.id] : undefined
+
+          const run = async () => undefined === prestart
+            ? runentry(useflags, index, entry, testpack as TestPack, useprovider, ctxargs)
+            : handleerror(useflags, index, entry, prestart, useprovider)
+
           if (undefined === wait) {
-            await runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+            await run()
           } else {
             let held = false
             try {
-              await runentry(useflags, index, entry, testpack, useprovider, ctxargs)
+              await run()
             } catch (err: any) {
               if (!(err instanceof OmniError)) {
                 throw err
@@ -737,21 +760,11 @@ async function makeRunner(specref: string | Json, provider?: Provider): Promise<
             }
           }
         } catch (err: any) {
-          let failure = err
-          // Before the subject starts, a hook's raw error is still the entry's.
-          if (!started && !(err instanceof OmniError)) {
-            try {
-              handleerror(useflags, index, entry, err, useprovider)
-              continue
-            } catch (herr: any) {
-              failure = herr
-            }
-          }
-          if (true === useflags.all && failure instanceof OmniError) {
-            failures.push(failure.message)
+          if (true === useflags.all && err instanceof OmniError) {
+            failures.push(err.message)
             continue
           }
-          throw failure
+          throw err
         }
       }
 
