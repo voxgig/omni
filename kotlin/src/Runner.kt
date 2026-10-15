@@ -254,6 +254,7 @@ class RunPack(
         val failures = mutableListOf<String>()
 
         for ((index, entry) in testset.withIndex()) {
+            var started = false
             try {
                 if (!entry.ismap) {
                     throw OmniError("omni: $label[$index]: entry is not a map")
@@ -265,7 +266,6 @@ class RunPack(
                 }
 
                 val testpack = resolvetestpack(entry, usesubject)
-                val args = resolveargs(entry, testpack.client)
 
                 val wait = if (waiton && entry.has("wait")) {
                     entry.get("wait")
@@ -273,12 +273,13 @@ class RunPack(
                     entry.get("id").asstr?.let { waits[it] }
                 }
 
+                started = true
                 if (null == wait) {
-                    runentry(label, index, entry, testpack, args, flags)
+                    runentry(label, index, entry, testpack, flags)
                 } else {
                     var held = false
                     try {
-                        runentry(label, index, entry, testpack, args, flags)
+                        runentry(label, index, entry, testpack, flags)
                     } catch (err: OmniError) {
                         held = true
                     }
@@ -286,11 +287,21 @@ class RunPack(
                         throw fail(label, index, entry, "stale wait: " + stringify(wait.get("cause")))
                     }
                 }
-            } catch (err: OmniError) {
-                if (!flags.all) {
-                    throw err
+            } catch (err: Throwable) {
+                var failure = err
+                // Before the subject starts, a hook's raw error is still the entry's.
+                if (!started && err !is OmniError) {
+                    try {
+                        handleerror(label, index, entry, err)
+                        continue
+                    } catch (herr: Throwable) {
+                        failure = herr
+                    }
                 }
-                failures.add(err.message ?: "")
+                if (!flags.all || failure !is OmniError) {
+                    throw failure
+                }
+                failures.add(failure.message ?: "")
             }
         }
 
@@ -349,11 +360,12 @@ class RunPack(
         index: Int,
         entry: Json,
         testpack: TestPack,
-        args: List<Json>,
         flags: Flags,
     ) {
+        val args: List<Json>
         val res: Json
         try {
+            args = resolveargs(entry, testpack.client)
             res = testpack.subject(args)
         } catch (omnierr: OmniError) {
             throw omnierr

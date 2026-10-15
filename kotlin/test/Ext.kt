@@ -10,6 +10,7 @@ import voxgig.omni.CAPABILITIES
 import voxgig.omni.Flags
 import voxgig.omni.Json
 import voxgig.omni.OmniError
+import voxgig.omni.Provider
 import voxgig.omni.RunPack
 import voxgig.omni.Subject
 import voxgig.omni.makeRunner
@@ -120,6 +121,25 @@ fun extsuite() {
             Json.parse("""{"fib":{"g":{"set":[{"in":6,"out":8,"fn":"nope","wait":{"cause":"c"}}]}}}"""),
         )
         R.runset(R.set("g"), FIB)
+    }
+
+    testcase("a raising hook is the entry's error, not the set's") {
+        val provider = Provider(
+            subject = { _ -> FIB },
+            contextify = { _ -> throw RuntimeException("contextify boom") },
+        )
+        val hooked = { spec: Json -> makeRunner(spec, provider).runner("fib") }
+        val E = hooked(v1("[]", """[{"ctx":{"n":6},"err":"contextify boom"}]"""))
+        E.runset(E.set("g"), FIB)
+        val U = hooked(v1("[]", """[{"ctx":{"n":6},"out":8}]"""))
+        refuses("""\[0\]: unexpected error\n\s+actual:\s+contextify boom""") { U.runset(U.set("g"), FIB) }
+        val W = hooked(v1("""["wait"]""", """[{"ctx":{"n":6},"out":8,"wait":{"cause":"hook#1"}}]"""))
+        W.runset(W.set("g"), FIB)
+        val F = makeRunner(
+            v1("""["fn"]""", """[{"fn":"boom","in":6,"err":"subject boom"}]"""),
+            Provider(subject = { name -> if ("boom" == name) throw RuntimeException("subject boom") else FIB }),
+        ).runner("fib")
+        F.runset(F.set("g"), FIB)
     }
 
     testcase("all reports every failure at once") {
