@@ -292,30 +292,45 @@ class RunPack(
     val failures = ListBuffer.empty[String]
 
     for (rawentry, index) <- testset.zipWithIndex do
+      var entry = rawentry
+      var started = false
+
       try
         if !rawentry.ismap then
           throw OmniError(s"omni: $label[$index]: entry is not a map")
 
-        val resolved = resolveentry(rawentry, flags)
-        val testpack = resolvetestpack(resolved, usesubject)
-        val (args, entry) = resolveargs(resolved, testpack.client)
+        entry = resolveentry(rawentry, flags)
+        val testpack = resolvetestpack(entry, usesubject)
 
         val wait =
           if waiton && entry.has("wait") then Some(entry.get("wait"))
           else entry.get("id").asstr.flatMap(waits.get)
 
+        started = true
         wait match
-          case None => runentry(label, index, entry, testpack, argsubject, args, flags)
+          case None => runentry(label, index, entry, testpack, argsubject, flags)
           case Some(held) =>
             val stale =
-              try
-                runentry(label, index, entry, testpack, argsubject, args, flags)
-                true
-              catch case _: OmniError => false
-            if stale then
-              throw fail(label, index, entry, s"stale wait: ${stringify(held.get("cause"))}")
+              try Some(runentry(label, index, entry, testpack, argsubject, flags))
+              catch case _: OmniError => None
+            stale.foreach { ran =>
+              throw fail(label, index, ran, s"stale wait: ${stringify(held.get("cause"))}")
+            }
       catch
-        case err: OmniError if flags.all => failures += err.text
+        case NonFatal(err) =>
+          // Before the subject starts, a hook's raw error is still the entry's.
+          val failure =
+            if !started && !err.isInstanceOf[OmniError] then
+              try
+                handleerror(label, index, entry, err)
+                None
+              catch case NonFatal(herr) => Some(herr)
+            else Some(err)
+
+          failure match
+            case Some(omnierr: OmniError) if flags.all => failures += omnierr.text
+            case Some(other)                          => throw other
+            case None                                 => ()
 
     if failures.nonEmpty then
       throw OmniError(
@@ -359,11 +374,13 @@ class RunPack(
       rawentry: Json,
       testpack: TestPack,
       argsubject: Option[SubjectArgs],
-      args: List[Json],
       flags: Flags,
-  ): Unit =
+  ): Json =
     var entry = rawentry
     try
+      val (args, withctx) = resolveargs(entry, testpack.client)
+      entry = withctx
+
       // An args-subject returns its arguments alongside the result, so
       // `match.args` sees what the subject actually did with them. Under
       // one, only an entry's `fn` sets testpack.subject, and `fn` wins.
@@ -377,6 +394,8 @@ class RunPack(
     catch
       case omnierr: OmniError => throw omnierr
       case NonFatal(err)      => handleerror(label, index, entry, err)
+
+    entry
 
   private def iswait(wait: Json): Boolean =
     wait.ismap && wait.get("cause").asstr.exists(_.nonEmpty)

@@ -145,6 +145,39 @@ object Ext:
       L.runset(L.set("g"), Some(FIB))
     }
 
+    testcase("a raising hook is the entry's error, not the set's") {
+      val provider = Provider(
+        subject = Some(_ => Some(FIB)),
+        contextify = Some(_ => throw RuntimeException("contextify boom")),
+      )
+      def run(spec: Json): RunPack = Runner.makeRunner(spec, provider).runner("fib")
+      val E = run(v1(List(),
+        Json.map("ctx" -> Json.map("n" -> Json.num(6)), "err" -> Json.str("contextify boom")),
+      ))
+      E.runset(E.set("g"), Some(FIB))
+      val U = run(v1(List(),
+        Json.map("ctx" -> Json.map("n" -> Json.num(6)), "out" -> Json.num(8)),
+      ))
+      refuses("""\[0\]: unexpected error\n\s+actual:\s+contextify boom""") {
+        U.runset(U.set("g"), Some(FIB))
+      }
+      val W = run(v1(List("wait"), Json.map(
+        "ctx" -> Json.map("n" -> Json.num(6)), "out" -> Json.num(8),
+        "wait" -> Json.map("cause" -> Json.str("hook#1")),
+      )))
+      W.runset(W.set("g"), Some(FIB))
+      val F = Runner.makeRunner(
+        v1(List("fn"),
+          Json.map("fn" -> Json.str("boom"), "in" -> Json.num(6), "err" -> Json.str("subject boom")),
+        ),
+        Provider(subject = Some { name =>
+          if "boom" == name then throw RuntimeException("subject boom")
+          Some(FIB)
+        }),
+      ).runner("fib")
+      F.runset(F.set("g"), Some(FIB))
+    }
+
     testcase("all reports every failure at once") {
       val A = runner(v1(List(),
         Json.map("in" -> Json.num(5), "out" -> Json.num(6)),
