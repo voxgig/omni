@@ -328,6 +328,76 @@ def ex-hookerr fn [[label:Any sfib:Any] [Any] [
   r
 ]]
 
+# A subject hook that raises while `fn` resolves fails the entry, so a wait
+# holds it, and an entry whose `err` expected it leaves its wait stale.
+def ex-heldhook fn [[label:Any sfib:Any] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def subj ([av:Any] => [
+        def name (av get 0)
+        if (name eq "boom") [
+          raise {code: hook_fail/q message: "subject boom"}
+        ] [none] drop
+        def r2 (if (name eq "fib") [sfib] [none])
+        r2
+      ])
+      def prov (flex {subject: [subj/v]})
+      def outh (ex-run prov (ex-v1 ["fn" "wait"] [{fn: "boom" in: 6 out: 8 wait: {cause: "hook#2"}}]) "g" (flex {}) sfib)
+      def outs (ex-run prov (ex-v1 ["fn" "wait"] [{fn: "boom" in: 6 err: "subject boom" wait: {cause: "hook#3"}}]) "g" (flex {}) sfib)
+      def ph ((outh get "ok") eq true)
+      def ps (ex-refused outs "\\[0\\]: stale wait: hook#3")
+      def rr (
+        if (ph not) [ex-report label false outh] [ex-report label ps outs]
+      )
+      rr
+    ]
+  )
+  r
+]]
+
+# The group has no default subject here: `runset` is given `none`.
+def ex-fnsubject fn [[label:Any sfib:Any] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def subj ([av:Any] => [
+        def r2 (if ((av get 0) eq "fibx") [sfib] [none])
+        r2
+      ])
+      def prov (flex {subject: [subj/v]})
+      def outr (ex-run prov (ex-v1 ["fn"] [{fn: "fibx" in: 6 out: 8}]) "g" (flex {}) none)
+      def outn (ex-run prov (ex-v1 ["fn"] [{fn: "fibx" in: 6 out: 8} {in: 6 out: 8}]) "g" (flex {}) none)
+      def outl (ex-run prov (ex-v1 [] [{in: 6 out: 8}]) "g" (flex {}) none)
+      def pr ((outr get "ok") eq true)
+      def pn (ex-refused outn "^omni: no test subject for: fib$")
+      def pl (ex-refused outl "^omni: no test subject for: fib$")
+      def rr (
+        if (pr not) [ex-report label false outr] [
+          if (pn not) [ex-report label false outn] [ex-report label pl outl]
+        ]
+      )
+      rr
+    ]
+  )
+  r
+]]
+
+def ex-ownid fn [[label:Any prov:Any sfib:Any] [Any] [
+  def r (
+    if ((ex-wanted label) not) [none] [
+      def spec (ex-v1 [] [{id: "constructor" in: 6 out: 8} {id: "toString" in: 7 out: 13}])
+      def outa (ex-run prov spec "g" (flex {}) sfib)
+      def outb (ex-run prov spec "g" (flex {wait: {}}) sfib)
+      def rr (
+        if (((outa get "ok") eq true) not) [ex-report label false outa] [
+          ex-report label ((outb get "ok") eq true) outb
+        ]
+      )
+      rr
+    ]
+  )
+  r
+]]
+
 # --- main --------------------------------------------------------------------
 
 def ex-main fn [[av:Any] [Any] [
@@ -384,6 +454,9 @@ def ex-main fn [[av:Any] [Any] [
     (flex {}) sfib) drop
 
   (ex-hookerr "a raising hook is the entry's error, not the set's" sfib) drop
+  (ex-heldhook "a waiting entry holds a hook's error raised before the subject starts" sfib) drop
+  (ex-fnsubject "fn needs no default subject, but an entry without fn does" sfib) drop
+  (ex-ownid "a wait is found by an id the entry owns, never an inherited one" prov sfib) drop
 
   def allspec (ex-v1 [] [{in: 5 out: 6} {in: 6 out: 8} {in: 7 out: 14}])
   (ex-refuses2 "all reports every failure at once" prov

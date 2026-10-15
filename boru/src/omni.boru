@@ -1464,10 +1464,53 @@ def om-runentry fn [[label:Any index:Integer entry:Any testpack:Any provider:Any
   r
 ]]
 
-# A held entry's failure is set aside; if it passes, its cause is stale.
-def om-runheld fn [[label:Any index:Integer entry:Any testpack:Any provider:Any donull:Boolean ctxargs:Boolean wait:Any] [Any] [
+# Resolve the entry and its testpack. A runner failure propagates; a hook's
+# raw error is kept as `prestart`, and is still the entry's.
+def om-prestart fn [[pack:Any entry:Any usesubject:Any donull:Boolean] [Any] [
   def outcome (do [
+    # An entry with no `out` expects a null (or absent) result.
+    if (donull eq true) [
+      if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
+      none
+    ] [none] drop
+    def tp (om-resolvetestpack pack entry usesubject)
+    def o (flex {})
+    (o set "testpack" tp) drop
+    o
+  ] error [var [[e]
+    def o (flex {})
+    (o set "prestart" e) drop
+    o
+  ]])
+  if (outcome has "prestart") [
+    def e (outcome get "prestart")
+    if ((e get "code") eq omni_fail/q) [
+      (om-fail-raise (om-errmessage e)) drop
+      none
+    ] [none] drop
+    none
+  ] [none] drop
+  def r outcome
+  r
+]]
+
+# The entry's run: its subject, or the handling of its prestart error.
+def om-run fn [[label:Any index:Integer entry:Any testpack:Any provider:Any donull:Boolean ctxargs:Boolean prestart:Any] [Any] [
+  if (om-isabsent prestart) [
     (om-runentry label index entry testpack provider donull ctxargs) drop
+    none
+  ] [
+    (om-handleerror label index entry prestart provider) drop
+    none
+  ] drop
+  def r none
+  r
+]]
+
+# A held entry's failure is set aside; if it passes, its cause is stale.
+def om-runheld fn [[label:Any index:Integer entry:Any testpack:Any provider:Any donull:Boolean ctxargs:Boolean prestart:Any wait:Any] [Any] [
+  def outcome (do [
+    (om-run label index entry testpack provider donull ctxargs prestart) drop
     {held: false}
   ] error [var [[e]
     def o (flex {})
@@ -1515,23 +1558,26 @@ def oml-runset fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean uses
 
       def prov (pack get "client")
       def ctxargs ((om-get pack "ctxargs") eq true)
-      def st (flex {started: false})
 
+      # Under `all` an omni failure is gathered and the set runs on; any other
+      # error leaves the set, rebuilt with its code and payload.
       def outcome (do [
-        # An entry with no `out` expects a null (or absent) result.
-        if (donull eq true) [
-          if (om-isnone (om-get entry "out")) [(entry set "out" om-nullmark) drop none] [none] drop
+        def pre (om-prestart pack entry usesubject donull)
+        def prestart (om-get pre "prestart")
+        def testpack (om-get pre "testpack")
+        if (om-isabsent prestart) [
+          if (om-isnone (testpack get "subject")) [
+            (om-fail-raise `omni: no test subject for: ${label}`) drop
+            none
+          ] [none] drop
           none
         ] [none] drop
-
-        def testpack (om-resolvetestpack pack entry usesubject)
         def wait (om-entrywait entry waits ((om-get pack "waiton") eq true))
-        (st set "started" true) drop
         if (om-isabsent wait) [
-          (om-runentry label i entry testpack prov donull ctxargs) drop
+          (om-run label i entry testpack prov donull ctxargs prestart) drop
           none
         ] [
-          (om-runheld label i entry testpack prov donull ctxargs wait) drop
+          (om-runheld label i entry testpack prov donull ctxargs prestart wait) drop
           none
         ] drop
         {ok: true}
@@ -1542,41 +1588,20 @@ def oml-runset fn [[i:Integer testset:Any pack:Any label:Any donull:Boolean uses
         o
       ]])
 
-      # Before the subject starts, a hook's raw error is still the entry's.
-      # Under `all` an omni failure is gathered and the set runs on; any other
-      # error leaves the set, rebuilt with its code and payload.
       if ((outcome get "ok") eq true) [none] [
         def e (outcome get "err")
-        def prestart (((st get "started") eq false) and (((e get "code") eq omni_fail/q) not))
-        def handled (
-          if (prestart eq true) [
-            do [
-              (om-handleerror label i entry e prov) drop
-              {passed: true}
-            ] error [var [[he]
-              def ho (flex {})
-              (ho set "passed" false) drop
-              (ho set "err" he) drop
-              ho
-            ]]
-          ] [{passed: false err: (e)}]
-        )
-        if ((handled get "passed") eq true) [none] [
-          def failure (handled get "err")
-          if ((failure get "code") eq omni_fail/q) [
-            def msg (om-errmessage failure)
-            if ((om-get flags "all") eq true) [
-              (append [msg] failures) drop
-              none
-            ] [
-              (om-fail-raise msg) drop
-              none
-            ] drop
+        if ((e get "code") eq omni_fail/q) [
+          def msg (om-errmessage e)
+          if ((om-get flags "all") eq true) [
+            (append [msg] failures) drop
             none
           ] [
-            raise (convert Map failure)
+            (om-fail-raise msg) drop
+            none
           ] drop
           none
+        ] [
+          raise (convert Map e)
         ] drop
         none
       ] drop
@@ -1607,7 +1632,10 @@ def om-runsetflags fn [[pack:Any testspec:Any flags:Any subject:Any] [Any] [
     if (om-isnone subject) [pack get "subject"] [subject]
   )
   if (om-isnone usesubject) [
-    (om-fail-raise `omni: no test subject for: ${label}`) drop
+    if (((om-get pack "fnon") eq true) not) [
+      (om-fail-raise `omni: no test subject for: ${label}`) drop
+      none
+    ] [none] drop
     none
   ] [none] drop
 
