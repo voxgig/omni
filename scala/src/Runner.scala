@@ -269,12 +269,9 @@ class RunPack(
   ): Unit =
     val label = flags.name.getOrElse(if name.isEmpty then "set" else name)
 
-    val usesubject = argsubject match
-      case Some(_) => None
-      case None =>
-        Some(testsubject.orElse(subject).getOrElse {
-          throw OmniError(s"omni: no test subject for: $label")
-        })
+    val usesubject = if argsubject.isDefined then None else testsubject.orElse(subject)
+    if usesubject.isEmpty && argsubject.isEmpty && !fnon then
+      throw OmniError(s"omni: no test subject for: $label")
 
     val testspecmap = Runner.fixjson(testspec, flags.nulls)
     val testset = testspecmap.get("set").aslist.getOrElse {
@@ -292,45 +289,46 @@ class RunPack(
     val failures = ListBuffer.empty[String]
 
     for (rawentry, index) <- testset.zipWithIndex do
-      var entry = rawentry
-      var started = false
-
       try
         if !rawentry.ismap then
           throw OmniError(s"omni: $label[$index]: entry is not a map")
 
-        entry = resolveentry(rawentry, flags)
-        val testpack = resolvetestpack(entry, usesubject)
+        var entry = rawentry
+        var testpack = TestPack(client, None)
+        var prestart: Option[Throwable] = None
+
+        // A hook's raw error before the subject starts is still the entry's.
+        try
+          entry = resolveentry(rawentry, flags)
+          testpack = resolvetestpack(entry, usesubject, argsubject)
+        catch
+          case omnierr: OmniError => throw omnierr
+          case NonFatal(err)      => prestart = Some(err)
+
+        if prestart.isEmpty && testpack.subject.isEmpty && argsubject.isEmpty then
+          throw OmniError(s"omni: no test subject for: $label")
 
         val wait =
           if waiton && entry.has("wait") then Some(entry.get("wait"))
           else entry.get("id").asstr.flatMap(waits.get)
 
-        started = true
-        wait match
+        def run(): Json = prestart match
+          case Some(err) =>
+            handleerror(label, index, entry, err)
+            entry
           case None => runentry(label, index, entry, testpack, argsubject, flags)
+
+        wait match
+          case None => run()
           case Some(held) =>
             val stale =
-              try Some(runentry(label, index, entry, testpack, argsubject, flags))
+              try Some(run())
               catch case _: OmniError => None
             stale.foreach { ran =>
               throw fail(label, index, ran, s"stale wait: ${stringify(held.get("cause"))}")
             }
       catch
-        case NonFatal(err) =>
-          // Before the subject starts, a hook's raw error is still the entry's.
-          val failure =
-            if !started && !err.isInstanceOf[OmniError] then
-              try
-                handleerror(label, index, entry, err)
-                None
-              catch case NonFatal(herr) => Some(herr)
-            else Some(err)
-
-          failure match
-            case Some(omnierr: OmniError) if flags.all => failures += omnierr.text
-            case Some(other)                          => throw other
-            case None                                 => ()
+        case err: OmniError if flags.all => failures += err.text
 
     if failures.nonEmpty then
       throw OmniError(
@@ -343,7 +341,11 @@ class RunPack(
     if flags.nulls && entry.get("out").isnone then entry.set("out", Json.str(NULLMARK))
     else entry
 
-  private def resolvetestpack(entry: Json, usesubject: Option[Subject]): TestPack =
+  private def resolvetestpack(
+      entry: Json,
+      usesubject: Option[Subject],
+      argsubject: Option[SubjectArgs],
+  ): TestPack =
     var testpack = TestPack(client, usesubject)
 
     entry.get("client").asstr.foreach { clientname =>
@@ -352,7 +354,7 @@ class RunPack(
         throw OmniError(s"omni: unknown client: $clientname", entry),
       )
       testpack = testpack.copy(client = found)
-      if testpack.subject.isDefined then
+      if argsubject.isEmpty then
         found.subject.flatMap(_(name)).foreach { clientsubject =>
           testpack = testpack.copy(subject = Some(clientsubject))
         }

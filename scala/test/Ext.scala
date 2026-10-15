@@ -178,6 +178,49 @@ object Ext:
       F.runset(F.set("g"), Some(FIB))
     }
 
+    testcase("a waiting entry holds a hook's error raised before the subject starts") {
+      val provider = Provider(subject = Some { name =>
+        if "boom" == name then throw RuntimeException("subject boom")
+        if "fib" == name then Some(FIB) else None
+      })
+      def run(spec: Json): RunPack = Runner.makeRunner(spec, provider).runner("fib")
+      val H = run(v1(List("fn", "wait"), Json.map(
+        "fn" -> Json.str("boom"), "in" -> Json.num(6), "out" -> Json.num(8),
+        "wait" -> Json.map("cause" -> Json.str("hook#2")),
+      )))
+      H.runset(H.set("g"), Some(FIB))
+      val S = run(v1(List("fn", "wait"), Json.map(
+        "fn" -> Json.str("boom"), "in" -> Json.num(6), "err" -> Json.str("subject boom"),
+        "wait" -> Json.map("cause" -> Json.str("hook#3")),
+      )))
+      refuses("""\[0\]: stale wait: hook#3""") { S.runset(S.set("g"), Some(FIB)) }
+    }
+
+    testcase("fn needs no default subject, but an entry without fn does") {
+      val provider = Provider(subject = Some(name => if "fibx" == name then Some(FIB) else None))
+      def run(spec: Json): RunPack = Runner.makeRunner(spec, provider).runner("fib")
+      val R = run(v1(List("fn"),
+        Json.map("fn" -> Json.str("fibx"), "in" -> Json.num(6), "out" -> Json.num(8)),
+      ))
+      R.runset(R.set("g"))
+      val N = run(v1(List("fn"),
+        Json.map("fn" -> Json.str("fibx"), "in" -> Json.num(6), "out" -> Json.num(8)),
+        Json.map("in" -> Json.num(6), "out" -> Json.num(8)),
+      ))
+      refuses("^omni: no test subject for: fib$") { N.runset(N.set("g")) }
+      val L = run(v1(List(), Json.map("in" -> Json.num(6), "out" -> Json.num(8))))
+      refuses("^omni: no test subject for: fib$") { L.runset(L.set("g")) }
+    }
+
+    testcase("a wait is found by an id the entry owns, never an inherited one") {
+      val R = runner(v1(List(),
+        Json.map("id" -> Json.str("constructor"), "in" -> Json.num(6), "out" -> Json.num(8)),
+        Json.map("id" -> Json.str("toString"), "in" -> Json.num(7), "out" -> Json.num(13)),
+      ))
+      R.runset(R.set("g"), Some(FIB))
+      R.runsetflags(R.set("g"), Flags(waits = Json.map()), Some(FIB))
+    }
+
     testcase("all reports every failure at once") {
       val A = runner(v1(List(),
         Json.map("in" -> Json.num(5), "out" -> Json.num(6)),
