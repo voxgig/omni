@@ -91,6 +91,50 @@ public final class ExtTest {
     throw new IllegalStateException("omni: expected an OmniError matching [" + pattern + "]");
   }
 
+  static void raisinghook() throws Exception {
+    Provider provider = new Provider();
+    provider.subject = name -> FIB;
+    provider.contextify =
+        val -> {
+          throw new IllegalStateException("contextify boom");
+        };
+
+    RunPack E =
+        Runner.makeRunner(v1(list(), map("ctx", map("n", 6.0), "err", "contextify boom")), provider)
+            .runner("fib");
+    E.runset(E.set("g"), FIB);
+
+    RunPack U =
+        Runner.makeRunner(v1(list(), map("ctx", map("n", 6.0), "out", 8.0)), provider)
+            .runner("fib");
+    refuses(
+        () -> U.runset(U.set("g"), FIB),
+        "\\[0\\]: unexpected error\n\\s+actual:\\s+contextify boom");
+
+    RunPack W =
+        Runner.makeRunner(
+                v1(
+                    list("wait"),
+                    map("ctx", map("n", 6.0), "out", 8.0, "wait", map("cause", "hook#1"))),
+                provider)
+            .runner("fib");
+    W.runset(W.set("g"), FIB);
+
+    Provider fnprovider = new Provider();
+    fnprovider.subject =
+        name -> {
+          if ("boom".equals(name)) {
+            throw new IllegalStateException("subject boom");
+          }
+          return FIB;
+        };
+    RunPack F =
+        Runner.makeRunner(
+                v1(list("fn"), map("fn", "boom", "in", 6.0, "err", "subject boom")), fnprovider)
+            .runner("fib");
+    F.runset(F.set("g"), FIB);
+  }
+
   static void testcase(String name, FibTest.Body body) {
     if (null != only && !name.equals(only)) {
       return;
@@ -215,6 +259,8 @@ public final class ExtTest {
                                       map("cause", "c")))))));
           L.runset(L.set("g"), FIB);
         });
+
+    testcase("a raising hook is the entry's error, not the set's", ExtTest::raisinghook);
 
     testcase(
         "all reports every failure at once",

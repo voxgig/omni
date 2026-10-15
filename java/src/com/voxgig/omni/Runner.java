@@ -198,29 +198,31 @@ public final class Runner {
       List<String> failures = new ArrayList<>();
 
       for (int index = 0; index < testset.size(); index++) {
-        try {
-          Object rawentry = testset.get(index);
+        Object rawentry = testset.get(index);
+        Map<String, Object> entry = null;
+        boolean started = false;
 
+        try {
           if (specversion < 1 && !Util.ismap(rawentry)) {
             throw new OmniError(
                 "omni: " + flags.get("name") + "[" + index + "]: entry is not a map");
           }
 
-          Map<String, Object> entry = resolveentry((Map<String, Object>) rawentry, flags);
+          entry = resolveentry((Map<String, Object>) rawentry, flags);
 
           TestPack testpack = resolvetestpack(name, entry, subject, provider, clients, fnon);
-          Object[] args = resolveargs(entry, testpack.client, provider, ctxargs);
 
           boolean entrywait = waiton && entry.containsKey("wait");
           Object id = entry.get("id");
           Object wait = entrywait ? entry.get("wait") : id instanceof String ? waits.get(id) : null;
 
+          started = true;
           if (!entrywait && null == wait) {
-            runentry(flags, index, entry, testpack, args, provider);
+            runentry(flags, index, entry, testpack, provider, ctxargs);
           } else {
             boolean held = false;
             try {
-              runentry(flags, index, entry, testpack, args, provider);
+              runentry(flags, index, entry, testpack, provider, ctxargs);
             } catch (OmniError err) {
               held = true;
             }
@@ -229,12 +231,25 @@ public final class Runner {
               throw fail(flags, index, entry, "stale wait: " + cause, null, null);
             }
           }
-        } catch (OmniError err) {
+        } catch (Throwable err) {
+          OmniError failure = err instanceof OmniError ? (OmniError) err : null;
+          // Before the subject starts, a hook's raw error is still the entry's.
+          if (!started && null == failure) {
+            try {
+              handleerror(flags, index, entry, err, provider);
+              continue;
+            } catch (OmniError herr) {
+              failure = herr;
+            }
+          }
+          if (null == failure) {
+            throw err;
+          }
           if (flagbool(flags, "all")) {
-            failures.add(err.getMessage());
+            failures.add(failure.getMessage());
             continue;
           }
-          throw err;
+          throw failure;
         }
       }
 
@@ -1018,11 +1033,13 @@ public final class Runner {
       int index,
       Map<String, Object> entry,
       TestPack testpack,
-      Object[] args,
-      Provider provider) {
+      Provider provider,
+      boolean ctxargs) {
 
+    Object[] args;
     Object res;
     try {
+      args = resolveargs(entry, testpack.client, provider, ctxargs);
       res = testpack.subject.call(args);
     } catch (OmniError omnierr) {
       throw omnierr;
