@@ -682,7 +682,7 @@ pub fn nullmodifier(alloc: std.mem.Allocator, val: Json) !Json {
 const TestPack = struct {
     client: *const Provider,
     subject: union(enum) {
-        plain: *const Subject,
+        plain: ?*const Subject,
         args: *const SubjectArgs,
     },
 };
@@ -743,12 +743,14 @@ pub const RunPack = struct {
         const alloc = self.alloc;
         const label = flags.name orelse (if (0 == self.name.len) "set" else self.name);
 
+        const defsubject = subject orelse self.subject;
+        if (null == argsubject and null == defsubject and !self.fnon) {
+            return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
+        }
+
         const usepack: TestPack = .{
             .client = self.client,
-            .subject = if (argsubject) |call| .{ .args = call } else .{
-                .plain = subject orelse self.subject orelse
-                    return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label}),
-            },
+            .subject = if (argsubject) |call| .{ .args = call } else .{ .plain = defsubject },
         };
 
         const testspecmap = try fixjson(alloc, testspec, flags.null_);
@@ -830,6 +832,10 @@ pub const RunPack = struct {
         var testpack = usepack;
         if (try self.resolvetestpack(entry, &testpack)) |failure| {
             return failure;
+        }
+
+        if (.plain == testpack.subject and null == testpack.subject.plain) {
+            return try std.fmt.allocPrint(alloc, "omni: no test subject for: {s}", .{label});
         }
 
         const wait: Maybe = if (self.waiton and jhas(entry, "wait"))
@@ -940,7 +946,7 @@ pub const RunPack = struct {
         // `match.args` sees what the subject actually did with them.
         const outcome: SubjectArgsResult = switch (testpack.subject) {
             .args => |call| call.call(call, args),
-            .plain => |call| switch (call.call(call, args)) {
+            .plain => |call| switch (call.?.call(call.?, args)) {
                 .ok => |value| SubjectArgsResult{ .ok = .{ .args = args, .res = value } },
                 .err => |message| SubjectArgsResult{ .err = message },
             },

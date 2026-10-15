@@ -896,6 +896,68 @@ fn extexpect(
     report(label, null);
 }
 
+fn fibxOnly(_: *const omni.Provider, name: []const u8) ?*const omni.Subject {
+    return if (std.mem.eql(u8, "fibx", name)) &FIB else null;
+}
+
+// Group "g" of an inline spec, run with no subject argument.
+fn runnosubject(spectext: []const u8, provider: *const omni.Provider) !?[]const u8 {
+    const runner = try omni.makeRunnerSpec(ALLOC, try jsonof(spectext), provider);
+    const pack = try runner.runner("fib", null);
+    return pack.runset(pack.set("g"), null);
+}
+
+fn checkfnnodefault() !void {
+    const label = "fn needs no default subject, but an entry without fn does";
+    if (!wanted(label)) {
+        return;
+    }
+
+    const fibx = omni.Provider{ .subject = fibxOnly };
+    const want = "omni: no test subject for: fib";
+
+    if (try runnosubject(try v1("\"fn\"",
+        \\{"fn":"fibx","in":6,"out":8}
+    ), &fibx)) |failure| {
+        return report(label, failure);
+    }
+
+    for ([_][]const u8{
+        try v1("\"fn\"",
+            \\{"fn":"fibx","in":6,"out":8},{"in":6,"out":8}
+        ),
+        try v1("",
+            \\{"in":6,"out":8}
+        ),
+    }) |spectext| {
+        const failure = try runnosubject(spectext, &fibx) orelse
+            return report(label, "omni: expected a failure, got none");
+        if (!std.mem.eql(u8, want, failure)) {
+            return report(label, failure);
+        }
+    }
+
+    report(label, null);
+}
+
+fn checkownwait() !void {
+    const label = "a wait is found by an id the entry owns, never an inherited one";
+    if (!wanted(label)) {
+        return;
+    }
+
+    const spectext = try v1("",
+        \\{"id":"constructor","in":6,"out":8},{"id":"toString","in":7,"out":13}
+    );
+    const runner = try omni.makeRunnerSpec(ALLOC, try jsonof(spectext), fibprovider(0));
+    const pack = try runner.runner("fib", null);
+
+    if (try pack.runset(pack.set("g"), &FIB)) |failure| {
+        return report(label, failure);
+    }
+    report(label, try pack.runsetflags(pack.set("g"), .{ .wait = try jsonof("{}") }, &FIB));
+}
+
 fn extsuite(io: std.Io) !void {
     if (wanted("ext capabilities")) {
         var missing: ?[]const u8 = null;
@@ -974,6 +1036,9 @@ fn extsuite(io: std.Io) !void {
     try extexpect("a legacy spec ignores fn and wait",
         \\{"fib":{"g":{"set":[{"in":6,"out":8,"fn":"nope","wait":{"cause":"c"}}]}}}
     , .{}, &FIB, null, &.{});
+
+    try checkfnnodefault();
+    try checkownwait();
 
     const threefail = try v1("",
         \\{"in":5,"out":6},{"in":6,"out":8},{"in":7,"out":14}
