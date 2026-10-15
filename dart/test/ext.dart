@@ -157,6 +157,38 @@ void extrunnersuite() {
     R.runset(R.set('g'), FIB);
   });
 
+  testcase('a raising hook is the entry\'s error, not the set\'s', () {
+    final provider = Provider(
+      subject: (name) => FIB,
+      contextify: (val) => throw Exception('contextify boom'),
+    );
+    RunPack run(dynamic spec) => makeRunner(spec, provider).runner('fib');
+    final E = run(v1([], [
+      {'ctx': {'n': 6}, 'err': 'contextify boom'},
+    ]));
+    E.runset(E.set('g'), FIB);
+    final U = run(v1([], [
+      {'ctx': {'n': 6}, 'out': 8},
+    ]));
+    refuses(() => U.runset(U.set('g'), FIB),
+        r'\[0\]: unexpected error\n\s+actual:\s+contextify boom');
+    final W = run(v1(['wait'], [
+      {'ctx': {'n': 6}, 'out': 8, 'wait': {'cause': 'hook#1'}},
+    ]));
+    W.runset(W.set('g'), FIB);
+    final F = makeRunner(
+        v1(['fn'], [
+          {'fn': 'boom', 'in': 6, 'err': 'subject boom'},
+        ]),
+        Provider(subject: (name) {
+          if ('boom' == name) {
+            throw Exception('subject boom');
+          }
+          return FIB;
+        })).runner('fib');
+    F.runset(F.set('g'), FIB);
+  });
+
   testcase('all reports every failure at once', () {
     final R = extrunner(v1([], [
       {'in': 5, 'out': 6},

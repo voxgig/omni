@@ -263,6 +263,8 @@ bool matchval(dynamic check, dynamic base) {
   return deepequal(want, base);
 }
 
+typedef _TestPack = ({Provider client, Subject subject});
+
 /// What a runner returns for one named spec section.
 class RunPack {
   final dynamic spec;
@@ -326,6 +328,7 @@ class RunPack {
 
     for (var index = 0; index < testset.length; index++) {
       final entry = testset[index];
+      var started = false;
 
       try {
         if (entry is! Map) {
@@ -338,7 +341,6 @@ class RunPack {
         }
 
         final testpack = _resolvetestpack(entry, usesubject);
-        final args = _resolveargs(entry, testpack.client);
 
         final id = entry['id'];
         final wait = _waiton && entry.containsKey('wait')
@@ -347,12 +349,13 @@ class RunPack {
                 ? waits[id]
                 : ABSENT;
 
+        started = true;
         if (isabsent(wait)) {
-          _runentry(label, flags, index, entry, testpack.subject, args);
+          _runentry(label, flags, index, entry, testpack);
         } else {
           var held = false;
           try {
-            _runentry(label, flags, index, entry, testpack.subject, args);
+            _runentry(label, flags, index, entry, testpack);
           } on OmniError {
             held = true;
           }
@@ -361,12 +364,25 @@ class RunPack {
             throw _fail(label, index, entry, 'stale wait: $cause');
           }
         }
-      } on OmniError catch (err) {
-        if (flags.all) {
-          failures.add(err.message);
+      } catch (err) {
+        var failure = err;
+        // Before the subject starts, a hook's raw error is still the entry's.
+        if (!started && err is! OmniError) {
+          try {
+            _handleerror(label, index, entry, err);
+            continue;
+          } catch (herr) {
+            failure = herr;
+          }
+        }
+        if (flags.all && failure is OmniError) {
+          failures.add(failure.message);
           continue;
         }
-        rethrow;
+        if (identical(failure, err)) {
+          rethrow;
+        }
+        throw failure;
       }
     }
 
@@ -376,11 +392,12 @@ class RunPack {
     }
   }
 
-  void _runentry(String label, Flags flags, int index, Map entry, Subject subject,
-      List<dynamic> args) {
+  void _runentry(String label, Flags flags, int index, Map entry, _TestPack testpack) {
+    List<dynamic> args;
     dynamic res;
     try {
-      res = subject(args);
+      args = _resolveargs(entry, testpack.client);
+      res = testpack.subject(args);
     } on OmniError {
       rethrow;
     } catch (err) {
@@ -417,7 +434,7 @@ class RunPack {
     return waits;
   }
 
-  ({Provider client, Subject subject}) _resolvetestpack(Map entry, Subject subject) {
+  _TestPack _resolvetestpack(Map entry, Subject subject) {
     var client = _provider;
     var usesubject = subject;
 
