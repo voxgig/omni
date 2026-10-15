@@ -275,3 +275,43 @@ and "can this package manager express a test-only dependency?" are different
 questions, and 4.16 only asked the first.** Any future ecosystem added to the
 tag list wants both asked. The ones that answer no to the second need a
 fetch, not a declaration.
+
+## 9. A refactor of the canonical moved where an error belongs
+
+Register 4.18 (voxgig/omni#72, #73, #74) split the set loop's body into
+`resolvetestpack`, `runentry` and a held branch for waiting entries. The
+first cut left `resolveargs` outside the `try` that hands a raw error to
+`handleerror`. A `contextify` that threw, or a provider `subject` hook that
+threw while `fn` or `client` resolved, then left the whole set as a raw
+error. Before, it was the entry's error, which `err` could expect. That is
+a change to version 0, whose behaviour is frozen.
+
+Twenty-three ports copied it, each passing its suite and its byte-for-byte
+probes against the canonical, because the probes compared the canonical as
+it then was. **boru** caught it: its suite carried a test, written when the
+same mistake was fixed in that port alone, asserting that a raising hook is
+the entry's error. Its agent rewrote the test to match the new canonical and
+said so, which is the step that surfaced it.
+
+The fix moved `resolveargs` into `runentry`, and routes a raw error raised
+before the subject starts to `handleerror`, guarded so an error escaping
+`handleerror` itself is never handled twice. The ext suite pins all four
+outcomes in every port whose hooks can raise. In Go, Rust, C, Zig, Swift and
+Lean a hook returns a plain value and cannot fail, so the case does not arise
+there; those ports take the canonical's shape and a variance row in DOCS §9.
+
+The transferable parts:
+
+- **A probe diffed against the canonical proves agreement, not
+  correctness.** When the canonical moves, the ports' own pinned tests are
+  the only check on the canonical itself. A port test that has to change to
+  follow the canonical is a finding about the canonical until shown
+  otherwise.
+- **"Extract a helper" is a behaviour change when the extraction crosses a
+  `try`.** Read what each statement was inside before moving it.
+- **Where a port cannot express a canonical case, record a variance; do not
+  grow the API to stage it.** Asked to port the raising-hook test, five of
+  those six ports first added a failure channel to their hooks: a result
+  type, throwing closures, panic recovery, extra provider fields. Each was a
+  public change to a port that struct consumes, made only so a test could
+  exist, and each was taken back out.
