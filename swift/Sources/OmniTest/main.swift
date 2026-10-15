@@ -562,6 +562,8 @@ testcase("a legacy spec (no OMNI block) stays lenient") {
 testcase("reports entry index and id") { try checkmessage() }
 testcase("deepequal matches NaN with NaN, structurally") { try checknan() }
 
+extsuite()
+
 print("\n\(passcount) passed, \(failcount) failed")
 
 exit(0 == failcount ? 0 : 1)
