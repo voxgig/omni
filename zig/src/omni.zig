@@ -832,8 +832,6 @@ pub const RunPack = struct {
             return failure;
         }
 
-        const args = try self.resolveargs(&entry);
-
         const wait: Maybe = if (self.waiton and jhas(entry, "wait"))
             jget(entry, "wait")
         else if (asstr(jget(entry, "id"))) |id|
@@ -841,7 +839,7 @@ pub const RunPack = struct {
         else
             null;
 
-        const failure = try self.runentry(label, index, &entry, flags, testpack, args);
+        const failure = try self.runentry(label, index, &entry, flags, testpack);
 
         const held = wait orelse return failure;
         if (null != failure) {
@@ -935,8 +933,9 @@ pub const RunPack = struct {
         entry: *Json,
         flags: Flags,
         testpack: TestPack,
-        args: []const Json,
     ) !?[]const u8 {
+        const args = try self.resolveargs(entry);
+
         // An args-subject returns its arguments alongside the result, so
         // `match.args` sees what the subject actually did with them.
         const outcome: SubjectArgsResult = switch (testpack.subject) {
