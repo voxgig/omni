@@ -366,9 +366,10 @@ public final class RunPack {
     var failures: [String] = []
 
     for (index, rawentry) in testset.enumerated() {
-      do {
-        var entry = rawentry
+      var entry = rawentry
+      var started = false
 
+      do {
         guard entry.ismap else {
           throw OmniError("omni: \(label)[\(index)]: entry is not a map")
         }
@@ -379,7 +380,6 @@ public final class RunPack {
         }
 
         let testpack = try resolvetestpack(entry, usesubject, argsubject)
-        let args = resolveargs(&entry, testpack.client)
 
         var wait = Json.absent
         if waiton && !entry.get("wait").isabsent {
@@ -388,12 +388,13 @@ public final class RunPack {
           wait = waits.get(id)
         }
 
+        started = true
         if wait.isabsent {
-          try runentry(useflags, index, &entry, testpack, args)
+          try runentry(useflags, index, &entry, testpack)
         } else {
           var held = false
           do {
-            try runentry(useflags, index, &entry, testpack, args)
+            try runentry(useflags, index, &entry, testpack)
           } catch is OmniError {
             held = true
           }
@@ -401,8 +402,22 @@ public final class RunPack {
             throw fail(useflags, index, entry, "stale wait: " + stringify(wait.get("cause")))
           }
         }
-      } catch let omnierr as OmniError where useflags.all {
-        failures.append(omnierr.message)
+      } catch {
+        var failure = error
+        // Before the subject starts, a hook's raw error is still the entry's.
+        if !started && !(error is OmniError) {
+          do {
+            try handleerror(useflags, index, entry, error)
+            continue
+          } catch {
+            failure = error
+          }
+        }
+        if useflags.all, let omnierr = failure as? OmniError {
+          failures.append(omnierr.message)
+          continue
+        }
+        throw failure
       }
     }
 
@@ -439,14 +454,16 @@ public final class RunPack {
     return testpack
   }
 
-  private func runentry(
-    _ flags: Flags, _ index: Int, _ entry: inout Json, _ testpack: TestPack, _ args: [Json]
-  ) throws {
+  private func runentry(_ flags: Flags, _ index: Int, _ entry: inout Json, _ testpack: TestPack)
+    throws
+  {
     // An args-subject returns its arguments alongside the result, so
     // `match.args` sees what the subject actually did with them.
-    var callargs = args
+    var callargs: [Json] = []
     var res: Json
     do {
+      let args = resolveargs(&entry, testpack.client)
+      callargs = args
       if let call = testpack.argsubject {
         (callargs, res) = try call(args)
       } else if let call = testpack.subject {
