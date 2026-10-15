@@ -130,6 +130,27 @@ internal static partial class Program
             W.RunSet(W.Set("g"), FIB);
         });
 
+        TestCase("a raising hook is the entry's error, not the set's", () =>
+        {
+            var provider = new Provider
+            {
+                SubjectFor = _ => FIB,
+                Contextify = _ => throw new InvalidOperationException("contextify boom"),
+            };
+            RunPack E = Runner.MakeRunner(V1(List(), Map("ctx", Map("n", 6.0), "err", "contextify boom")), provider).Run("fib");
+            E.RunSet(E.Set("g"), FIB);
+            RunPack U = Runner.MakeRunner(V1(List(), Map("ctx", Map("n", 6.0), "out", 8.0)), provider).Run("fib");
+            Refuses(() => U.RunSet(U.Set("g"), FIB), @"\[0\]: unexpected error\n\s+actual:\s+contextify boom");
+            RunPack W = Runner.MakeRunner(V1(List("wait"),
+                Map("ctx", Map("n", 6.0), "out", 8.0, "wait", Map("cause", "hook#1"))), provider).Run("fib");
+            W.RunSet(W.Set("g"), FIB);
+            RunPack F = Runner.MakeRunner(V1(List("fn"), Map("fn", "boom", "in", 6.0, "err", "subject boom")), new Provider
+            {
+                SubjectFor = name => "boom" == name ? throw new InvalidOperationException("subject boom") : FIB,
+            }).Run("fib");
+            F.RunSet(F.Set("g"), FIB);
+        });
+
         TestCase("all reports every failure at once", () =>
         {
             RunPack W = ExtRunner(V1(List(),
