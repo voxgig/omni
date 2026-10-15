@@ -4,6 +4,7 @@ build:
 
 test:
 	dart run test/run.dart
+	dart run test/ext.dart
 
 clean:
 	rm -rf .dart_tool
