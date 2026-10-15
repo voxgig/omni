@@ -167,8 +167,6 @@ struct omni_subject {
   void *data;
 };
 
-typedef struct omni_provider omni_provider;
-
 struct omni_provider {
   /* Resolve a test subject by name. NULL when unknown. */
   omni_subject *(*subject)(omni_provider *self, const char *name);
