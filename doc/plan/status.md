@@ -1,6 +1,8 @@
 # Status — where the next session starts
 
-Live snapshot, 2026-08-25. The register in [`progress.md`](progress.md) is the
+Live snapshot: the release state under "In flight" is current as of 2026-10-16;
+everything from "Pick up first" on was last reviewed 2026-08-25 and is kept as it
+stood then. The register in [`progress.md`](progress.md) is the
 per-item authority and [`handover.md`](handover.md) is the durable record;
 this file says what is in flight right now, what is blocked on a human, and
 what to pick up first. Update it at the end of a session, or delete it once it
@@ -9,12 +11,13 @@ goes stale — a wrong status file is worse than none.
 
 ## In flight
 
-**Nothing open in omni.** Every omni PR through #44 is merged. (No `main`
+**Nothing open in omni.** Every omni PR through #80 is merged. (No `main`
 hash here on purpose: this file is the starting point for the next session, and
 a tip recorded in the same commit that moves the tip is false the moment it
 merges.)
 
-**Nothing open in voxgig/struct.** The port migration is finished: all sixteen
+**voxgig/struct, as of 2026-08-25 and not re-checked since:** nothing was open,
+and the port migration was finished: all sixteen
 of the drafts this file previously listed are merged, and the last two ports
 have followed, so **24 of 24 ports are on omni**. `zig` swapped once the Zig
 0.13→0.16 blocker cleared (voxgig/struct#119); `boru` needed the decision
@@ -25,15 +28,19 @@ whose zig conclusion #119 corrected.
 
 **The npm pair is published with provenance.** `@voxgig/omni` and
 `@voxgig/omni-js` are released over trusted publishing (OIDC), each carrying a
-SLSA v1 attestation whose subject digest matches the published tarball. 0.1.1
-is the released pair (tags `typescript/v0.1.1`, `javascript/v0.1.1`); **0.1.2
-is bumped here and releases when this lands**, carrying the boru port and the
-runner fixes its review found. No consumer has been migrated onto the npm
-route yet — doing so is a separate change, port by port.
+SLSA v1 attestation whose subject digest matches the published tarball. 0.2.0
+is the released pair (tags `typescript/v0.2.0`, `javascript/v0.2.0`, cut from
+`e9cb45a` on 2026-10-16), carrying the `ctxargs`, `fn`, `wait` and `all`
+capabilities of register 4.18. Its first npm consumer is voxgig/likeness, whose
+TypeScript port takes `@voxgig/omni` 0.2.0 (voxgig/likeness#9); likeness's
+other ports pin omni by checkout, or by the go tag below.
 
-Five more ports are now consumable by **git ref** (register 4.16):
-`go/v0.1.0` at `37f3ca4`, and `clojure/v0.1.0`, `rust/v0.1.0`, `dart/v0.1.0`
-and `lean/v0.1.0` at `a710fcd`. **All five are now verified end to end against
+Five more ports are consumable by **git ref** (register 4.16), now at
+**v0.2.0**: `go/v0.2.0`, `clojure/v0.2.0` and `lean/v0.2.0` at `2b2d434`, and
+`rust/v0.2.0` and `dart/v0.2.0` at `431cdee`, all cut 2026-10-16 from `main`
+through `tag.yml`; the v0.1.0 tags remain. voxgig/likeness#12 consumes the go
+tag through `proxy.golang.org`. The v0.1.0 verification below is as it stood on
+2026-08-25 and has not been re-checked since. **All five were verified end to end against
 live infrastructure** — `proxy.golang.org` serves `github.com/voxgig/omni/go
 v0.1.0` to a module with no checkout; a consumer crate compiles against the
 rust tag; and clojure, dart and lean all resolve their tags and pass, in
@@ -43,10 +50,11 @@ go port onto `github.com/voxgig/omni/go v0.1.0`, and its `go.sum` records
 checksum this repo saw when the tag was verified, so an independent consumer
 resolves the same bytes through the proxy. It sits in a separate `testutil`
 module, so `go mod tidy` in the published module still cannot reach omni
-(register 4.13). **In flight: voxgig/struct#121** moves clojure, dart, lean
-and rust onto their tags - 77 groups, 77 groups, 77 groups and 1371 corpus
-checks, each resolved from the tag with no checkout present. That PR is OPEN,
-so the four are evidence that the tags work, not yet a landed migration.
+(register 4.13). **voxgig/struct#121, OPEN on 2026-08-25 and not re-checked
+since,** moved clojure, dart, lean and rust onto their tags - 77 groups, 77
+groups, 77 groups and 1371 corpus checks, each resolved from the tag with no
+checkout present. On that date the four were evidence that the tags work, not
+yet a landed migration.
 **lean closed last, and on CI rather than locally** - there is no Lean
 toolchain in that PR's authoring environment, so its own runner is the only
 thing that could prove it. `test-lean` on struct#121 at `e57b665` printed
