@@ -348,6 +348,33 @@ def testDeepEqualNumbers : Except String Unit := do
   expectequal (some (jbool true)) (some one) false "true, 1"
   expectequal (some one) (some (jnum 2)) false "1, 2"
 
+def hassubstr (text sub : String) : Bool := 1 < (text.splitOn sub).length
+
+/-- `spec` is test/unicode.json as `loadspec` read it. -/
+def testUnicodePair (spec : Except String Json) : Except String Unit := do
+  let spec ← spec
+  let literal := jget (some spec) "literal"
+  let emoji := String.singleton (Char.ofNat 0x1F600)
+  unless deepequal literal (some (jstr emoji)) && 4 == emoji.utf8ByteSize do
+    throw "omni: the literal must be the 4-byte UTF-8 of U+1F600"
+  unless deepequal (jget (some spec) "escaped") literal && deepequal (jget (some spec) "upper") literal do
+    throw "omni: an escaped pair must deep-equal the literal"
+  let bmp := String.mk [Char.ofNat 0x41, Char.ofNat 0xE9, Char.ofNat 0x20AC]
+  unless deepequal (some (← parse "\"\\u0041\\u00e9\\u20ac\"")) (some (jstr bmp)) do
+    throw "omni: a BMP escape must still decode as itself"
+  let nul := String.mk ['a', Char.ofNat 0, 'b']
+  unless deepequal (some (← parse "\"a\\u0000b\"")) (some (jstr nul)) do
+    throw "omni: a \\u0000 escape must be kept"
+  unless "\"a\\u0000b\\u001f\"" == jsonstr (some (jstr (nul.push (Char.ofNat 0x1F)))) do
+    throw "omni: jsonstr must render a control character as four hex digits"
+
+def testUnicodeLone : Except String Unit := do
+  for text in ["\"\\ud800\"", "\"\\ude00\"", "\"\\ude00\\ud83d\"", "\"\\ud83dx\"",
+               "\"\\ud83d\\u0041\"", "\"\\ud83d\\ud83d\""] do
+    match parse text with
+    | .error message => unless hassubstr message "lone surrogate" do throw message
+    | .ok _ => throw s!"omni: expected a lone surrogate error for {text}"
+
 /- ---- the capability suite: spec/ext.json requires ctxargs, fn and wait,
 beside the runner flag `all` ---- -/
 
@@ -518,6 +545,11 @@ def main (argv : List String) : IO UInt32 := do
   run "a legacy spec (no OMNI block) stays lenient" testLegacyLenient
   run "deepequal is structural: numbers by value (Lean JSON has no NaN)"
     testDeepEqualNumbers
+
+  let unicodespec ←
+    try Except.ok <$> loadspec "test/unicode.json" catch err => pure (.error (toString err))
+  run "parse: an escaped surrogate pair is the literal character" (testUnicodePair unicodespec)
+  run "parse: a lone surrogate escape is refused" testUnicodeLone
 
   let extpack ← makeRunner (← specfile "ext.json") (fibprovider 0.0) "fib"
 

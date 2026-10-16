@@ -446,6 +446,27 @@ let checkdeepequalnan () =
   checkequal false (Bool true) (Num 1.0) "true, 1";
   checkequal false (Num 1.0) (Num 2.0) "1, 2"
 
+let checkunicodepair () =
+  let spec = loadspec "test/unicode.json" in
+  let literal = jget spec "literal" in
+  if literal <> Str "\xf0\x9f\x98\x80" then
+    raise (Failure "omni: the literal must be the 4-byte UTF-8 of U+1F600");
+  if not (deepequal (jget spec "escaped") literal && deepequal (jget spec "upper") literal)
+  then raise (Failure "omni: an escaped pair must deep-equal the literal");
+  if parse "\"\\u0041\\u00e9\\u20ac\"" <> Str "A\xc3\xa9\xe2\x82\xac" then
+    raise (Failure "omni: a BMP escape must still encode as itself");
+  if parse "\"a\\u0000b\"" <> Str "a\000b" then
+    raise (Failure "omni: a \\u0000 escape must be kept")
+
+let checkunicodelone () =
+  List.iter
+    (fun text ->
+      match parse text with
+      | _ -> raise (Failure ("omni: expected a parse error for " ^ text))
+      | exception Omni_error msg when containsstr msg "lone surrogate" -> ())
+    [ "\"\\ud800\""; "\"\\ude00\""; "\"\\ude00\\ud83d\""; "\"\\ud83dx\""; "\"\\ud83d\\u0041\"";
+      "\"\\ud83d\\ud83d\"" ]
+
 (* ---- capabilities (spec/ext.json) and the `all` flag ---------------- *)
 
 (* The ctxargs subject: the context comes first, and must arrive
@@ -632,6 +653,8 @@ let () =
       expectfail "wrongundef" undefsub);
   testcase "reports entry index and id" checkmessage;
   testcase "deepequal: NaN equals NaN, structurally" checkdeepequalnan;
+  testcase "parse: an escaped surrogate pair is the literal character" checkunicodepair;
+  testcase "parse: a lone surrogate escape is refused" checkunicodelone;
 
   testcase "rejects an unsupported spec version" (fun () ->
       expectloadfail badversion "unsupported spec version");

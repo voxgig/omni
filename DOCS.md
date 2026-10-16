@@ -909,8 +909,9 @@ deliberate, documented limitation, not a bug to be fixed by diverging.
 |---|---|
 | PHP | JSON decodes to associative arrays, so an empty map and an empty list are the same value. |
 | Perl | Scalars are untyped: the string `"5"` and the number `5` are indistinguishable. Booleans come from `JSON::PP`. |
-| C | Failures are messages, not an error type - there is no `OmniError`. Regex is POSIX ERE; `\d`, `\w` and `\s` are translated, but lookaround and lazy quantifiers are not available. |
+| C | Failures are messages, not an error type - there is no `OmniError`. Regex is POSIX ERE; `\d`, `\w` and `\s` are translated, but lookaround and lazy quantifiers are not available. A string is NUL-terminated, so a `\u0000` escape is a parse error rather than a character the value model would drop. |
 | Go | Map key order is not preserved (`encoding/json`). Order is never significant for equality. |
+| C, C++, Rust, Zig, Lua, OCaml, Haskell, Elixir, Swift, Lean | A lone surrogate escape, such as `"\ud800"` or a high surrogate with no low one after it, is a parse error: `bad JSON unicode escape (lone surrogate)`, or `error.SyntaxError` in Zig. Canonical `JSON.parse` keeps it as a lone UTF-16 unit, which a UTF-8 string cannot hold, so these ports refuse it rather than substitute U+FFFD or keep bytes that are not UTF-8. Java, Kotlin, Scala, Clojure and Dart hold UTF-16 strings and keep it, as canonical does. An escaped pair such as `"\ud83d\ude00"` is one character in all of them, equal to the literal. |
 | Rust | Maps are `BTreeMap`, so key order is sorted rather than insertion order. The regex engine supports the common subset: literals, classes, groups, alternation, `* + ? {m,n}`, `\d \w \s`, anchors. |
 | Java, C++, C#, Kotlin, Swift | Numbers are all doubles, matching JSON. |
 | Lua | Tables cannot hold `nil`, and an empty list and an empty map are the same table, so the port uses explicit `NULL`/`ABSENT` sentinels and tags every container with a metatable. |

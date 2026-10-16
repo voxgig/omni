@@ -396,6 +396,33 @@ testcase('reports entry index and id', checkmessage)
 
 testcase('deepequal: NaN equals NaN, plain and nested', checknan)
 
+testcase('parse: an escaped surrogate pair is the literal character', function()
+  local spec = runner.loadspec('test/unicode.json')
+  local literal = spec.literal
+  if '\u{1F600}' ~= literal then
+    error('omni: the literal must be the 4-byte UTF-8 of U+1F600', 0)
+  end
+  if not u.deepequal(spec.escaped, literal) or not u.deepequal(spec.upper, literal) then
+    error('omni: an escaped pair must deep-equal the literal', 0)
+  end
+  if 'A\u{E9}\u{20AC}' ~= u.parse('"\\u0041\\u00e9\\u20ac"') then
+    error('omni: a BMP escape must still encode as itself', 0)
+  end
+  if 'a\0b' ~= u.parse('"a\\u0000b"') then
+    error('omni: a \\u0000 escape must be kept', 0)
+  end
+end)
+
+testcase('parse: a lone surrogate escape is refused', function()
+  for _, text in ipairs({ '"\\ud800"', '"\\ude00"', '"\\ude00\\ud83d"', '"\\ud83dx"',
+    '"\\ud83d\\u0041"', '"\\ud83d\\ud83d"' }) do
+    local ok, err = pcall(u.parse, text)
+    if ok or nil == tostring(err):find('lone surrogate', 1, true) then
+      error('omni: expected a lone surrogate error for ' .. text .. ', got ' .. tostring(err), 0)
+    end
+  end
+end)
+
 print('\n' .. PASSCOUNT .. ' passed, ' .. FAILCOUNT .. ' failed')
 
 os.exit(0 == FAILCOUNT and 0 or 1)

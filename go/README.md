@@ -48,6 +48,8 @@ with `err`.
   - including `[]int` or `map[string]int` - into the JSON model by
   reflection, so subjects can return natural Go types.
 - Numbers compare by value across every numeric type: `int(5)`,
-  `int64(5)` and `float64(5)` are equal.
+  `int64(5)` and `float64(5)` are equal. A `json.Number`, which a spec
+  decoded with `json.Decoder.UseNumber` holds, is a number too: it equals
+  `float64(5)` and prints unquoted, as `5`.
 - `encoding/json` does not preserve map key order; order is never
   significant for equality, and `JsonStr` sorts keys for messages.

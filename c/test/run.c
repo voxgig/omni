@@ -866,6 +866,67 @@ static void nanequality(void) {
   report(label, NULL != bad, bad);
 }
 
+static omni_json *parsefield(omni_json *spec, const char *key) {
+  return NULL == spec ? NULL : omni_map_get(spec, key);
+}
+
+static void unicodeescapes(void) {
+  const char *pairlabel = "parse: an escaped surrogate pair is the literal character";
+  const char *lonelabel = "parse: a lone surrogate escape is refused";
+  const char *nullabel = "parse: a \\u0000 escape is refused, not dropped";
+  static const char *lone[] = {
+      "\"\\ud800\"",       "\"\\ude00\"",        "\"\\ude00\\ud83d\"",
+      "\"\\ud83dx\"",      "\"\\ud83d\\u0041\"", "\"\\ud83d\\ud83d\"",
+  };
+  const char *bad = NULL;
+  char *err = NULL;
+  size_t index;
+
+  if (wanted(pairlabel)) {
+    char *text = omni_readfile(POOL, "test/unicode.json");
+    omni_json *spec = NULL == text ? NULL : omni_parse(POOL, text, &err);
+    omni_json *literal = parsefield(spec, "literal");
+    omni_json *bmp = omni_parse(POOL, "\"\\u0041\\u00e9\\u20ac\"", &err);
+
+    if (NULL == spec) {
+      bad = NULL == text ? "omni: cannot read test/unicode.json" : err;
+    } else if (!omni_isstr(literal) || 0 != strcmp("\xf0\x9f\x98\x80", omni_strval(literal))) {
+      bad = "omni: the literal must be the 4-byte UTF-8 of U+1F600";
+    } else if (!omni_deepequal(parsefield(spec, "escaped"), literal)) {
+      bad = "omni: the escaped pair must deep-equal the literal";
+    } else if (!omni_deepequal(parsefield(spec, "upper"), literal)) {
+      bad = "omni: the upper-case escaped pair must deep-equal the literal";
+    } else if (NULL == bmp || 0 != strcmp("A\xc3\xa9\xe2\x82\xac", omni_strval(bmp))) {
+      bad = "omni: a BMP escape must still encode as itself";
+    }
+    report(pairlabel, NULL != bad, bad);
+  }
+
+  if (wanted(lonelabel)) {
+    bad = NULL;
+    for (index = 0; NULL == bad && index < sizeof(lone) / sizeof(lone[0]); index++) {
+      err = NULL;
+      if (NULL != omni_parse(POOL, lone[index], &err)) {
+        bad = omni_jsonstr(POOL, omni_str(POOL, lone[index]));
+      } else if (NULL == strstr(err, "lone surrogate")) {
+        bad = err;
+      }
+    }
+    report(lonelabel, NULL != bad, bad);
+  }
+
+  if (wanted(nullabel)) {
+    err = NULL;
+    bad = NULL;
+    if (NULL != omni_parse(POOL, "\"a\\u0000b\"", &err)) {
+      bad = "omni: expected a parse error";
+    } else if (NULL == strstr(err, "\\u0000")) {
+      bad = err;
+    }
+    report(nullabel, NULL != bad, bad);
+  }
+}
+
 /* ---- capabilities (spec/ext.json) --------------------------------- */
 
 /* The ctxargs subject: the context comes first, and must arrive
@@ -1162,6 +1223,7 @@ int main(int argc, char **argv) {
   legacylenient();
   checkmessage();
   nanequality();
+  unicodeescapes();
   extsuite();
 
   printf("\n%d passed, %d failed\n", PASSCOUNT, FAILCOUNT);

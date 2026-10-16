@@ -101,6 +101,16 @@ local function parseword(text, pos, word, value)
   error('omni: bad JSON literal at ' .. pos, 0)
 end
 
+local LONE_SURROGATE = 'omni: bad JSON unicode escape (lone surrogate)'
+
+local function parsehex4(text, at)
+  local hex = text:sub(at, at + 3)
+  if nil == hex:match('^%x%x%x%x$') then
+    error('omni: bad JSON unicode escape', 0)
+  end
+  return tonumber(hex, 16)
+end
+
 local function parsestring(text, pos)
   if '"' ~= text:sub(pos, pos) then
     error('omni: expected string at ' .. pos, 0)
@@ -140,12 +150,22 @@ local function parsestring(text, pos)
       elseif 't' == escape then
         out[#out + 1] = '\t'
       elseif 'u' == escape then
-        local code = tonumber(text:sub(at, at + 3), 16)
+        local code = parsehex4(text, at)
         at = at + 4
-        if nil == code then
-          error('omni: bad JSON unicode escape', 0)
+        if 0xD800 <= code and 0xDBFF >= code then
+          if '\\u' ~= text:sub(at, at + 1) then
+            error(LONE_SURROGATE, 0)
+          end
+          local low = parsehex4(text, at + 2)
+          if 0xDC00 > low or 0xDFFF < low then
+            error(LONE_SURROGATE, 0)
+          end
+          at = at + 6
+          code = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+        elseif 0xDC00 <= code and 0xDFFF >= code then
+          error(LONE_SURROGATE, 0)
         end
-        out[#out + 1] = utf8 and utf8.char(code) or string.char(code % 256)
+        out[#out + 1] = utf8.char(code)
       else
         error('omni: bad JSON escape at ' .. at, 0)
       end

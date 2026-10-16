@@ -697,6 +697,39 @@ void extall() {
 
 }  // namespace
 
+void unicodepair() {
+  omni::Json spec = omni::Json::parsefile("test/unicode.json");
+  omni::Json literal = spec.get("literal");
+  if (!literal.isstr() || "\xf0\x9f\x98\x80" != literal.strval) {
+    throw std::runtime_error("omni: the literal must be the 4-byte UTF-8 of U+1F600");
+  }
+  if (!omni::deepequal(spec.get("escaped"), literal) ||
+      !omni::deepequal(spec.get("upper"), literal)) {
+    throw std::runtime_error("omni: an escaped pair must deep-equal the literal");
+  }
+  if ("A\xc3\xa9\xe2\x82\xac" != omni::Json::parse("\"\\u0041\\u00e9\\u20ac\"").strval) {
+    throw std::runtime_error("omni: a BMP escape must still encode as itself");
+  }
+  if (std::string("a\0b", 3) != omni::Json::parse("\"a\\u0000b\"").strval) {
+    throw std::runtime_error("omni: a \\u0000 escape must be kept");
+  }
+}
+
+void unicodelone() {
+  for (const char* text : {"\"\\ud800\"", "\"\\ude00\"", "\"\\ude00\\ud83d\"", "\"\\ud83dx\"",
+                           "\"\\ud83d\\u0041\"", "\"\\ud83d\\ud83d\""}) {
+    try {
+      omni::Json::parse(text);
+    } catch (const std::runtime_error& err) {
+      if (std::string::npos != std::string(err.what()).find("lone surrogate")) {
+        continue;
+      }
+      throw;
+    }
+    throw std::runtime_error(std::string("omni: expected a parse error for ") + text);
+  }
+}
+
 int main(int argc, char** argv) {
   if (1 < argc) {
     ONLY = argv[1];
@@ -750,6 +783,8 @@ int main(int argc, char** argv) {
   testcase("reports entry index and id", checkmessage);
 
   testcase("deepequal: two distinct NaNs are structurally equal", nanequality);
+  testcase("parse: an escaped surrogate pair is the literal character", unicodepair);
+  testcase("parse: a lone surrogate escape is refused", unicodelone);
 
   testcase("ext capabilities", extcapabilities);
   testcase("ext ctxargs", [&E] { E.runset(E.set("ctxargs"), FIBSHIFTED); });

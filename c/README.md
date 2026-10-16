@@ -55,3 +55,6 @@ release once at the end.
 - There is no `OmniError` type - failures are messages. This is the one
   documented parity exemption (see `tools/check_parity.py`).
 - `OMNI_ABSENT` is a value type, so "absent" and "null" are distinct.
+- A string is NUL-terminated, so the parser refuses a `\u0000` escape
+  rather than drop it. A lone surrogate escape is refused too, as in the
+  other UTF-8 ports; see `DOCS.md`, per-port variance.
