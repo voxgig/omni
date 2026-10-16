@@ -461,6 +461,46 @@ static void parse_ws(omni_parser *parser) {
 
 static omni_json *parse_val(omni_parser *parser);
 
+static int parse_hex4(omni_parser *parser, unsigned int *code) {
+  int digit;
+  if (parser->pos + 4 > parser->len) {
+    return 0;
+  }
+  *code = 0;
+  for (digit = 0; digit < 4; digit++) {
+    char hex = parser->text[parser->pos++];
+    *code *= 16;
+    if ('0' <= hex && '9' >= hex) {
+      *code += (unsigned int)(hex - '0');
+    } else if ('a' <= hex && 'f' >= hex) {
+      *code += (unsigned int)(hex - 'a' + 10);
+    } else if ('A' <= hex && 'F' >= hex) {
+      *code += (unsigned int)(hex - 'A' + 10);
+    } else {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static void buf_addutf8(omni_buf *buf, unsigned int code) {
+  if (0x80 > code) {
+    buf_addchar(buf, (char)code);
+  } else if (0x800 > code) {
+    buf_addchar(buf, (char)(0xC0 | (code >> 6)));
+    buf_addchar(buf, (char)(0x80 | (code & 0x3F)));
+  } else if (0x10000 > code) {
+    buf_addchar(buf, (char)(0xE0 | (code >> 12)));
+    buf_addchar(buf, (char)(0x80 | ((code >> 6) & 0x3F)));
+    buf_addchar(buf, (char)(0x80 | (code & 0x3F)));
+  } else {
+    buf_addchar(buf, (char)(0xF0 | (code >> 18)));
+    buf_addchar(buf, (char)(0x80 | ((code >> 12) & 0x3F)));
+    buf_addchar(buf, (char)(0x80 | ((code >> 6) & 0x3F)));
+    buf_addchar(buf, (char)(0x80 | (code & 0x3F)));
+  }
+}
+
 static char *parse_rawstr(omni_parser *parser) {
   omni_buf buf;
 
@@ -515,37 +555,36 @@ static char *parse_rawstr(omni_parser *parser) {
         buf_addchar(&buf, '\t');
         break;
       case 'u': {
-        unsigned int code = 0;
-        int digit;
-        if (parser->pos + 4 > parser->len) {
+        unsigned int code;
+        unsigned int low;
+        if (!parse_hex4(parser, &code)) {
           parse_error(parser, "bad unicode escape");
           return NULL;
         }
-        for (digit = 0; digit < 4; digit++) {
-          char hex = parser->text[parser->pos++];
-          code *= 16;
-          if ('0' <= hex && '9' >= hex) {
-            code += (unsigned int)(hex - '0');
-          } else if ('a' <= hex && 'f' >= hex) {
-            code += (unsigned int)(hex - 'a' + 10);
-          } else if ('A' <= hex && 'F' >= hex) {
-            code += (unsigned int)(hex - 'A' + 10);
-          } else {
+        if (0xD800 <= code && 0xDBFF >= code) {
+          if (parser->pos + 2 > parser->len || '\\' != parser->text[parser->pos] ||
+              'u' != parser->text[parser->pos + 1]) {
+            parse_error(parser, "bad unicode escape (lone surrogate)");
+            return NULL;
+          }
+          parser->pos += 2;
+          if (!parse_hex4(parser, &low)) {
             parse_error(parser, "bad unicode escape");
             return NULL;
           }
+          if (0xDC00 > low || 0xDFFF < low) {
+            parse_error(parser, "bad unicode escape (lone surrogate)");
+            return NULL;
+          }
+          code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+        } else if (0xDC00 <= code && 0xDFFF >= code) {
+          parse_error(parser, "bad unicode escape (lone surrogate)");
+          return NULL;
+        } else if (0 == code) {
+          parse_error(parser, "unsupported \\u0000 escape (a C string cannot hold NUL)");
+          return NULL;
         }
-        /* UTF-8 encode the code point. */
-        if (0x80 > code) {
-          buf_addchar(&buf, (char)code);
-        } else if (0x800 > code) {
-          buf_addchar(&buf, (char)(0xC0 | (code >> 6)));
-          buf_addchar(&buf, (char)(0x80 | (code & 0x3F)));
-        } else {
-          buf_addchar(&buf, (char)(0xE0 | (code >> 12)));
-          buf_addchar(&buf, (char)(0x80 | ((code >> 6) & 0x3F)));
-          buf_addchar(&buf, (char)(0x80 | (code & 0x3F)));
-        }
+        buf_addutf8(&buf, code);
         break;
       }
       default:
