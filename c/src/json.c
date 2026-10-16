@@ -564,7 +564,7 @@ static char *parse_rawstr(omni_parser *parser) {
         if (0xD800 <= code && 0xDBFF >= code) {
           if (parser->pos + 2 > parser->len || '\\' != parser->text[parser->pos] ||
               'u' != parser->text[parser->pos + 1]) {
-            parse_error(parser, "bad unicode escape (lone surrogate)");
+            parse_error(parser, "bad JSON unicode escape (lone surrogate)");
             return NULL;
           }
           parser->pos += 2;
@@ -573,12 +573,12 @@ static char *parse_rawstr(omni_parser *parser) {
             return NULL;
           }
           if (0xDC00 > low || 0xDFFF < low) {
-            parse_error(parser, "bad unicode escape (lone surrogate)");
+            parse_error(parser, "bad JSON unicode escape (lone surrogate)");
             return NULL;
           }
           code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
         } else if (0xDC00 <= code && 0xDFFF >= code) {
-          parse_error(parser, "bad unicode escape (lone surrogate)");
+          parse_error(parser, "bad JSON unicode escape (lone surrogate)");
           return NULL;
         } else if (0 == code) {
           parse_error(parser, "unsupported \\u0000 escape (a C string cannot hold NUL)");
