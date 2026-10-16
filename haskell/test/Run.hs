@@ -354,6 +354,38 @@ loadspecReadsUtf8 = do
     Just "caf\233" -> pure ()
     other -> throwIO (OmniError ("expected caf\\233, got " ++ show other))
 
+expect :: Bool -> String -> IO ()
+expect ok what = if ok then pure () else throwIO (OmniError ("omni: " ++ what))
+
+unicodePair :: IO ()
+unicodePair = do
+  spec <- loadspec "test/unicode.json"
+  let literal = jget spec "literal"
+  expect (Just "\x1F600" == asstr literal) "the literal must be U+1F600"
+  expect
+    (deepequal (jget spec "escaped") literal && deepequal (jget spec "upper") literal)
+    "an escaped pair must deep-equal the literal"
+  expect
+    (Right (Just "A\233\8364") == fmap asstr (parse "\"\\u0041\\u00e9\\u20ac\""))
+    "a BMP escape must still decode as itself"
+  expect (Right (Just "a\0b") == fmap asstr (parse "\"a\\u0000b\"")) "a \\u0000 escape must be kept"
+
+unicodeLone :: IO ()
+unicodeLone =
+  mapM_
+    refuse
+    [ "\"\\ud800\"",
+      "\"\\ude00\"",
+      "\"\\ude00\\ud83d\"",
+      "\"\\ud83dx\"",
+      "\"\\ud83d\\u0041\"",
+      "\"\\ud83d\\ud83d\""
+    ]
+  where
+    refuse text = case parse text of
+      Left message | "lone surrogate" `isInfixOf` message -> pure ()
+      other -> throwIO (OmniError ("omni: expected a lone surrogate error for " ++ text ++ ", got " ++ show other))
+
 rejectsMalformedVersionBlock :: IO ()
 rejectsMalformedVersionBlock =
   expectloadfail
@@ -742,6 +774,8 @@ main = do
   run "an empty-string match leaf is not a wildcard" (expectfail "emptystr" fibinfosub)
 
   run "loadspec reads UTF-8 whatever the locale" loadspecReadsUtf8
+  run "parse: an escaped surrogate pair is the literal character" unicodePair
+  run "parse: a lone surrogate escape is refused" unicodeLone
   run "rejects an unsupported spec version" rejectsUnsupportedVersion
   run "rejects an unknown required capability" rejectsUnknownCapability
   run "rejects a malformed version block" rejectsMalformedVersionBlock
