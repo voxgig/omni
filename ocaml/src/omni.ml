@@ -141,6 +141,25 @@ let parse text =
     else fail "bad JSON literal"
   in
 
+  let hex4 () =
+    if !pos + 4 > len then fail "bad JSON unicode escape";
+    (* Exactly four hex digits: int_of_string would accept '_'
+       separators and raise Failure on other junk. *)
+    let hexdigit ch =
+      match ch with
+      | '0' .. '9' -> Char.code ch - Char.code '0'
+      | 'a' .. 'f' -> Char.code ch - Char.code 'a' + 10
+      | 'A' .. 'F' -> Char.code ch - Char.code 'A' + 10
+      | _ -> fail "bad JSON unicode escape"
+    in
+    let code = ref 0 in
+    for step = 0 to 3 do
+      code := (!code * 16) + hexdigit text.[!pos + step]
+    done;
+    pos := !pos + 4;
+    !code
+  in
+
   let parsestring () =
     if !pos >= len || text.[!pos] <> '"' then fail "expected string";
     incr pos;
@@ -166,33 +185,20 @@ let parse text =
         | 'r' -> Buffer.add_char buf '\r'
         | 't' -> Buffer.add_char buf '\t'
         | 'u' ->
-          if !pos + 4 > len then fail "bad JSON unicode escape";
-          (* Exactly four hex digits: int_of_string would accept '_'
-             separators and raise Failure on other junk. *)
-          let hexdigit ch =
-            match ch with
-            | '0' .. '9' -> Char.code ch - Char.code '0'
-            | 'a' .. 'f' -> Char.code ch - Char.code 'a' + 10
-            | 'A' .. 'F' -> Char.code ch - Char.code 'A' + 10
-            | _ -> fail "bad JSON unicode escape"
+          let lone = "bad JSON unicode escape (lone surrogate)" in
+          let code = hex4 () in
+          let code =
+            if code >= 0xD800 && code <= 0xDBFF then begin
+              if !pos + 2 > len || text.[!pos] <> '\\' || text.[!pos + 1] <> 'u' then fail lone;
+              pos := !pos + 2;
+              let low = hex4 () in
+              if low < 0xDC00 || low > 0xDFFF then fail lone;
+              0x10000 + ((code - 0xD800) lsl 10) + (low - 0xDC00)
+            end
+            else if code >= 0xDC00 && code <= 0xDFFF then fail lone
+            else code
           in
-          let code = ref 0 in
-          for step = 0 to 3 do
-            code := (!code * 16) + hexdigit text.[!pos + step]
-          done;
-          let code = !code in
-          pos := !pos + 4;
-          (* UTF-8 encode. *)
-          if code < 0x80 then Buffer.add_char buf (Char.chr code)
-          else if code < 0x800 then begin
-            Buffer.add_char buf (Char.chr (0xC0 lor (code lsr 6)));
-            Buffer.add_char buf (Char.chr (0x80 lor (code land 0x3F)))
-          end
-          else begin
-            Buffer.add_char buf (Char.chr (0xE0 lor (code lsr 12)));
-            Buffer.add_char buf (Char.chr (0x80 lor ((code lsr 6) land 0x3F)));
-            Buffer.add_char buf (Char.chr (0x80 lor (code land 0x3F)))
-          end
+          Buffer.add_utf_8_uchar buf (Uchar.of_int code)
         | _ -> fail "bad JSON escape"
       end
     done;
