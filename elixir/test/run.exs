@@ -392,6 +392,48 @@ defmodule OmniTest do
     end
   end
 
+  def unicode_pair do
+    spec = Runner.loadspec("test/unicode.json")
+    literal = spec["literal"]
+
+    if "\u{1F600}" != literal do
+      raise "omni: the literal must be the 4-byte UTF-8 of U+1F600"
+    end
+
+    if not (U.deepequal(spec["escaped"], literal) and U.deepequal(spec["upper"], literal)) do
+      raise "omni: an escaped pair must deep-equal the literal"
+    end
+
+    if "A\u{E9}\u{20AC}" != Voxgig.Omni.Json.parse(~S|"\u0041\u00e9\u20ac"|) do
+      raise "omni: a BMP escape must still decode as itself"
+    end
+
+    if "a\0b" != Voxgig.Omni.Json.parse(~S|"a\u0000b"|) do
+      raise "omni: a \\u0000 escape must be kept"
+    end
+  end
+
+  def unicode_lone do
+    for text <- [
+          ~S|"\ud800"|,
+          ~S|"\ude00"|,
+          ~S|"\ude00\ud83d"|,
+          ~S|"\ud83dx"|,
+          ~S|"\ud83d\u0041"|,
+          ~S|"\ud83d\ud83d"|
+        ] do
+      try do
+        Voxgig.Omni.Json.parse(text)
+        raise OmniError, message: "omni: expected a parse error for #{text}"
+      rescue
+        err in RuntimeError ->
+          if not String.contains?(Exception.message(err), "lone surrogate") do
+            raise "omni: expected a lone surrogate error for #{text}, got #{Exception.message(err)}"
+          end
+      end
+    end
+  end
+
   def deepequal_structural do
     nan_is_unrepresentable()
 
@@ -584,6 +626,20 @@ state =
   OmniTest.testcase(
     "deepequal: NaN equals NaN (no NaN in this runtime), number regressions",
     &OmniTest.deepequal_structural/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "parse: an escaped surrogate pair is the literal character",
+    &OmniTest.unicode_pair/0,
+    state
+  )
+
+state =
+  OmniTest.testcase(
+    "parse: a lone surrogate escape is refused",
+    &OmniTest.unicode_lone/0,
     state
   )
 

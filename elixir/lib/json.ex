@@ -11,6 +11,8 @@
 defmodule Voxgig.Omni.Json do
   @moduledoc "Minimal JSON parser for the omni test runner."
 
+  @lone_surrogate "omni: bad JSON unicode escape (lone surrogate)"
+
   @doc "Parse JSON text into native Elixir values."
   def parse(text) do
     {value, rest} = parse_value(skipws(text))
@@ -74,9 +76,27 @@ defmodule Voxgig.Omni.Json do
   defp parse_string("\"" <> rest, out), do: {out |> Enum.reverse() |> IO.iodata_to_binary(), rest}
 
   defp parse_string("\\u" <> rest, out) do
-    <<hex::binary-size(4), more::binary>> = rest
-    {code, ""} = Integer.parse(hex, 16)
-    parse_string(more, [<<code::utf8>> | out])
+    {code, more} = parse_hex4(rest)
+
+    cond do
+      code in 0xD800..0xDBFF ->
+        case more do
+          "\\u" <> lowtext ->
+            {low, afterlow} = parse_hex4(lowtext)
+            if low not in 0xDC00..0xDFFF, do: raise(@lone_surrogate)
+            code = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+            parse_string(afterlow, [<<code::utf8>> | out])
+
+          _ ->
+            raise @lone_surrogate
+        end
+
+      code in 0xDC00..0xDFFF ->
+        raise @lone_surrogate
+
+      true ->
+        parse_string(more, [<<code::utf8>> | out])
+    end
   end
 
   defp parse_string("\\" <> <<escape, rest::binary>>, out) do
@@ -100,6 +120,14 @@ defmodule Voxgig.Omni.Json do
     do: parse_string(rest, [<<ch::utf8>> | out])
 
   defp parse_string("", _out), do: raise("omni: unterminated JSON string")
+
+  defguardp is_hex(ch) when ch in ?0..?9 or ch in ?a..?f or ch in ?A..?F
+
+  defp parse_hex4(<<a, b, c, d, more::binary>>)
+       when is_hex(a) and is_hex(b) and is_hex(c) and is_hex(d),
+       do: {String.to_integer(<<a, b, c, d>>, 16), more}
+
+  defp parse_hex4(_), do: raise("omni: bad JSON unicode escape")
 
   defp parse_number(text) do
     {span, rest} = take_number(text, [])
