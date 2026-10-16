@@ -345,22 +345,21 @@ class Json {
           out.push_back('\t');
           break;
         case 'u': {
-          if (pos + 4 > text.size()) {
-            throw std::runtime_error("omni: bad JSON unicode escape");
+          unsigned int code = parsehex4(text, pos);
+          if (0xD800 <= code && 0xDBFF >= code) {
+            if (pos + 2 > text.size() || '\\' != text[pos] || 'u' != text[pos + 1]) {
+              throw std::runtime_error("omni: bad JSON unicode escape (lone surrogate)");
+            }
+            pos += 2;
+            unsigned int low = parsehex4(text, pos);
+            if (0xDC00 > low || 0xDFFF < low) {
+              throw std::runtime_error("omni: bad JSON unicode escape (lone surrogate)");
+            }
+            code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+          } else if (0xDC00 <= code && 0xDFFF >= code) {
+            throw std::runtime_error("omni: bad JSON unicode escape (lone surrogate)");
           }
-          unsigned int code =
-              static_cast<unsigned int>(std::stoul(text.substr(pos, 4), nullptr, 16));
-          pos += 4;
-          if (0x80 > code) {
-            out.push_back(static_cast<char>(code));
-          } else if (0x800 > code) {
-            out.push_back(static_cast<char>(0xC0 | (code >> 6)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-          } else {
-            out.push_back(static_cast<char>(0xE0 | (code >> 12)));
-            out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-          }
+          addutf8(out, code);
           break;
         }
         default:
@@ -369,6 +368,45 @@ class Json {
     }
 
     throw std::runtime_error("omni: unterminated JSON string");
+  }
+
+  static unsigned int parsehex4(const std::string& text, size_t& pos) {
+    if (pos + 4 > text.size()) {
+      throw std::runtime_error("omni: bad JSON unicode escape");
+    }
+    unsigned int code = 0;
+    for (size_t end = pos + 4; pos < end; pos++) {
+      char hex = text[pos];
+      code *= 16;
+      if ('0' <= hex && '9' >= hex) {
+        code += static_cast<unsigned int>(hex - '0');
+      } else if ('a' <= hex && 'f' >= hex) {
+        code += static_cast<unsigned int>(hex - 'a' + 10);
+      } else if ('A' <= hex && 'F' >= hex) {
+        code += static_cast<unsigned int>(hex - 'A' + 10);
+      } else {
+        throw std::runtime_error("omni: bad JSON unicode escape");
+      }
+    }
+    return code;
+  }
+
+  static void addutf8(std::string& out, unsigned int code) {
+    if (0x80 > code) {
+      out.push_back(static_cast<char>(code));
+    } else if (0x800 > code) {
+      out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else if (0x10000 > code) {
+      out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    }
   }
 
   static Json parsenum(const std::string& text, size_t& pos) {
