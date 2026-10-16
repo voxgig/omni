@@ -133,6 +133,7 @@ def quote (val : String) : String :=
     else if ch == '\n' then "\\n"
     else if ch == '\r' then "\\r"
     else if ch == '\t' then "\\t"
+    else if ch.toNat < 0x10 then "\\u000" ++ (Nat.toDigits 16 ch.toNat).asString
     else if ch.toNat < 0x20 then "\\u00" ++ (Nat.toDigits 16 ch.toNat).asString
     else ch.toString
   "\"" ++ (val.toList.map escape |> String.join) ++ "\""
@@ -1081,10 +1082,54 @@ def makeRunnerSpec (alltests : Json) (provider : Provider) (name : String)
          clients := clients, name := name, specversion := specversion,
          requires := resolverequires alltests }
 
+private def hexdigit (ch : Char) : Option Nat :=
+  if '0' ≤ ch && ch ≤ '9' then some (ch.toNat - '0'.toNat)
+  else if 'a' ≤ ch && ch ≤ 'f' then some (ch.toNat - 'a'.toNat + 10)
+  else if 'A' ≤ ch && ch ≤ 'F' then some (ch.toNat - 'A'.toNat + 10)
+  else none
+
+private def hex4 : List Char → Option (Nat × List Char)
+  | a :: b :: c :: d :: rest => do
+    let digits := [← hexdigit a, ← hexdigit b, ← hexdigit c, ← hexdigit d]
+    pure (digits.foldl (fun acc digit => acc * 16 + digit) 0, rest)
+  | _ => none
+
+private def loneSurrogate : String := "bad JSON unicode escape (lone surrogate)"
+
+/-- `Json.parse` decodes each `\u` escape alone, so an escaped surrogate pair
+becomes two NULs. Rewrite each pair as the character it names, and refuse a
+lone surrogate, before the text reaches it. -/
+private partial def combineSurrogates (chars : List Char) (out : String) : Except String String :=
+  match chars with
+  | [] => .ok out
+  | '\\' :: 'u' :: rest =>
+    match hex4 rest with
+    | none => combineSurrogates rest (out ++ "\\u")
+    | some (code, more) =>
+      if 0xD800 ≤ code && code ≤ 0xDBFF then
+        match more with
+        | '\\' :: 'u' :: lowtext =>
+          match hex4 lowtext with
+          | some (low, after) =>
+            if 0xDC00 ≤ low && low ≤ 0xDFFF then
+              combineSurrogates after
+                (out.push (Char.ofNat (0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00))))
+            else .error loneSurrogate
+          | none => .error "bad JSON unicode escape"
+        | _ => .error loneSurrogate
+      else if 0xDC00 ≤ code && code ≤ 0xDFFF then .error loneSurrogate
+      else combineSurrogates more (out ++ "\\u" ++ String.mk (rest.take 4))
+  | '\\' :: ch :: rest => combineSurrogates rest ((out.push '\\').push ch)
+  | ch :: rest => combineSurrogates rest (out.push ch)
+
+/-- Parse JSON text, with escaped surrogate pairs read as JSON.parse reads them. -/
+def parse (text : String) : Except String Json :=
+  combineSurrogates text.toList "" >>= Json.parse
+
 /-- Load a spec: a path to a JSON file. -/
 def loadspec (path : String) : IO Json := do
   let text ← IO.FS.readFile path
-  match Json.parse text with
+  match parse text with
   | .ok value => pure value
   | .error message => throw (IO.userError s!"omni: cannot parse spec: {path}: {message}")
 
