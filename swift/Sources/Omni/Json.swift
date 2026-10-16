@@ -318,13 +318,20 @@ public indirect enum Json {
       case "r": out.append("\r")
       case "t": out.append("\t")
       case "u":
-        guard pos + 4 <= chars.count else {
-          throw OmniError("omni: bad JSON unicode escape")
+        var code = try parsehex4(chars, &pos)
+        if (0xD800...0xDBFF).contains(code) {
+          guard pos + 2 <= chars.count, "\\" == chars[pos], "u" == chars[pos + 1] else {
+            throw OmniError(loneSurrogate)
+          }
+          pos += 2
+          let low = try parsehex4(chars, &pos)
+          guard (0xDC00...0xDFFF).contains(low) else {
+            throw OmniError(loneSurrogate)
+          }
+          code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
         }
-        let hex = String(chars[pos..<(pos + 4)])
-        pos += 4
-        guard let code = UInt32(hex, radix: 16), let scalar = Unicode.Scalar(code) else {
-          throw OmniError("omni: bad JSON unicode escape")
+        guard let scalar = Unicode.Scalar(code) else {
+          throw OmniError(loneSurrogate)
         }
         out.append(Character(scalar))
       default:
@@ -333,6 +340,23 @@ public indirect enum Json {
     }
 
     throw OmniError("omni: unterminated JSON string")
+  }
+
+  private static let loneSurrogate = "omni: bad JSON unicode escape (lone surrogate)"
+
+  private static func parsehex4(_ chars: [Character], _ pos: inout Int) throws -> UInt32 {
+    guard pos + 4 <= chars.count else {
+      throw OmniError("omni: bad JSON unicode escape")
+    }
+    var code: UInt32 = 0
+    for ch in chars[pos..<(pos + 4)] {
+      guard ch.isASCII, let digit = ch.hexDigitValue else {
+        throw OmniError("omni: bad JSON unicode escape")
+      }
+      code = code * 16 + UInt32(digit)
+    }
+    pos += 4
+    return code
   }
 
   private static func parsenum(_ chars: [Character], _ pos: inout Int) throws -> Json {

@@ -388,6 +388,36 @@ func checknan() throws {
   try checkequal(false, .num(1), .num(2), "1, 2")
 }
 
+func checkunicodepair() throws {
+  let literal = Json.str("\u{1F600}")
+  for text in ["\"\\ud83d\\ude00\"", "\"\\uD83D\\uDE00\""] {
+    let parsed = try Json.parse(text)
+    guard deepequal(parsed, literal), case .str(let got) = parsed, 4 == got.utf8.count else {
+      throw OmniError("omni: \(text) must deep-equal the literal U+1F600")
+    }
+  }
+  guard case .str("A\u{E9}\u{20AC}") = try Json.parse("\"\\u0041\\u00e9\\u20ac\"") else {
+    throw OmniError("omni: a BMP escape must still decode as itself")
+  }
+  guard case .str(let nul) = try Json.parse("\"a\\u0000b\""), [97, 0, 98] == Array(nul.utf8) else {
+    throw OmniError("omni: a \\u0000 escape must be kept")
+  }
+}
+
+func checkunicodelone() throws {
+  for text in [
+    "\"\\ud800\"", "\"\\ude00\"", "\"\\ude00\\ud83d\"", "\"\\ud83dx\"", "\"\\ud83d\\u0041\"",
+    "\"\\ud83d\\ud83d\"",
+  ] {
+    do {
+      _ = try Json.parse(text)
+    } catch let err as OmniError where err.message.contains("lone surrogate") {
+      continue
+    }
+    throw OmniError("omni: expected a lone surrogate error for \(text)")
+  }
+}
+
 let args = CommandLine.arguments
 if 1 < args.count {
   ONLY = args[1]
@@ -561,6 +591,8 @@ testcase("a legacy spec (no OMNI block) stays lenient") {
 
 testcase("reports entry index and id") { try checkmessage() }
 testcase("deepequal matches NaN with NaN, structurally") { try checknan() }
+testcase("parse: an escaped surrogate pair is the literal character") { try checkunicodepair() }
+testcase("parse: a lone surrogate escape is refused") { try checkunicodelone() }
 
 extsuite()
 
