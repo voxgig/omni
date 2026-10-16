@@ -16,7 +16,8 @@ hash here on purpose: this file is the starting point for the next session, and
 a tip recorded in the same commit that moves the tip is false the moment it
 merges.)
 
-**Nothing open in voxgig/struct.** The port migration is finished: all sixteen
+**voxgig/struct, as of 2026-08-25 and not re-checked since:** nothing was open,
+and the port migration was finished: all sixteen
 of the drafts this file previously listed are merged, and the last two ports
 have followed, so **24 of 24 ports are on omni**. `zig` swapped once the Zig
 0.13→0.16 blocker cleared (voxgig/struct#119); `boru` needed the decision
@@ -49,10 +50,11 @@ go port onto `github.com/voxgig/omni/go v0.1.0`, and its `go.sum` records
 checksum this repo saw when the tag was verified, so an independent consumer
 resolves the same bytes through the proxy. It sits in a separate `testutil`
 module, so `go mod tidy` in the published module still cannot reach omni
-(register 4.13). **In flight: voxgig/struct#121** moves clojure, dart, lean
-and rust onto their tags - 77 groups, 77 groups, 77 groups and 1371 corpus
-checks, each resolved from the tag with no checkout present. That PR is OPEN,
-so the four are evidence that the tags work, not yet a landed migration.
+(register 4.13). **voxgig/struct#121, OPEN on 2026-08-25 and not re-checked
+since,** moved clojure, dart, lean and rust onto their tags - 77 groups, 77
+groups, 77 groups and 1371 corpus checks, each resolved from the tag with no
+checkout present. On that date the four were evidence that the tags work, not
+yet a landed migration.
 **lean closed last, and on CI rather than locally** - there is no Lean
 toolchain in that PR's authoring environment, so its own runner is the only
 thing that could prove it. `test-lean` on struct#121 at `e57b665` printed
