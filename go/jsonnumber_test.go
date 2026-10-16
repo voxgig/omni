@@ -66,6 +66,11 @@ func TestJsonNumberJsonStr(t *testing.T) {
 	if got := omni.GetPath([]any{"x", "y"}, []any{json.Number("1")}); "y" != got {
 		t.Errorf("GetPath with a json.Number index = %#v, want y", got)
 	}
+	for _, index := range []any{json.Number("1.5"), 1.5} {
+		if got := omni.GetPath([]any{"x", "y"}, []any{index}); !omni.IsAbsent(got) {
+			t.Errorf("GetPath with the fractional index %#v = %#v, want absent", index, got)
+		}
+	}
 }
 
 func usenumberspec(t *testing.T, text string) any {

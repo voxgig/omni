@@ -135,7 +135,8 @@ func GetPath(val any, path []any) any {
 
 func partindex(part any) (int, bool) {
 	if num, is := ToNum(part); is {
-		return int(num), true
+		// A fractional index names no element, as list[1.5] is undefined in JS.
+		return int(num), num == math.Trunc(num) && !math.IsInf(num, 0)
 	}
 	if text, is := part.(string); is {
 		index, err := strconv.Atoi(text)
