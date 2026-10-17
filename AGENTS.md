@@ -129,6 +129,7 @@ directory and use its `Makefile`.
 | OCaml | `ocaml/` | `make test` | `ocamlc`; in-tree JSON + regex |
 | Haskell | `haskell/` | `make test` | `ghc`, base only; in-tree JSON + regex |
 | Lean 4 | `lean/` | `make test` | `lake`; pure `Except String` failures |
+| Boru | `boru/` | `make test` | held: the root `make test` skips it; `make test-boru` runs it |
 
 Repository-wide: `make test`, `make parity`, `make struct-compat`,
 `make pack-check`, `make pack-diff`, `make inspect`, `make clean`.
